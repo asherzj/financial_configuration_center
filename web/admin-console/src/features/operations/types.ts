@@ -1,0 +1,89 @@
+export type FieldType = "STRING" | "INT64" | "FLOAT64" | "BOOL" | "TIMESTAMP" | "JSON";
+export type UiControl = "INPUT" | "SELECT" | "TIME" | "NUMBER" | "BOOLEAN" | "TEXTAREA" | "JSON";
+export type FilterOperator = "EXACT" | "CONTAINS" | "CLOSED_RANGE" | "OPEN_RANGE" | "IN" | "NOT_IN";
+
+export interface InteractionField {
+  name: string;
+  displayName: string;
+  description: string;
+  type: FieldType;
+  uiControl: UiControl;
+  queryable: boolean;
+  editable: boolean;
+  required: boolean;
+  sensitive: boolean;
+  projected: boolean;
+  keyField: boolean;
+  allowedFilterOperators: FilterOperator[];
+  defaultFilterOperator: FilterOperator;
+  defaultValue?: string;
+  displayOrder: number;
+  validationRules: Array<{ kind: string; params: Record<string, string>; message: string }>;
+  options: Array<{ code: string; label: string; disabled: boolean }>;
+}
+
+export interface PageRow {
+  recordKey: string;
+  recordRevision: number;
+  values: Record<string, string>;
+  maskedFields: string[];
+}
+
+export interface PageResult {
+  modelCode: string;
+  modelName: string;
+  queryType: "ALL" | "ONLY_DATA";
+  rows: PageRow[];
+  projectionFields: string[];
+  interactionFields: InteractionField[];
+  releaseTypes: Array<{ code: string; name: string; templateCode: string; available: boolean }>;
+  page: { number: number; size: number; totalNumber: number; totalPages: number };
+  snapshot: {
+    serverEpoch: string;
+    serverInstanceId: string;
+    snapshotInstance: string;
+    snapshotGeneration: number;
+    publishedAt: string;
+  };
+  modelRevision: number;
+  collectionRevision: number;
+}
+
+export interface CreateReleaseRequest {
+  modelCode: string;
+  releaseTypeCode: string;
+  description: string;
+  scope: { region: string; environment: string; stage?: string };
+  items: Array<{
+    action: "ADD";
+    after: Record<string, string>;
+    expectedRecordRevision: 0;
+    expectedCollectionRevision: number;
+  }>;
+}
+
+export interface ReleaseDetail {
+  order: {
+    id: string;
+    status: "IN_PROGRESS" | "SUCCEEDED";
+    currentStep: "BASE_APPLY" | "COMPLETE";
+    entityRevision: number;
+  };
+  items: unknown[];
+  steps: Array<{ type: string }>;
+  allowedActions: Array<"EXECUTE" | "ADVANCE">;
+}
+
+export interface OperationApi {
+  queryPage(request: {
+    modelCode: string;
+    scope: { region: string; environment: string };
+    queryType: "ALL" | "ONLY_DATA";
+  }): Promise<PageResult>;
+  createRelease(request: CreateReleaseRequest, idempotencyKey: string): Promise<ReleaseDetail>;
+  actOnRelease(
+    orderId: string,
+    actionRequestId: string,
+    request: { action: "EXECUTE" | "ADVANCE"; expectedOrderRevision: number; expectedCurrentStep: string },
+  ): Promise<ReleaseDetail>;
+}

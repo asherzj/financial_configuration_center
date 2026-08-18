@@ -12,7 +12,7 @@ export function App() {
             FinConfig
           </Typography.Title>
           <nav aria-label="主导航">
-            <Space direction="vertical" size={4} className="app-navigation">
+            <Space orientation="vertical" size={4} className="app-navigation">
               <Link to="/">仪表盘</Link>
               <Link to="/operations">统一操作入口</Link>
               <Link to="/releases">发布单</Link>

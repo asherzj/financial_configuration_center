@@ -60,3 +60,9 @@ body {
 .app-content {
   padding: 24px;
 }
+
+.operation-page,
+.operation-review,
+.operation-full-width {
+  width: 100%;
+}
