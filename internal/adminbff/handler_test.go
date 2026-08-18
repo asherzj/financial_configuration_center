@@ -100,6 +100,11 @@ func TestBFFMapsManualApprovalRolesAndServerCapabilities(t *testing.T) {
 	releases := &releaseStub{acted: application.OrderView{
 		ID: "order", Status: release.OrderInProgress, CurrentStepCode: "review", CurrentStep: release.StepManualReview,
 		CurrentStepStatus: release.StepExecuting, Revision: 2, CanApprove: true, CanReject: true,
+		Steps: []application.StepView{
+			{Code: "review", Type: release.StepManualReview, Status: release.StepExecuting},
+			{Code: "apply", Type: release.StepBaseApply, Status: release.StepPending},
+			{Code: "done", Type: release.StepComplete, Status: release.StepPending},
+		},
 	}}
 	handler, err := adminbff.New(&queryStub{}, releases, authenticator{roles: []string{"RELEASE_APPROVER"}})
 	if err != nil {
@@ -113,6 +118,9 @@ func TestBFFMapsManualApprovalRolesAndServerCapabilities(t *testing.T) {
 	}
 	if !bytes.Contains(response.Body.Bytes(), []byte(`"allowedActions":["APPROVE","REJECT"]`)) || !bytes.Contains(response.Body.Bytes(), []byte(`"currentStep":"review"`)) {
 		t.Fatalf("manual detail = %s", response.Body.String())
+	}
+	if !bytes.Contains(response.Body.Bytes(), []byte(`{"code":"apply","status":"PENDING","type":"BASE_APPLY"}`)) {
+		t.Fatalf("template step list = %s", response.Body.String())
 	}
 }
 

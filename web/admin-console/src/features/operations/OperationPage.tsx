@@ -13,6 +13,7 @@ import {
   Select,
   Space,
   Spin,
+  Steps,
   Table,
   Tag,
   Typography,
@@ -27,6 +28,7 @@ import type {
   InteractionField,
   OperationApi,
   PageResult,
+  ReleaseAction,
   ReleaseDetail,
 } from "./types";
 
@@ -47,13 +49,22 @@ export function OperationPage({ api = operationApi }: { api?: OperationApi }) {
   const [submitting, setSubmitting] = useState(false);
   const [addOpen, setAddOpen] = useState(false);
   const [reviewOpen, setReviewOpen] = useState(false);
+  const [releaseTypeCode, setReleaseTypeCode] = useState<string>();
+  const [description, setDescription] = useState("");
+  const [comment, setComment] = useState("");
   const [error, setError] = useState<string>();
 
   const load = useCallback(async () => {
     setLoading(true);
     setError(undefined);
     try {
-      setPage(await api.queryPage({ modelCode, scope, queryType: "ALL" }));
+      const loaded = await api.queryPage({ modelCode, scope, queryType: "ALL" });
+      setPage(loaded);
+      setReleaseTypeCode((current) =>
+        loaded.releaseTypes.some((releaseType) => releaseType.available && releaseType.code === current)
+          ? current
+          : loaded.releaseTypes.find((releaseType) => releaseType.available)?.code,
+      );
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "加载配置失败");
     } finally {
@@ -78,6 +89,7 @@ export function OperationPage({ api = operationApi }: { api?: OperationApi }) {
     key: field.name,
     render: (value: string | undefined) => renderValue(field, value),
   }));
+  const selectedReleaseType = page?.releaseTypes.find((releaseType) => releaseType.code === releaseTypeCode);
 
   const openAdd = () => {
     const defaults = Object.fromEntries(
@@ -103,13 +115,13 @@ export function OperationPage({ api = operationApi }: { api?: OperationApi }) {
   };
 
   const createRelease = async () => {
-    if (!page || drafts.length === 0) return;
+    if (!page || drafts.length === 0 || !selectedReleaseType?.available) return;
     setSubmitting(true);
     try {
       const request: CreateReleaseRequest = {
         modelCode: page.modelCode,
-        releaseTypeCode: page.releaseTypes.find((type) => type.available)?.code ?? "direct",
-        description: `Add ${drafts.length} configuration record(s)`,
+        releaseTypeCode: selectedReleaseType.code,
+        description: description.trim() || `Add ${drafts.length} configuration record(s)`,
         scope,
         items: drafts.map((draft) => ({
           action: "ADD",
@@ -127,17 +139,22 @@ export function OperationPage({ api = operationApi }: { api?: OperationApi }) {
     }
   };
 
-  const act = async () => {
-    if (!release || release.allowedActions.length === 0) return;
-    const action = release.allowedActions[0];
+  const act = async (action: ReleaseAction) => {
+    if (!release || !release.allowedActions.includes(action)) return;
+    if (action === "REJECT" && comment.trim() === "") {
+      message.warning("驳回时必须填写原因");
+      return;
+    }
     setSubmitting(true);
     try {
       const next = await api.actOnRelease(release.order.id, crypto.randomUUID(), {
         action,
         expectedOrderRevision: release.order.entityRevision,
         expectedCurrentStep: release.order.currentStep,
+        ...(comment.trim() ? { comment: comment.trim() } : {}),
       });
       setRelease(next);
+      setComment("");
       if (next.order.status === "SUCCEEDED") {
         setDrafts([]);
         setReviewOpen(false);
@@ -177,7 +194,7 @@ export function OperationPage({ api = operationApi }: { api?: OperationApi }) {
         </Space>
       </Flex>
 
-      {error ? <Alert type="error" message="加载失败" description={error} showIcon /> : null}
+      {error ? <Alert type="error" title="加载失败" description={error} showIcon /> : null}
       <Card
         title={page?.modelName ?? "配置"}
         extra={
@@ -215,7 +232,7 @@ export function OperationPage({ api = operationApi }: { api?: OperationApi }) {
 
       <Drawer title="审阅差异与发布" size="large" open={reviewOpen} onClose={() => setReviewOpen(false)}>
         <Space orientation="vertical" size={16} className="operation-review">
-          <Alert type="info" showIcon message="所有修改仍在浏览器草稿中；创建发布单不会立即改写配置。" />
+          <Alert type="info" showIcon title="所有修改仍在浏览器草稿中；创建发布单不会立即改写配置。" />
           {drafts.map((draft, index) => (
             <Card key={draft.id} size="small" title={`ADD #${index + 1}`}>
               <Descriptions column={1} size="small">
@@ -228,22 +245,85 @@ export function OperationPage({ api = operationApi }: { api?: OperationApi }) {
             </Card>
           ))}
           {!release ? (
-            <Button type="primary" loading={submitting} onClick={() => void createRelease()}>
-              创建发布单
-            </Button>
+            <Card title="发布信息" size="small">
+              <Space orientation="vertical" size={12} className="operation-full-width">
+                <label htmlFor="release-type">发布方式</label>
+                <Select
+                  id="release-type"
+                  aria-label="发布方式"
+                  value={releaseTypeCode}
+                  onChange={setReleaseTypeCode}
+                  placeholder="请选择发布方式"
+                  options={(page?.releaseTypes ?? []).map((releaseType) => ({
+                    value: releaseType.code,
+                    label: `${releaseType.name} · ${releaseType.templateCode}${releaseType.available ? "" : `（不可用：${releaseType.unavailableReasonCode ?? "UNKNOWN"}）`}`,
+                    disabled: !releaseType.available,
+                  }))}
+                />
+                <label htmlFor="release-description">发布说明</label>
+                <Input.TextArea
+                  id="release-description"
+                  aria-label="发布说明"
+                  value={description}
+                  onChange={(event) => setDescription(event.target.value)}
+                  placeholder="说明本次变更的目的与影响"
+                  autoSize={{ minRows: 2, maxRows: 4 }}
+                />
+                {selectedReleaseType ? (
+                  <Typography.Text type="secondary">将使用模板 {selectedReleaseType.templateCode}</Typography.Text>
+                ) : (
+                  <Alert type="warning" showIcon title="当前模型没有可用的发布方式" />
+                )}
+                <Button type="primary" loading={submitting} disabled={!selectedReleaseType?.available} onClick={() => void createRelease()}>
+                  创建发布单
+                </Button>
+              </Space>
+            </Card>
           ) : (
             <Card title="发布进度">
               <Descriptions column={1} size="small">
                 <Descriptions.Item label="Release ID">{release.order.id}</Descriptions.Item>
                 <Descriptions.Item label="状态">{release.order.status}</Descriptions.Item>
-                <Descriptions.Item label="当前步骤">{release.order.currentStep}</Descriptions.Item>
+                <Descriptions.Item label="当前步骤">{release.order.currentStep} · {release.order.currentStepType}</Descriptions.Item>
+                <Descriptions.Item label="步骤状态">{release.order.currentStepStatus}</Descriptions.Item>
                 <Descriptions.Item label="Entity revision">{release.order.entityRevision}</Descriptions.Item>
               </Descriptions>
-              {release.allowedActions.length > 0 ? (
-                <Button type="primary" loading={submitting} onClick={() => void act()}>
-                  {actionLabel(release)}
-                </Button>
+              <Steps
+                responsive
+                current={Math.max(0, release.steps.findIndex((step) => step.code === release.order.currentStep))}
+                items={release.steps.map((step) => ({
+                  title: stepLabel(step.type),
+                  content: `${step.code} · ${step.status}`,
+                  status: stepVisualStatus(step.status, step.code === release.order.currentStep),
+                }))}
+              />
+              {release.allowedActions.some((action) => action === "APPROVE" || action === "REJECT") ? (
+                <Space orientation="vertical" className="operation-full-width">
+                  <label htmlFor="approval-comment">审批意见</label>
+                  <Input.TextArea
+                    id="approval-comment"
+                    aria-label="审批意见"
+                    value={comment}
+                    onChange={(event) => setComment(event.target.value)}
+                    placeholder="批准可选；驳回必填"
+                    autoSize={{ minRows: 2, maxRows: 4 }}
+                  />
+                </Space>
               ) : null}
+              <Space wrap>
+                {release.allowedActions.map((action) => (
+                  <Button
+                    key={action}
+                    type={action === "REJECT" ? "default" : "primary"}
+                    danger={action === "REJECT"}
+                    loading={submitting}
+                    disabled={submitting}
+                    onClick={() => void act(action)}
+                  >
+                    {actionLabel(action, release)}
+                  </Button>
+                ))}
+              </Space>
             </Card>
           )}
         </Space>
@@ -284,9 +364,33 @@ function toCanonicalInput(field: InteractionField, value: unknown): string {
   return String(value);
 }
 
-function actionLabel(release: ReleaseDetail) {
-  const action = release.allowedActions[0];
-  if (action === "ADVANCE") return "推进到 COMPLETE";
-  if (release.order.currentStep === "COMPLETE") return "完成发布";
-  return "执行 BASE_APPLY";
+function actionLabel(action: ReleaseAction, release: ReleaseDetail) {
+  if (action === "APPROVE") return "批准";
+  if (action === "REJECT") return "驳回";
+  if (action === "ADVANCE") return "推进下一步";
+  if (release.order.currentStepType === "MANUAL_REVIEW") return "提交人工审批";
+  if (release.order.currentStepType === "COMPLETE") return "完成发布";
+  return `执行 ${release.order.currentStepType}`;
+}
+
+function stepLabel(type: string) {
+  switch (type) {
+    case "MANUAL_REVIEW":
+      return "人工复核";
+    case "BASE_APPLY":
+      return "基础生效";
+    case "COMPARE":
+      return "对比验证";
+    case "COMPLETE":
+      return "完成";
+    default:
+      return type;
+  }
+}
+
+function stepVisualStatus(status: string, current: boolean): "wait" | "process" | "finish" | "error" {
+  if (status === "REJECTED") return "error";
+  if (status === "EXECUTED" || status === "APPROVED") return "finish";
+  if (current && (status === "PENDING" || status === "EXECUTING")) return "process";
+  return "wait";
 }

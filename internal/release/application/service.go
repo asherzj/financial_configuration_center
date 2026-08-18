@@ -113,6 +113,13 @@ type OrderView struct {
 	CanAdvance        bool                   `json:"canAdvance"`
 	CanApprove        bool                   `json:"canApprove"`
 	CanReject         bool                   `json:"canReject"`
+	Steps             []StepView             `json:"steps"`
+}
+
+type StepView struct {
+	Code   string             `json:"code"`
+	Type   release.StepType   `json:"type"`
+	Status release.StepStatus `json:"status"`
 }
 
 type StoredRequestResult struct {
@@ -431,7 +438,12 @@ func (service *Service) ready() error {
 
 func project(order *release.Order) OrderView {
 	step := order.CurrentStep()
-	view := OrderView{ID: order.ID(), Status: order.Status(), CurrentStepCode: step.Code, CurrentStep: step.Type, CurrentStepStatus: step.Status, Revision: order.Revision()}
+	state := order.State()
+	steps := make([]StepView, len(state.Steps))
+	for index, stateStep := range state.Steps {
+		steps[index] = StepView{Code: stateStep.Code, Type: stateStep.Type, Status: stateStep.Status}
+	}
+	view := OrderView{ID: order.ID(), Status: order.Status(), CurrentStepCode: step.Code, CurrentStep: step.Type, CurrentStepStatus: step.Status, Revision: order.Revision(), Steps: steps}
 	applyCapabilities(&view)
 	return view
 }

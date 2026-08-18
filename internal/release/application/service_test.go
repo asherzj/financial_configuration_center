@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"reflect"
 	"testing"
 	"time"
 
@@ -113,7 +114,7 @@ func TestCreateAndActionRequestsAreReplaySafe(t *testing.T) {
 	if err != nil {
 		t.Fatalf("replay create: %v", err)
 	}
-	if replayedCreate != created || len(store.orders) != 1 {
+	if !reflect.DeepEqual(replayedCreate, created) || len(store.orders) != 1 {
 		t.Fatalf("create replay = %+v, orders = %d; want %+v, 1", replayedCreate, len(store.orders), created)
 	}
 	changedCreate := create
@@ -131,7 +132,7 @@ func TestCreateAndActionRequestsAreReplaySafe(t *testing.T) {
 	if err != nil {
 		t.Fatalf("replay action: %v", err)
 	}
-	if replayedAction != executed || store.outboxEvents != 1 {
+	if !reflect.DeepEqual(replayedAction, executed) || store.outboxEvents != 1 {
 		t.Fatalf("action replay = %+v, outbox = %d; want %+v, 1", replayedAction, store.outboxEvents, executed)
 	}
 
@@ -281,11 +282,15 @@ func (transaction *fakeTransaction) InsertOrder(_ context.Context, order *releas
 	transaction.orders[order.ID()] = order.Clone()
 	state := order.State()
 	step := state.Steps[state.CurrentStep]
+	steps := make([]application.StepView, len(state.Steps))
+	for index, stateStep := range state.Steps {
+		steps[index] = application.StepView{Code: stateStep.Code, Type: stateStep.Type, Status: stateStep.Status}
+	}
 	transaction.createResults[state.CreatedBy+"\x00"+state.IdempotencyKey] = application.StoredRequestResult{
 		RequestDigest: state.RequestDigest,
 		Result: application.OrderView{
 			ID: state.ID, Status: state.Status, CurrentStepCode: step.Code, CurrentStep: step.Type, CurrentStepStatus: step.Status,
-			Revision: state.Revision, CanExecute: step.Status == release.StepPending,
+			Revision: state.Revision, CanExecute: step.Status == release.StepPending, Steps: steps,
 		},
 	}
 	return nil

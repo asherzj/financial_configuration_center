@@ -327,8 +327,15 @@ export interface components {
             rows: Record<string, never>[];
             projectionFields: string[];
             interactionFields: Record<string, never>[];
-            releaseTypes: Record<string, never>[];
+            releaseTypes: components["schemas"]["ReleaseTypeMetadata"][];
             snapshot: components["schemas"]["SnapshotIdentity"];
+        };
+        ReleaseTypeMetadata: {
+            code: string;
+            name: string;
+            templateCode: string;
+            available: boolean;
+            unavailableReasonCode?: string;
         };
         ReleaseItemInput: {
             /** @enum {string} */
@@ -368,10 +375,26 @@ export interface components {
             comment?: string;
         };
         ReleaseOrderDetail: {
-            order: Record<string, never>;
+            order: {
+                id: string;
+                /** @enum {string} */
+                status: "IN_PROGRESS" | "SUCCEEDED" | "REJECTED";
+                /** @description Stable step code from the template snapshot. */
+                currentStep: string;
+                /** @enum {string} */
+                currentStepType: "MANUAL_REVIEW" | "BASE_APPLY" | "COMPARE" | "COMPLETE";
+                /** @enum {string} */
+                currentStepStatus: "PENDING" | "EXECUTING" | "EXECUTED" | "APPROVED" | "REJECTED";
+                /** Format: int64 */
+                entityRevision: number;
+            };
             items: Record<string, never>[];
-            steps: Record<string, never>[];
-            allowedActions: string[];
+            steps: {
+                code: string;
+                type: string;
+                status: string;
+            }[];
+            allowedActions: ("EXECUTE" | "ADVANCE" | "APPROVE" | "REJECT")[];
         };
         RevealFieldRequest: {
             modelCode: string;

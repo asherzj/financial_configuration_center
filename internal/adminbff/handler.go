@@ -268,9 +268,13 @@ func releaseDetail(view application.OrderView) map[string]any {
 	if view.CanAdvance {
 		allowed = append(allowed, "ADVANCE")
 	}
+	steps := make([]map[string]any, len(view.Steps))
+	for index, step := range view.Steps {
+		steps[index] = map[string]any{"code": step.Code, "type": step.Type, "status": step.Status}
+	}
 	return map[string]any{
 		"order": map[string]any{"id": view.ID, "status": view.Status, "currentStep": view.CurrentStepCode, "currentStepType": view.CurrentStep, "currentStepStatus": view.CurrentStepStatus, "entityRevision": view.Revision},
-		"items": []any{}, "steps": []any{map[string]any{"code": view.CurrentStepCode, "type": view.CurrentStep, "status": view.CurrentStepStatus}}, "allowedActions": allowed,
+		"items": []any{}, "steps": steps, "allowedActions": allowed,
 	}
 }
 

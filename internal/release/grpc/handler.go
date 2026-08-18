@@ -133,11 +133,15 @@ func project(view application.OrderView) *controlv1.ReleaseOrderDetail {
 	if view.CanAdvance {
 		allowed = append(allowed, commonv1.ReleaseAction_RELEASE_ACTION_ADVANCE)
 	}
+	steps := make([]*controlv1.ReleaseStepState, len(view.Steps))
+	for index, step := range view.Steps {
+		steps[index] = &controlv1.ReleaseStepState{StepCode: step.Code, StepType: string(step.Type), Sequence: int32(index), Status: string(step.Status), EntityRevision: int64(view.Revision)}
+	}
 	return &controlv1.ReleaseOrderDetail{
 		Order: &controlv1.ReleaseOrder{
 			Id: view.ID, Status: toReleaseStatus(view.Status), CurrentStepCode: view.CurrentStepCode, EntityRevision: int64(view.Revision),
 		},
-		Items: []*controlv1.ReleaseItem{}, Steps: []*controlv1.ReleaseStepState{{StepCode: view.CurrentStepCode, StepType: string(view.CurrentStep), Status: string(view.CurrentStepStatus), EntityRevision: int64(view.Revision)}},
+		Items: []*controlv1.ReleaseItem{}, Steps: steps,
 		AllowedActions: allowed,
 	}
 }

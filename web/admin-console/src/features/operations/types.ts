@@ -36,7 +36,13 @@ export interface PageResult {
   rows: PageRow[];
   projectionFields: string[];
   interactionFields: InteractionField[];
-  releaseTypes: Array<{ code: string; name: string; templateCode: string; available: boolean }>;
+  releaseTypes: Array<{
+    code: string;
+    name: string;
+    templateCode: string;
+    available: boolean;
+    unavailableReasonCode?: string;
+  }>;
   page: { number: number; size: number; totalNumber: number; totalPages: number };
   snapshot: {
     serverEpoch: string;
@@ -65,14 +71,18 @@ export interface CreateReleaseRequest {
 export interface ReleaseDetail {
   order: {
     id: string;
-    status: "IN_PROGRESS" | "SUCCEEDED";
-    currentStep: "BASE_APPLY" | "COMPLETE";
+    status: "IN_PROGRESS" | "SUCCEEDED" | "REJECTED";
+    currentStep: string;
+    currentStepType: "MANUAL_REVIEW" | "BASE_APPLY" | "COMPARE" | "COMPLETE";
+    currentStepStatus: "PENDING" | "EXECUTING" | "EXECUTED" | "APPROVED" | "REJECTED";
     entityRevision: number;
   };
   items: unknown[];
-  steps: Array<{ type: string }>;
-  allowedActions: Array<"EXECUTE" | "ADVANCE">;
+  steps: Array<{ code: string; type: string; status: string }>;
+  allowedActions: ReleaseAction[];
 }
+
+export type ReleaseAction = "EXECUTE" | "ADVANCE" | "APPROVE" | "REJECT";
 
 export interface OperationApi {
   queryPage(request: {
@@ -84,6 +94,6 @@ export interface OperationApi {
   actOnRelease(
     orderId: string,
     actionRequestId: string,
-    request: { action: "EXECUTE" | "ADVANCE"; expectedOrderRevision: number; expectedCurrentStep: string },
+    request: { action: ReleaseAction; expectedOrderRevision: number; expectedCurrentStep: string; comment?: string },
   ): Promise<ReleaseDetail>;
 }

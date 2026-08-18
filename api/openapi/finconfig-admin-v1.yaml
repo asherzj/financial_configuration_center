@@ -311,8 +311,18 @@ components:
         rows: {type: array, items: {type: object}}
         projectionFields: {type: array, items: {type: string}}
         interactionFields: {type: array, items: {type: object}}
-        releaseTypes: {type: array, items: {type: object}}
+        releaseTypes: {type: array, items: {$ref: '#/components/schemas/ReleaseTypeMetadata'}}
         snapshot: {$ref: '#/components/schemas/SnapshotIdentity'}
+    ReleaseTypeMetadata:
+      type: object
+      additionalProperties: false
+      required: [code, name, templateCode, available]
+      properties:
+        code: {type: string}
+        name: {type: string}
+        templateCode: {type: string}
+        available: {type: boolean}
+        unavailableReasonCode: {type: string}
     ReleaseItemInput:
       type: object
       additionalProperties: false
@@ -350,10 +360,29 @@ components:
       type: object
       required: [order, items, steps, allowedActions]
       properties:
-        order: {type: object}
+        order:
+          type: object
+          additionalProperties: false
+          required: [id, status, currentStep, currentStepType, currentStepStatus, entityRevision]
+          properties:
+            id: {type: string}
+            status: {type: string, enum: [IN_PROGRESS, SUCCEEDED, REJECTED]}
+            currentStep: {type: string, description: Stable step code from the template snapshot.}
+            currentStepType: {type: string, enum: [MANUAL_REVIEW, BASE_APPLY, COMPARE, COMPLETE]}
+            currentStepStatus: {type: string, enum: [PENDING, EXECUTING, EXECUTED, APPROVED, REJECTED]}
+            entityRevision: {type: integer, format: int64, minimum: 1}
         items: {type: array, items: {type: object}}
-        steps: {type: array, items: {type: object}}
-        allowedActions: {type: array, items: {type: string}}
+        steps:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            required: [code, type, status]
+            properties:
+              code: {type: string}
+              type: {type: string}
+              status: {type: string}
+        allowedActions: {type: array, items: {type: string, enum: [EXECUTE, ADVANCE, APPROVE, REJECT]}}
     RevealFieldRequest:
       type: object
       additionalProperties: false

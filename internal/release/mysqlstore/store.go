@@ -216,6 +216,24 @@ func (transaction *transaction) FindCreateResult(ctx context.Context, actor, ide
 		ID: loaded.ID, Status: release.OrderStatus(loaded.Status), CurrentStepCode: loaded.CurrentStepCode, CurrentStep: release.StepType(loaded.CurrentStepType),
 		CurrentStepStatus: release.StepStatus(loaded.CurrentStepStatus), Revision: release.EntityRevision(loaded.EntityRevision),
 	}
+	type stepProjectionRow struct {
+		Code   string
+		Type   string
+		Status string
+	}
+	var stepRows []stepProjectionRow
+	if err := transaction.db.WithContext(ctx).Raw(`
+		SELECT step_code AS code, step_type AS type, status
+		FROM release_step_states
+		WHERE release_order_id = ?
+		ORDER BY sequence_no
+	`, loaded.ID).Scan(&stepRows).Error; err != nil {
+		return application.StoredRequestResult{}, false, err
+	}
+	view.Steps = make([]application.StepView, len(stepRows))
+	for index, step := range stepRows {
+		view.Steps[index] = application.StepView{Code: step.Code, Type: release.StepType(step.Type), Status: release.StepStatus(step.Status)}
+	}
 	setCapabilities(&view)
 	return application.StoredRequestResult{
 		RequestDigest: loaded.RequestDigest,

@@ -13,6 +13,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"sync"
 	"testing"
@@ -230,7 +231,7 @@ func TestRealMySQLReleaseConcurrencyAndIdempotency(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if replayed, err := service.CreateBaseFinal(ctx, create); err != nil || replayed != created {
+	if replayed, err := service.CreateBaseFinal(ctx, create); err != nil || !reflect.DeepEqual(replayed, created) {
 		t.Fatalf("create replay = %+v, %v; want %+v", replayed, err, created)
 	}
 	changed := create
@@ -263,7 +264,7 @@ func TestRealMySQLReleaseConcurrencyAndIdempotency(t *testing.T) {
 		}
 		if first.ID == "" {
 			first = result.view
-		} else if result.view != first {
+		} else if !reflect.DeepEqual(result.view, first) {
 			t.Fatalf("action results differ: %+v and %+v", first, result.view)
 		}
 	}
@@ -355,7 +356,7 @@ func TestRealMySQLManualApprovalJourney(t *testing.T) {
 		Scope: release.Scope{Region: "cn", Environment: "production"}, Actor: "creator@example.com",
 		Items: []application.AddDraft{{Data: map[string]string{"route_code": "approval-route", "priority": "1"}, ExpectedCollectionRevision: 7}},
 	})
-	if err != nil || created.CurrentStep != release.StepManualReview || created.CurrentStepStatus != release.StepPending || !created.CanExecute {
+	if err != nil || created.CurrentStep != release.StepManualReview || created.CurrentStepStatus != release.StepPending || !created.CanExecute || len(created.Steps) != 3 || created.Steps[1].Code != "apply" {
 		t.Fatalf("create = %+v, %v", created, err)
 	}
 
@@ -384,7 +385,7 @@ func TestRealMySQLManualApprovalJourney(t *testing.T) {
 	if err != nil || approved.Revision != 3 || !approved.CanAdvance {
 		t.Fatalf("approve = %+v, %v", approved, err)
 	}
-	if replayed, err := service.Act(ctx, approveCommand); err != nil || replayed != approved {
+	if replayed, err := service.Act(ctx, approveCommand); err != nil || !reflect.DeepEqual(replayed, approved) {
 		t.Fatalf("approve replay = %+v, %v; want %+v", replayed, err, approved)
 	}
 
