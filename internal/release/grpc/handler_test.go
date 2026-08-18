@@ -49,6 +49,14 @@ func TestReleaseHandlerMapsCreateAndAction(t *testing.T) {
 	if err != nil || commands.lastAct.Action != application.ActionApprove || commands.lastAct.Comment != "reviewed" || len(commands.lastAct.Roles) != 1 || commands.lastAct.Roles[0] != "RELEASE_APPROVER" {
 		t.Fatalf("approval command=%+v err=%v", commands.lastAct, err)
 	}
+	commands.act = application.OrderView{ID: "order", Status: release.OrderRolledBack, CurrentStepCode: "apply-overlay", CurrentStep: release.StepOverlayApply, CurrentStepStatus: release.StepRolledBack, Revision: 3}
+	rolledBack, err := handler.ActOnReleaseOrder(context.Background(), &controlv1.ActOnReleaseOrderRequest{
+		OrderId: "order", ActionRequestId: "rollback-id", ExpectedOrderRevision: 2,
+		ExpectedCurrentStep: "apply-overlay", Action: commonv1.ReleaseAction_RELEASE_ACTION_ROLLBACK,
+	})
+	if err != nil || commands.lastAct.Action != application.ActionRollback || rolledBack.Detail.Order.Status != commonv1.ReleaseStatus_RELEASE_STATUS_ROLLED_BACK {
+		t.Fatalf("rollback response=%+v command=%+v err=%v", rolledBack, commands.lastAct, err)
+	}
 }
 
 func TestReleaseHandlerMapsIdempotencyConflict(t *testing.T) {
@@ -76,12 +84,12 @@ func (actorResolver) Roles(context.Context) ([]string, error) {
 type commandStub struct {
 	create     application.OrderView
 	act        application.OrderView
-	lastCreate application.CreateBaseFinalCommand
+	lastCreate application.CreateReleaseCommand
 	lastAct    application.ActCommand
 	actErr     error
 }
 
-func (stub *commandStub) CreateBaseFinal(_ context.Context, command application.CreateBaseFinalCommand) (application.OrderView, error) {
+func (stub *commandStub) CreateRelease(_ context.Context, command application.CreateReleaseCommand) (application.OrderView, error) {
 	stub.lastCreate = command
 	return stub.create, nil
 }

@@ -15,7 +15,7 @@ import (
 )
 
 type Commands interface {
-	CreateBaseFinal(context.Context, application.CreateBaseFinalCommand) (application.OrderView, error)
+	CreateRelease(context.Context, application.CreateReleaseCommand) (application.OrderView, error)
 	Act(context.Context, application.ActCommand) (application.OrderView, error)
 }
 
@@ -41,23 +41,35 @@ func New(commands Commands, actors ActorResolver) (*Handler, error) {
 
 func (handler *Handler) CreateReleaseOrder(ctx context.Context, request *controlv1.CreateReleaseOrderRequest) (*controlv1.CreateReleaseOrderResponse, error) {
 	if request == nil || request.Scope == nil || strings.TrimSpace(request.ReleaseTypeCode) == "" || len(request.Items) == 0 || request.EffectiveFrom != nil || request.EffectiveUntil != nil {
-		return nil, status.Error(codes.InvalidArgument, "base-only create requires scope, release type, and ADD items without a schedule")
+		return nil, status.Error(codes.InvalidArgument, "create requires scope, release type, items, and no schedule")
 	}
 	actor, err := handler.actors.Subject(ctx)
 	if err != nil || strings.TrimSpace(actor) == "" {
 		return nil, status.Error(codes.Unauthenticated, "authenticated actor is required")
 	}
-	items := make([]application.AddDraft, len(request.Items))
+	items := make([]application.ReleaseDraft, len(request.Items))
 	for index, item := range request.Items {
-		if item == nil || item.Action != commonv1.ChangeAction_CHANGE_ACTION_ADD || item.After == nil || item.ExpectedRecordRevision != 0 || item.ExpectedCollectionRevision <= 0 {
-			return nil, status.Error(codes.InvalidArgument, "base-only release items must be ADD with after data and valid expected revisions")
+		if item == nil || item.ExpectedRecordRevision < 0 || item.ExpectedCollectionRevision <= 0 {
+			return nil, status.Error(codes.InvalidArgument, "release items require valid expected revisions")
 		}
-		items[index] = application.AddDraft{
-			Data: cloneMap(item.After), ExpectedRecordRevision: catalog.ConfigRevision(item.ExpectedRecordRevision),
+		var action release.ChangeAction
+		switch item.Action {
+		case commonv1.ChangeAction_CHANGE_ACTION_ADD:
+			action = release.ChangeAdd
+		case commonv1.ChangeAction_CHANGE_ACTION_MODIFY:
+			action = release.ChangeModify
+		case commonv1.ChangeAction_CHANGE_ACTION_DELETE:
+			action = release.ChangeDelete
+		default:
+			return nil, status.Error(codes.InvalidArgument, "release item action is invalid")
+		}
+		items[index] = application.ReleaseDraft{
+			Action: action, BaseBefore: cloneMap(item.BaseBefore), EffectiveBefore: cloneMap(item.EffectiveBefore), After: cloneMap(item.After),
+			ExpectedRecordRevision:     catalog.ConfigRevision(item.ExpectedRecordRevision),
 			ExpectedCollectionRevision: catalog.ConfigRevision(item.ExpectedCollectionRevision),
 		}
 	}
-	view, err := handler.commands.CreateBaseFinal(ctx, application.CreateBaseFinalCommand{
+	view, err := handler.commands.CreateRelease(ctx, application.CreateReleaseCommand{
 		IdempotencyKey: request.IdempotencyKey, ModelCode: request.ModelCode, ReleaseTypeCode: request.ReleaseTypeCode,
 		Scope: release.Scope{Region: request.Scope.Region, Environment: request.Scope.Environment, Stage: request.Scope.Stage},
 		Actor: actor, Items: items,
@@ -86,6 +98,8 @@ func (handler *Handler) ActOnReleaseOrder(ctx context.Context, request *controlv
 		action = application.ActionApprove
 	case commonv1.ReleaseAction_RELEASE_ACTION_REJECT:
 		action = application.ActionReject
+	case commonv1.ReleaseAction_RELEASE_ACTION_ROLLBACK:
+		action = application.ActionRollback
 	default:
 		return nil, status.Error(codes.Unimplemented, "release action is not implemented")
 	}
@@ -133,6 +147,9 @@ func project(view application.OrderView) *controlv1.ReleaseOrderDetail {
 	if view.CanAdvance {
 		allowed = append(allowed, commonv1.ReleaseAction_RELEASE_ACTION_ADVANCE)
 	}
+	if view.CanRollback {
+		allowed = append(allowed, commonv1.ReleaseAction_RELEASE_ACTION_ROLLBACK)
+	}
 	steps := make([]*controlv1.ReleaseStepState, len(view.Steps))
 	for index, step := range view.Steps {
 		steps[index] = &controlv1.ReleaseStepState{StepCode: step.Code, StepType: string(step.Type), Sequence: int32(index), Status: string(step.Status), EntityRevision: int64(view.Revision)}
@@ -153,6 +170,9 @@ func toReleaseStatus(value release.OrderStatus) commonv1.ReleaseStatus {
 	if value == release.OrderRejected {
 		return commonv1.ReleaseStatus_RELEASE_STATUS_REJECTED
 	}
+	if value == release.OrderRolledBack {
+		return commonv1.ReleaseStatus_RELEASE_STATUS_ROLLED_BACK
+	}
 	return commonv1.ReleaseStatus_RELEASE_STATUS_IN_PROGRESS
 }
 
@@ -172,6 +192,9 @@ func mapError(err error) error {
 }
 
 func cloneMap(source map[string]string) map[string]string {
+	if source == nil {
+		return nil
+	}
 	clone := make(map[string]string, len(source))
 	for key, value := range source {
 		clone[key] = value

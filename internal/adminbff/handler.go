@@ -30,7 +30,7 @@ type PageQueries interface {
 }
 
 type ReleaseCommands interface {
-	CreateBaseFinal(context.Context, application.CreateBaseFinalCommand) (application.OrderView, error)
+	CreateRelease(context.Context, application.CreateReleaseCommand) (application.OrderView, error)
 	Act(context.Context, application.ActCommand) (application.OrderView, error)
 }
 
@@ -132,15 +132,19 @@ func (handler *Handler) createRelease(writer http.ResponseWriter, request *http.
 		writeError(writer, http.StatusBadRequest, "INVALID_ARGUMENT", "release type, description, and items are required")
 		return
 	}
-	drafts := make([]application.AddDraft, len(body.Items))
+	drafts := make([]application.ReleaseDraft, len(body.Items))
 	for index, item := range body.Items {
-		if item.Action != "ADD" || item.After == nil {
-			writeError(writer, http.StatusNotImplemented, "NOT_IMPLEMENTED", "the base-only slice accepts ADD items only")
+		action := release.ChangeAction(item.Action)
+		if action != release.ChangeAdd && action != release.ChangeModify && action != release.ChangeDelete {
+			writeError(writer, http.StatusBadRequest, "INVALID_ARGUMENT", "release item action is invalid")
 			return
 		}
-		drafts[index] = application.AddDraft{Data: item.After, ExpectedRecordRevision: item.ExpectedRecordRevision, ExpectedCollectionRevision: item.ExpectedCollectionRevision}
+		drafts[index] = application.ReleaseDraft{
+			Action: action, BaseBefore: item.BaseBefore, EffectiveBefore: item.EffectiveBefore, After: item.After,
+			ExpectedRecordRevision: item.ExpectedRecordRevision, ExpectedCollectionRevision: item.ExpectedCollectionRevision,
+		}
 	}
-	result, err := handler.releases.CreateBaseFinal(request.Context(), application.CreateBaseFinalCommand{
+	result, err := handler.releases.CreateRelease(request.Context(), application.CreateReleaseCommand{
 		IdempotencyKey: idempotency, ModelCode: body.ModelCode, ReleaseTypeCode: body.ReleaseTypeCode,
 		Scope: release.Scope{Region: body.Scope.Region, Environment: body.Scope.Environment, Stage: body.Scope.Stage},
 		Actor: principal.Subject, Items: drafts,
@@ -183,6 +187,8 @@ func (handler *Handler) actOnRelease(writer http.ResponseWriter, request *http.R
 		action = application.ActionApprove
 	case "REJECT":
 		action = application.ActionReject
+	case "ROLLBACK":
+		action = application.ActionRollback
 	default:
 		writeError(writer, http.StatusNotImplemented, "NOT_IMPLEMENTED", "release action is not implemented")
 		return
@@ -267,6 +273,9 @@ func releaseDetail(view application.OrderView) map[string]any {
 	}
 	if view.CanAdvance {
 		allowed = append(allowed, "ADVANCE")
+	}
+	if view.CanRollback {
+		allowed = append(allowed, "ROLLBACK")
 	}
 	steps := make([]map[string]any, len(view.Steps))
 	for index, step := range view.Steps {

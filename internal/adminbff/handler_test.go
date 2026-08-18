@@ -124,6 +124,37 @@ func TestBFFMapsManualApprovalRolesAndServerCapabilities(t *testing.T) {
 	}
 }
 
+func TestBFFMapsOverlayReleaseAndRollbackCapability(t *testing.T) {
+	t.Parallel()
+	releases := &releaseStub{
+		created: application.OrderView{ID: "overlay-order", Status: release.OrderInProgress, CurrentStepCode: "apply-overlay", CurrentStep: release.StepOverlayApply, CurrentStepStatus: release.StepPending, Revision: 1, CanExecute: true},
+		acted:   application.OrderView{ID: "overlay-order", Status: release.OrderInProgress, CurrentStepCode: "apply-overlay", CurrentStep: release.StepOverlayApply, CurrentStepStatus: release.StepExecuted, Revision: 2, CanRollback: true},
+	}
+	handler, err := adminbff.New(&queryStub{}, releases, authenticator{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := map[string]string{"route_code": "visa", "priority": "1", "enabled": "false"}
+	created := serveJSON(t, handler, http.MethodPost, "/api/v1/releases", "overlay-create", map[string]any{
+		"modelCode": "model", "releaseTypeCode": "scope", "description": "Blue priority",
+		"scope": map[string]any{"region": "cn", "environment": "production", "stage": "blue"},
+		"items": []any{map[string]any{
+			"action": "MODIFY", "baseBefore": before, "effectiveBefore": before,
+			"after":                  map[string]string{"route_code": "visa", "priority": "2", "enabled": "false"},
+			"expectedRecordRevision": 5, "expectedCollectionRevision": 7,
+		}},
+	})
+	if created.Code != http.StatusCreated || releases.lastCreate.Items[0].Action != release.ChangeModify || releases.lastCreate.Items[0].EffectiveBefore["priority"] != "1" {
+		t.Fatalf("overlay create=%d command=%+v body=%s", created.Code, releases.lastCreate, created.Body.String())
+	}
+	rolledBack := serveJSON(t, handler, http.MethodPost, "/api/v1/releases/overlay-order/actions", "overlay-rollback", map[string]any{
+		"action": "ROLLBACK", "expectedOrderRevision": 2, "expectedCurrentStep": "apply-overlay",
+	})
+	if rolledBack.Code != http.StatusOK || releases.lastAct.Action != application.ActionRollback || !bytes.Contains(rolledBack.Body.Bytes(), []byte(`"allowedActions":["ROLLBACK"]`)) {
+		t.Fatalf("rollback=%d command=%+v body=%s", rolledBack.Code, releases.lastAct, rolledBack.Body.String())
+	}
+}
+
 type authenticator struct {
 	reject bool
 	roles  []string
@@ -149,12 +180,12 @@ func (stub *queryStub) Query(request pagequery.Request) (pagequery.Result, error
 type releaseStub struct {
 	created    application.OrderView
 	acted      application.OrderView
-	lastCreate application.CreateBaseFinalCommand
+	lastCreate application.CreateReleaseCommand
 	lastAct    application.ActCommand
 	actErr     error
 }
 
-func (stub *releaseStub) CreateBaseFinal(_ context.Context, command application.CreateBaseFinalCommand) (application.OrderView, error) {
+func (stub *releaseStub) CreateRelease(_ context.Context, command application.CreateReleaseCommand) (application.OrderView, error) {
 	stub.lastCreate = command
 	return stub.created, nil
 }

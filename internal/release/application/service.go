@@ -307,10 +307,11 @@ func (service *Service) CreateRelease(ctx context.Context, command CreateRelease
 		if err != nil {
 			return fmt.Errorf("load release catalog: %w", err)
 		}
-		if bundle.Template.Definition.FinalEffect() != release.FinalEffectOverlay {
-			return fmt.Errorf("%w: generic create currently requires an OVERLAY_FINAL release type", release.ErrInvalid)
+		finalEffect := bundle.Template.Definition.FinalEffect()
+		if finalEffect != release.FinalEffectBase && finalEffect != release.FinalEffectOverlay {
+			return fmt.Errorf("%w: release template final effect is invalid", release.ErrInvalid)
 		}
-		if strings.TrimSpace(command.Scope.Region) == "" || strings.TrimSpace(command.Scope.Environment) == "" || strings.TrimSpace(command.Scope.Stage) == "" {
+		if finalEffect == release.FinalEffectOverlay && (strings.TrimSpace(command.Scope.Region) == "" || strings.TrimSpace(command.Scope.Environment) == "" || strings.TrimSpace(command.Scope.Stage) == "") {
 			return fmt.Errorf("%w: OVERLAY_FINAL requires a full scope", release.ErrInvalid)
 		}
 
@@ -370,6 +371,37 @@ func (service *Service) CreateRelease(ctx context.Context, command CreateRelease
 		authority, err := transaction.LoadBaseAuthority(ctx, bundle.Definition.Name(), command.Scope.Environment, keys)
 		if err != nil {
 			return fmt.Errorf("load base authority: %w", err)
+		}
+		if finalEffect == release.FinalEffectBase {
+			orderID := service.ids.NewID()
+			items := make([]release.BaseFinalItemSpec, len(canonical))
+			for index, draft := range canonical {
+				if draft.action != release.ChangeAdd || draft.baseBefore != nil || draft.effectiveBefore != nil || draft.after == nil || draft.expectedRecordRevision != 0 {
+					return fmt.Errorf("%w: BASE_FINAL item %d must be ADD without before images", release.ErrInvalid, index)
+				}
+				if authority.CollectionRevision != draft.expectedCollectionRevision || authority.Records[keys[index]] != nil {
+					return fmt.Errorf("%w: BASE_FINAL item %d authority is stale", release.ErrAborted, index)
+				}
+				items[index] = release.BaseFinalItemSpec{
+					ID: service.ids.NewID(), After: *draft.after,
+					ExpectedRecordRevision: draft.expectedRecordRevision, ExpectedCollectionRevision: draft.expectedCollectionRevision,
+				}
+			}
+			now := service.clock.Now().UTC()
+			order, err := release.NewBaseFinalOrder(release.BaseFinalOrderSpec{
+				ID: orderID, ReleaseNumber: service.ids.NewReleaseNumber(now), IdempotencyKey: command.IdempotencyKey,
+				ModelCode: command.ModelCode, TemplateCode: bundle.Template.Code, TemplateVersion: bundle.Template.Version,
+				ReleaseTypeCode: bundle.Template.ReleaseTypeCode, RequestDigest: requestDigest, Scope: command.Scope,
+				CreatedBy: command.Actor, CreatedAt: now, Items: items, Template: bundle.Template.Definition,
+			})
+			if err != nil {
+				return err
+			}
+			if err := transaction.InsertOrder(ctx, order); err != nil {
+				return fmt.Errorf("insert release order: %w", err)
+			}
+			created = order
+			return nil
 		}
 		rules, err := transaction.LoadOverlayRules(ctx, bundle.Definition.Name(), command.Scope, keys)
 		if err != nil {
