@@ -23,6 +23,8 @@ import (
 	"github.com/asherzj/financial_configuration_center/internal/configserver"
 	"github.com/asherzj/financial_configuration_center/internal/distribution/mysqlsource"
 	"github.com/asherzj/financial_configuration_center/internal/distribution/snapshot"
+	"github.com/asherzj/financial_configuration_center/internal/outbox"
+	outboxmysqlstore "github.com/asherzj/financial_configuration_center/internal/outbox/mysqlstore"
 	"github.com/asherzj/financial_configuration_center/internal/pagequery"
 	platformmysql "github.com/asherzj/financial_configuration_center/internal/platform/mysql"
 	"github.com/asherzj/financial_configuration_center/internal/platform/mysql/migrations"
@@ -32,6 +34,109 @@ import (
 	"github.com/asherzj/financial_configuration_center/sdk/finconfig"
 	drivermysql "github.com/go-sql-driver/mysql"
 )
+
+func TestRealMySQLOutboxMultiWorkerLeaseCAS(t *testing.T) {
+	dsn := isolatedDatabase(t)
+	ctx := context.Background()
+	database, err := platformmysql.Open(ctx, platformmysql.Config{DSN: dsn, MaxOpenConns: 8, MaxIdleConns: 8, ConnMaxLifetime: time.Minute, ConnMaxIdleTime: time.Minute})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = database.Close() })
+	storeA, err := outboxmysqlstore.New(database)
+	if err != nil {
+		t.Fatal(err)
+	}
+	storeB, _ := outboxmysqlstore.New(database)
+	now := time.Date(2026, 8, 19, 9, 0, 0, 0, time.UTC)
+	raw, err := sql.Open("mysql", dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer raw.Close()
+	for index := 1; index <= 3; index++ {
+		if _, err := raw.Exec(`
+			INSERT INTO outbox_events (
+				id, aggregate_type, aggregate_id, event_type, payload_version, payload,
+				idempotency_key, status, lease_revision, attempts, next_attempt_at, created_at, updated_at
+			) VALUES (?, 'RELEASE_ORDER', 'order', 'CONFIGURATION_CHANGED', 1, JSON_OBJECT('schemaVersion', 1), ?, 'PENDING', 1, 0, ?, ?, ?)
+		`, fmt.Sprintf("10000000-0000-4000-8000-%012d", index), fmt.Sprintf("event-%d", index), now, now, now); err != nil {
+			t.Fatal(err)
+		}
+	}
+	type claimResult struct {
+		events []outbox.Event
+		err    error
+	}
+	claims := make(chan claimResult, 2)
+	start := make(chan struct{})
+	var wait sync.WaitGroup
+	for _, input := range []struct {
+		store  *outboxmysqlstore.Store
+		worker string
+	}{{storeA, "relay-a"}, {storeB, "relay-b"}} {
+		wait.Add(1)
+		go func() {
+			defer wait.Done()
+			<-start
+			events, claimErr := input.store.Claim(ctx, outbox.ClaimRequest{WorkerID: input.worker, Limit: 2, Now: now, LeaseDuration: 30 * time.Second})
+			claims <- claimResult{events: events, err: claimErr}
+		}()
+	}
+	close(start)
+	wait.Wait()
+	close(claims)
+	seen := make(map[string]outbox.Event)
+	for claim := range claims {
+		if claim.err != nil {
+			t.Fatal(claim.err)
+		}
+		for _, event := range claim.events {
+			if _, duplicate := seen[event.ID]; duplicate {
+				t.Fatalf("event %s was claimed twice", event.ID)
+			}
+			seen[event.ID] = event
+		}
+	}
+	if len(seen) != 3 {
+		t.Fatalf("claimed %d events, want 3", len(seen))
+	}
+	for _, event := range seen {
+		stale := event
+		stale.LeaseRevision--
+		if err := storeA.MarkSent(ctx, stale, now); !errors.Is(err, outbox.ErrLeaseLost) {
+			t.Fatalf("stale lease update = %v", err)
+		}
+		owner := storeA
+		if event.LockedBy == "relay-b" {
+			owner = storeB
+		}
+		if err := owner.MarkSent(ctx, event, now); err != nil {
+			t.Fatal(err)
+		}
+	}
+	assertCount(t, raw, `SELECT COUNT(*) FROM outbox_events WHERE status = 'SENT'`, 3)
+
+	if _, err := raw.Exec(`
+		INSERT INTO outbox_events (
+			id, aggregate_type, aggregate_id, event_type, payload_version, payload,
+			idempotency_key, status, lease_revision, attempts, next_attempt_at,
+			locked_by, locked_until, created_at, updated_at
+		) VALUES ('20000000-0000-4000-8000-000000000001', 'RELEASE_ORDER', 'order', 'CONFIGURATION_CHANGED', 1,
+			JSON_OBJECT('schemaVersion', 1), 'expired-event', 'PROCESSING', 4, 1, ?, 'dead-relay', ?, ?, ?)
+	`, now, now.Add(-time.Second), now, now); err != nil {
+		t.Fatal(err)
+	}
+	reclaimed, err := storeA.Claim(ctx, outbox.ClaimRequest{WorkerID: "relay-a", Limit: 1, Now: now, LeaseDuration: 30 * time.Second})
+	if err != nil || len(reclaimed) != 1 || reclaimed[0].LeaseRevision != 5 || reclaimed[0].Attempts != 2 {
+		t.Fatalf("expired lease reclaim = %+v, %v", reclaimed, err)
+	}
+	status, err := storeA.MarkFailed(ctx, reclaimed[0], "still unavailable", now.Add(time.Minute), 2, now)
+	if err != nil || status != outbox.StatusDeadLetter {
+		t.Fatalf("dead letter = %s, %v", status, err)
+	}
+	assertCount(t, raw, `SELECT COUNT(*) FROM outbox_events WHERE status = 'DEAD_LETTER' AND lease_revision = 6`, 1)
+}
 
 func TestRealMySQLReleaseConcurrencyAndIdempotency(t *testing.T) {
 	dsn := isolatedDatabase(t)
