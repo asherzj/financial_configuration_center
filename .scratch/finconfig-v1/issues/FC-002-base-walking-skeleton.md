@@ -1,6 +1,6 @@
 # FC-002 Base-only walking skeleton
 
-- Status: in-progress
+- Status: done
 - Blocked by: FC-001 (done)
 - Spec: acceptance scenarios 1, 2
 
@@ -22,4 +22,7 @@ One real Environment-scoped base change travels from browser to Release, MySQL, 
 
 ## Evidence
 
-Not run.
+- `TestRealMySQLHTTPWalkingSkeleton` exercises authenticated HTTP QueryPage, Release creation/actions, the transactional MySQL apply, immutable snapshot refresh, QueryPage visibility and SDK retrieval without a direct record mutation route.
+- The walking skeleton passed against MySQL 8.4.11 and MySQL 8.0.46; `TestRealMySQLBaseFinalTransaction` also verifies production-only persistence while staging remains empty.
+- Snapshot and SDK suites cover last-known-good retention on failed refresh, digest validation, identity reset and callback-before-swap behavior.
+- Full verification passed: `go test ./...`, `go test -race ./...`, `go vet ./...`, `go build ./...`, plus web lint, typecheck, tests and production build.

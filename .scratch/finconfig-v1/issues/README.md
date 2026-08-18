@@ -5,8 +5,8 @@ No repository issue tracker is configured, so these files are the implementation
 | ID | Slice | Blockers | Status |
 |---|---|---|---|
 | FC-001 | Contract/toolchain spine | — | done |
-| FC-002 | Base-only walking skeleton | FC-001 | in-progress |
-| FC-003 | Concurrency and durability | FC-002 | blocked |
+| FC-002 | Base-only walking skeleton | FC-001 | done |
+| FC-003 | Concurrency and durability | FC-002 | ready |
 | FC-004 | Manual approval workflow | FC-003 | blocked |
 | FC-005 | Scope Overlay | FC-004 | blocked |
 | FC-006 | Percentage rollout | FC-005 | blocked |

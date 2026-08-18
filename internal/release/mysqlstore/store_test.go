@@ -1,17 +1,21 @@
 package mysqlstore_test
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"runtime"
 	"testing"
 	"time"
 
+	"github.com/asherzj/financial_configuration_center/internal/adminbff"
 	catalog "github.com/asherzj/financial_configuration_center/internal/catalog/domain"
 	"github.com/asherzj/financial_configuration_center/internal/configserver"
 	"github.com/asherzj/financial_configuration_center/internal/distribution/mysqlsource"
@@ -25,6 +29,101 @@ import (
 	"github.com/asherzj/financial_configuration_center/sdk/finconfig"
 	drivermysql "github.com/go-sql-driver/mysql"
 )
+
+func TestRealMySQLHTTPWalkingSkeleton(t *testing.T) {
+	dsn := isolatedDatabase(t)
+	ctx := context.Background()
+	database, err := platformmysql.Open(ctx, platformmysql.Config{DSN: dsn, MaxOpenConns: 4, MaxIdleConns: 2, ConnMaxLifetime: time.Minute, ConnMaxIdleTime: time.Minute})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = database.Close() })
+	store, err := mysqlstore.New(database)
+	if err != nil {
+		t.Fatal(err)
+	}
+	clock := fixedClock{now: time.Date(2026, 8, 19, 7, 0, 0, 0, time.UTC)}
+	service := application.NewService(store, &ids{values: []string{"018fb4a7-a189-7216-8df4-c9f0aad7166e", "018fb4a7-a8c8-7a3f-b370-ce86eeaf5c9d"}}, clock)
+	distributionSource, err := mysqlsource.New(database)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager, err := snapshot.NewManager(distributionSource, snapshot.IdentitySeed{ServerEpoch: "epoch-http", ServerInstanceID: "server-http", SnapshotInstance: "snapshot-http"}, clock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manager.Refresh(ctx, "production"); err != nil {
+		t.Fatal(err)
+	}
+	handler, err := adminbff.New(pagequery.New(manager), service, httpActor{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	initial := postJSON(t, handler, "/api/v1/query-page", "", map[string]any{"modelCode": "payment-route-admin", "scope": map[string]string{"region": "cn", "environment": "production"}, "queryType": "ALL"})
+	if initial.Code != http.StatusOK || !bytes.Contains(initial.Body.Bytes(), []byte(`"rows":[]`)) {
+		t.Fatalf("initial query = %d %s", initial.Code, initial.Body.String())
+	}
+	created := postJSON(t, handler, "/api/v1/releases", "018fb4a7-afd0-7d19-8177-790193deaf14", map[string]any{
+		"modelCode": "payment-route-admin", "releaseTypeCode": "direct", "description": "Add visa route",
+		"scope": map[string]string{"region": "cn", "environment": "production"},
+		"items": []any{map[string]any{"action": "ADD", "after": map[string]string{"route_code": "visa-cn", "priority": "+0007"}, "expectedRecordRevision": 0, "expectedCollectionRevision": 7}},
+	})
+	if created.Code != http.StatusCreated {
+		t.Fatalf("create = %d %s", created.Code, created.Body.String())
+	}
+	var detail struct {
+		Order struct {
+			ID             string `json:"id"`
+			CurrentStep    string `json:"currentStep"`
+			EntityRevision uint64 `json:"entityRevision"`
+			Status         string `json:"status"`
+		} `json:"order"`
+	}
+	if err := json.Unmarshal(created.Body.Bytes(), &detail); err != nil {
+		t.Fatal(err)
+	}
+	actions := []struct {
+		id, action, step string
+		revision         uint64
+	}{
+		{"018fb4a7-b751-7690-a20b-6266d78a024a", "EXECUTE", "BASE_APPLY", 1},
+		{"018fb4a7-be8a-706d-b953-967f6f92c14a", "ADVANCE", "BASE_APPLY", 2},
+		{"018fb4a7-c5d0-749e-b977-ac6be1f2bd65", "EXECUTE", "COMPLETE", 3},
+	}
+	for _, action := range actions {
+		response := postJSON(t, handler, "/api/v1/releases/"+detail.Order.ID+"/actions", action.id, map[string]any{"action": action.action, "expectedOrderRevision": action.revision, "expectedCurrentStep": action.step})
+		if response.Code != http.StatusOK {
+			t.Fatalf("%s = %d %s", action.action, response.Code, response.Body.String())
+		}
+		if err := json.Unmarshal(response.Body.Bytes(), &detail); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if detail.Order.Status != "SUCCEEDED" {
+		t.Fatalf("completed detail = %+v", detail)
+	}
+	if _, err := manager.Refresh(ctx, "production"); err != nil {
+		t.Fatal(err)
+	}
+	queried := postJSON(t, handler, "/api/v1/query-page", "", map[string]any{"modelCode": "payment-route-admin", "scope": map[string]string{"region": "cn", "environment": "production"}, "queryType": "ALL"})
+	if queried.Code != http.StatusOK || !bytes.Contains(queried.Body.Bytes(), []byte(`"priority":"7"`)) {
+		t.Fatalf("published query = %d %s", queried.Code, queried.Body.String())
+	}
+	configService := configserver.New(manager, distributionSource)
+	sdkClient, err := finconfig.New(finconfig.Config{ConsumerID: "payment-service", ClientID: "pod-http", Environment: "production", Transport: configTransport{service: configService}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := sdkClient.Refresh(ctx); err != nil {
+		t.Fatal(err)
+	}
+	definition, _ := manager.Current().Definition("payment_routes")
+	record, _ := definition.NewRecord("production", map[string]string{"route_code": "visa-cn", "priority": "7"})
+	if sdkRecord, ok := sdkClient.GetByKey("payment_routes", record.RecordKey); !ok || sdkRecord.Values["priority"] != "7" {
+		t.Fatalf("SDK result = %+v, %t", sdkRecord, ok)
+	}
+}
 
 func TestRealMySQLBaseFinalTransaction(t *testing.T) {
 	dsn := isolatedDatabase(t)
@@ -258,6 +357,28 @@ func (ids *ids) NewID() string {
 }
 
 func (*ids) NewReleaseNumber(time.Time) string { return "REL-20260819-0001" }
+
+type httpActor struct{}
+
+func (httpActor) Authenticate(*http.Request) (adminbff.Principal, error) {
+	return adminbff.Principal{Subject: "operator@example.com"}, nil
+}
+
+func postJSON(t *testing.T, handler http.Handler, path, idempotency string, body any) *httptest.ResponseRecorder {
+	t.Helper()
+	encoded, err := json.Marshal(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodPost, path, bytes.NewReader(encoded))
+	request.Header.Set("Content-Type", "application/json")
+	if idempotency != "" {
+		request.Header.Set("Idempotency-Key", idempotency)
+	}
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	return response
+}
 
 type configTransport struct{ service *configserver.Service }
 
