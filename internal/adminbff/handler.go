@@ -143,6 +143,7 @@ func (handler *Handler) createRelease(writer http.ResponseWriter, request *http.
 		drafts[index] = application.ReleaseDraft{
 			Action: action, BaseBefore: item.BaseBefore, EffectiveBefore: item.EffectiveBefore, After: item.After,
 			ExpectedRecordRevision: item.ExpectedRecordRevision, ExpectedCollectionRevision: item.ExpectedCollectionRevision,
+			PreserveSensitiveFields: append([]string(nil), item.PreserveSensitiveFields...),
 		}
 	}
 	result, err := handler.releases.CreateRelease(request.Context(), application.CreateReleaseCommand{

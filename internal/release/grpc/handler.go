@@ -68,6 +68,7 @@ func (handler *Handler) CreateReleaseOrder(ctx context.Context, request *control
 			Action: action, BaseBefore: cloneMap(item.BaseBefore), EffectiveBefore: cloneMap(item.EffectiveBefore), After: cloneMap(item.After),
 			ExpectedRecordRevision:     catalog.ConfigRevision(item.ExpectedRecordRevision),
 			ExpectedCollectionRevision: catalog.ConfigRevision(item.ExpectedCollectionRevision),
+			PreserveSensitiveFields:    append([]string(nil), item.PreserveSensitiveFields...),
 		}
 	}
 	view, err := handler.commands.CreateRelease(ctx, application.CreateReleaseCommand{

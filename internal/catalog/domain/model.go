@@ -168,6 +168,21 @@ func CompileModel(collection CollectionDefinition, spec ModelSpec) (CompiledMode
 			if err != nil {
 				return CompiledModel{}, fmt.Errorf("compile model: field %q: %w", field.Name, err)
 			}
+			if compiledSource.Kind == OptionSourceStatic {
+				seenCodes := make(map[string]struct{}, len(compiledSource.StaticOptions))
+				for optionIndex := range compiledSource.StaticOptions {
+					canonical, err := CanonicalizeScalar(field.Type, compiledSource.StaticOptions[optionIndex].Code)
+					if err != nil {
+						return CompiledModel{}, fmt.Errorf("compile model: field %q option code: %w", field.Name, err)
+					}
+					if _, duplicate := seenCodes[canonical]; duplicate {
+						return CompiledModel{}, fmt.Errorf("compile model: field %q repeats canonical option code %q", field.Name, canonical)
+					}
+					compiledSource.StaticOptions[optionIndex].Code = canonical
+					seenCodes[canonical] = struct{}{}
+				}
+				slices.SortFunc(compiledSource.StaticOptions, func(left, right SelectOptionDefinition) int { return strings.Compare(left.Code, right.Code) })
+			}
 			field.OptionSource = &compiledSource
 		} else if field.OptionSource != nil {
 			return CompiledModel{}, fmt.Errorf("compile model: non-SELECT field %q has an option source", field.Name)

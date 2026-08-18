@@ -440,7 +440,7 @@ func TestRealMySQLOverlayApplyAndRollbackTransaction(t *testing.T) {
 	`, now); err != nil {
 		t.Fatal(err)
 	}
-	baseData := map[string]string{"route_code": "visa", "priority": "1", "enabled": "false"}
+	baseData := map[string]string{"route_code": "visa", "priority": "1", "enabled": "false", "api_secret": "authority-secret"}
 	key, err := catalog.EncodeKey([]string{"route_code"}, baseData)
 	if err != nil {
 		t.Fatal(err)
@@ -464,9 +464,11 @@ func TestRealMySQLOverlayApplyAndRollbackTransaction(t *testing.T) {
 		IdempotencyKey: "overlay-create", ModelCode: "payment-route-admin", ReleaseTypeCode: "scope",
 		Scope: release.Scope{Region: "cn", Environment: "production", Stage: "blue"}, Actor: "operator@example.com",
 		Items: []application.ReleaseDraft{{
-			Action: release.ChangeModify, BaseBefore: baseData, EffectiveBefore: baseData,
-			After:                  map[string]string{"route_code": "visa", "priority": "2", "enabled": "false"},
-			ExpectedRecordRevision: 5, ExpectedCollectionRevision: 7,
+			Action:     release.ChangeModify,
+			BaseBefore: map[string]string{"route_code": "visa", "priority": "1", "enabled": "false"}, EffectiveBefore: map[string]string{"route_code": "visa", "priority": "1", "enabled": "false"},
+			After:                   map[string]string{"route_code": "visa", "priority": "2", "enabled": "false"},
+			PreserveSensitiveFields: []string{"api_secret"},
+			ExpectedRecordRevision:  5, ExpectedCollectionRevision: 7,
 		}},
 	})
 	if err != nil {
@@ -479,7 +481,8 @@ func TestRealMySQLOverlayApplyAndRollbackTransaction(t *testing.T) {
 	if err != nil {
 		t.Fatalf("execute overlay: %v", err)
 	}
-	assertCount(t, raw, `SELECT COUNT(*) FROM configuration_overlays WHERE environment = 'production' AND stage = 'blue' AND JSON_UNQUOTE(JSON_EXTRACT(content, '$.priority')) = '2'`, 1)
+	assertCount(t, raw, `SELECT COUNT(*) FROM configuration_overlays WHERE environment = 'production' AND stage = 'blue' AND JSON_UNQUOTE(JSON_EXTRACT(content, '$.priority')) = '2' AND JSON_UNQUOTE(JSON_EXTRACT(content, '$.api_secret')) = 'authority-secret'`, 1)
+	assertCount(t, raw, `SELECT COUNT(*) FROM release_order_items WHERE release_order_id = '`+created.ID+`' AND JSON_UNQUOTE(JSON_EXTRACT(after_data, '$.api_secret')) = 'authority-secret' AND JSON_UNQUOTE(JSON_EXTRACT(preserve_sensitive_fields, '$[0]')) = 'api_secret'`, 1)
 	assertCount(t, raw, `SELECT COUNT(*) FROM configuration_versions WHERE collection_name = 'payment_routes' AND environment = 'production' AND config_revision = 8 AND overlay_digest <> '4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945'`, 1)
 	assertCount(t, raw, `SELECT COUNT(*) FROM release_step_states WHERE release_order_id = '`+created.ID+`' AND JSON_EXTRACT(effect, '$.effectVersion') = 1 AND JSON_EXTRACT(effect, '$.overlay.appliedRevision') = 8`, 1)
 	assertCount(t, raw, `SELECT COUNT(*) FROM configuration_change_log WHERE release_order_id = '`+created.ID+`' AND kind = 'OVERLAY'`, 1)
@@ -499,7 +502,7 @@ func TestRealMySQLOverlayApplyAndRollbackTransaction(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(page.Rows) != 1 || page.Rows[0].Values["priority"] != "2" || page.Rows[0].BaseValues["priority"] != "1" {
+	if len(page.Rows) != 1 || page.Rows[0].Values["priority"] != "2" || page.Rows[0].BaseValues["priority"] != "1" || page.Rows[0].Values["api_secret"] != "" || !reflect.DeepEqual(page.Rows[0].MaskedFields, []string{"api_secret"}) {
 		t.Fatalf("scope-aware MySQL page = %+v", page)
 	}
 
@@ -729,7 +732,7 @@ func TestRealMySQLHTTPWalkingSkeleton(t *testing.T) {
 
 	initial := postJSON(t, handler, "/api/v1/query-page", "", map[string]any{"modelCode": "payment-route-admin", "scope": map[string]string{"region": "cn", "environment": "production"}, "queryType": "ALL"})
 	if initial.Code != http.StatusOK || !bytes.Contains(initial.Body.Bytes(), []byte(`"rows":[]`)) ||
-		!bytes.Contains(initial.Body.Bytes(), []byte(`"options":[{"code":"1","disabled":false,"label":"Low"},{"code":"7","disabled":false,"label":"High"},{"code":"9","disabled":true,"label":"Legacy"}]`)) ||
+		!bytes.Contains(initial.Body.Bytes(), []byte(`"options":[{"code":"1","disabled":false,"label":"Low"},{"code":"2","disabled":false,"label":"Medium"},{"code":"7","disabled":false,"label":"High"},{"code":"9","disabled":true,"label":"Legacy"}]`)) ||
 		!bytes.Contains(initial.Body.Bytes(), []byte(`{"available":true,"code":"direct","name":"Direct","templateCode":"base-final"}`)) ||
 		!bytes.Contains(initial.Body.Bytes(), []byte(`{"available":false,"code":"approval","name":"Approval","templateCode":"approval-final","unavailableReasonCode":"ACTIVE_TEMPLATE_NOT_FOUND"}`)) {
 		t.Fatalf("initial query = %d %s", initial.Code, initial.Body.String())
@@ -956,14 +959,16 @@ func seedCatalog(t *testing.T, db *sql.DB) {
 		{Name: "route_code", DisplayName: "Route code", Type: catalog.FieldTypeString, Required: true, DisplayOrder: 0},
 		{Name: "priority", DisplayName: "Priority", Type: catalog.FieldTypeInt64, Required: true, DisplayOrder: 1},
 		{Name: "enabled", DisplayName: "Enabled", Type: catalog.FieldTypeBool, Required: true, DefaultValue: &defaultEnabled, DisplayOrder: 2},
+		{Name: "api_secret", DisplayName: "API secret", Type: catalog.FieldTypeString, Sensitive: true, DisplayOrder: 3},
 	}
 	model := catalog.ModelSpec{
 		Fields: []catalog.ModelField{
 			{Name: "route_code", Type: catalog.FieldTypeString, Required: true, Editable: true, Queryable: true, UIControl: catalog.UIControlInput, AllowedFilterOperators: []catalog.FilterOperator{catalog.FilterExact}},
-			{Name: "priority", Type: catalog.FieldTypeInt64, Required: true, Editable: true, Queryable: true, UIControl: catalog.UIControlSelect, AllowedFilterOperators: []catalog.FilterOperator{catalog.FilterExact}, OptionSource: &catalog.OptionSourceDefinition{Kind: catalog.OptionSourceStatic, StaticOptions: []catalog.SelectOptionDefinition{{Code: "1", Label: "Low"}, {Code: "7", Label: "High"}, {Code: "9", Label: "Legacy", Disabled: true}}}},
+			{Name: "priority", Type: catalog.FieldTypeInt64, Required: true, Editable: true, Queryable: true, UIControl: catalog.UIControlSelect, AllowedFilterOperators: []catalog.FilterOperator{catalog.FilterExact}, OptionSource: &catalog.OptionSourceDefinition{Kind: catalog.OptionSourceStatic, StaticOptions: []catalog.SelectOptionDefinition{{Code: "1", Label: "Low"}, {Code: "2", Label: "Medium"}, {Code: "7", Label: "High"}, {Code: "9", Label: "Legacy", Disabled: true}}}},
 			{Name: "enabled", Type: catalog.FieldTypeBool, Required: true, Editable: true, Queryable: true, DefaultValue: &defaultEnabled, UIControl: catalog.UIControlBoolean, AllowedFilterOperators: []catalog.FilterOperator{catalog.FilterExact}},
+			{Name: "api_secret", Type: catalog.FieldTypeString, Sensitive: true, Editable: true, UIControl: catalog.UIControlInput},
 		},
-		ProjectionFields: []string{"route_code", "priority", "enabled"}, KeyFields: []string{"route_code"}, DefaultPageSize: 20, MaxPageSize: 100,
+		ProjectionFields: []string{"route_code", "priority", "enabled", "api_secret"}, KeyFields: []string{"route_code"}, DefaultPageSize: 20, MaxPageSize: 100,
 		ReleaseTypes: []catalog.ReleaseTypeDefinition{
 			{Code: "direct", Name: "Direct", TemplateCode: "base-final", Enabled: true},
 			{Code: "approval", Name: "Approval", TemplateCode: "approval-final", Enabled: true},

@@ -85,6 +85,7 @@ type ReleaseDraft struct {
 	After                      map[string]string
 	ExpectedRecordRevision     catalog.ConfigRevision
 	ExpectedCollectionRevision catalog.ConfigRevision
+	PreserveSensitiveFields    []string
 }
 
 type CreateReleaseCommand struct {
@@ -103,6 +104,7 @@ type canonicalReleaseDraft struct {
 	after                      *catalog.ConfigurationRecord
 	expectedRecordRevision     catalog.ConfigRevision
 	expectedCollectionRevision catalog.ConfigRevision
+	preserveSensitiveFields    []string
 }
 
 type CreateBaseFinalCommand struct {
@@ -327,15 +329,19 @@ func (service *Service) CreateRelease(ctx context.Context, command CreateRelease
 		canonical := make([]canonicalReleaseDraft, len(command.Items))
 		keys := make([]string, len(command.Items))
 		for index, draft := range command.Items {
-			baseBefore, err := canonicalOptionalRecord(bundle.Definition, command.Scope.Environment, draft.BaseBefore)
+			preserved, err := validatePreservedSensitiveFields(bundle.Model, draft.Action, draft.PreserveSensitiveFields)
+			if err != nil {
+				return fmt.Errorf("item %d: %w", index, err)
+			}
+			baseBefore, err := canonicalOptionalRecord(bundle.Definition, command.Scope.Environment, withSensitivePlaceholders(bundle.Definition, draft.BaseBefore, preserved))
 			if err != nil {
 				return fmt.Errorf("canonicalize item %d base before: %w", index, err)
 			}
-			effectiveBefore, err := canonicalOptionalRecord(bundle.Definition, command.Scope.Environment, draft.EffectiveBefore)
+			effectiveBefore, err := canonicalOptionalRecord(bundle.Definition, command.Scope.Environment, withSensitivePlaceholders(bundle.Definition, draft.EffectiveBefore, preserved))
 			if err != nil {
 				return fmt.Errorf("canonicalize item %d effective before: %w", index, err)
 			}
-			after, err := canonicalOptionalRecord(bundle.Definition, command.Scope.Environment, draft.After)
+			after, err := canonicalOptionalRecord(bundle.Definition, command.Scope.Environment, withSensitivePlaceholders(bundle.Definition, draft.After, preserved))
 			if err != nil {
 				return fmt.Errorf("canonicalize item %d after: %w", index, err)
 			}
@@ -358,6 +364,7 @@ func (service *Service) CreateRelease(ctx context.Context, command CreateRelease
 			canonical[index] = canonicalReleaseDraft{
 				action: draft.Action, baseBefore: baseBefore, effectiveBefore: effectiveBefore, after: after,
 				expectedRecordRevision: draft.ExpectedRecordRevision, expectedCollectionRevision: draft.ExpectedCollectionRevision,
+				preserveSensitiveFields: preserved,
 			}
 		}
 		requestDigest, err := normalizedReleaseDigest(command, canonical)
@@ -385,11 +392,14 @@ func (service *Service) CreateRelease(ctx context.Context, command CreateRelease
 			orderID := service.ids.NewID()
 			items := make([]release.BaseFinalItemSpec, len(canonical))
 			for index, draft := range canonical {
-				if draft.action != release.ChangeAdd || draft.baseBefore != nil || draft.effectiveBefore != nil || draft.after == nil || draft.expectedRecordRevision != 0 {
+				if draft.action != release.ChangeAdd || draft.baseBefore != nil || draft.effectiveBefore != nil || draft.after == nil || draft.expectedRecordRevision != 0 || len(draft.preserveSensitiveFields) != 0 {
 					return fmt.Errorf("%w: BASE_FINAL item %d must be ADD without before images", release.ErrInvalid, index)
 				}
 				if authority.CollectionRevision != draft.expectedCollectionRevision || authority.Records[keys[index]] != nil {
 					return fmt.Errorf("%w: BASE_FINAL item %d authority is stale", release.ErrAborted, index)
+				}
+				if err := validateStaticOptionSelections(bundle.Model, nil, draft.after); err != nil {
+					return fmt.Errorf("%w: item %d: %v", release.ErrFailedPrecondition, index, err)
 				}
 				items[index] = release.BaseFinalItemSpec{
 					ID: service.ids.NewID(), After: *draft.after,
@@ -439,6 +449,9 @@ func (service *Service) CreateRelease(ctx context.Context, command CreateRelease
 		for index, draft := range canonical {
 			actualBase := authority.Records[keys[index]]
 			actualEffective := effectiveByKey[keys[index]]
+			if err := hydratePreservedSensitiveFields(&draft, actualBase, actualEffective); err != nil {
+				return fmt.Errorf("%w: item %d: %v", release.ErrAborted, index, err)
+			}
 			if authority.CollectionRevision != draft.expectedCollectionRevision || !sameRecordData(actualBase, draft.baseBefore) || !sameRecordData(actualEffective, draft.effectiveBefore) {
 				return fmt.Errorf("%w: item %d page authority is stale", release.ErrAborted, index)
 			}
@@ -452,9 +465,13 @@ func (service *Service) CreateRelease(ctx context.Context, command CreateRelease
 			if !validEffectiveTransition(draft.action, actualBase, actualEffective, draft.after) {
 				return fmt.Errorf("%w: item %d transition is invalid for %s", release.ErrInvalid, index, draft.action)
 			}
+			if err := validateStaticOptionSelections(bundle.Model, actualEffective, draft.after); err != nil {
+				return fmt.Errorf("%w: item %d: %v", release.ErrFailedPrecondition, index, err)
+			}
 			itemSpecs[index] = release.OverlayFinalItemSpec{
 				ID: service.ids.NewID(), Action: draft.action, BaseBefore: actualBase, EffectiveBefore: actualEffective, After: draft.after,
 				ExpectedRecordRevision: draft.expectedRecordRevision, ExpectedCollectionRevision: draft.expectedCollectionRevision,
+				PreserveSensitiveFields: append([]string(nil), draft.preserveSensitiveFields...),
 			}
 		}
 		now := service.clock.Now().UTC()
@@ -493,6 +510,112 @@ func canonicalOptionalRecord(definition catalog.CollectionDefinition, environmen
 	return &record, nil
 }
 
+func validatePreservedSensitiveFields(model catalog.CompiledModel, action release.ChangeAction, source []string) ([]string, error) {
+	if len(source) == 0 {
+		return nil, nil
+	}
+	if action != release.ChangeModify {
+		return nil, fmt.Errorf("%w: preserveSensitiveFields is only valid for MODIFY", release.ErrInvalid)
+	}
+	sensitive := make(map[string]struct{})
+	for _, field := range model.Fields() {
+		if field.Sensitive {
+			sensitive[field.Name] = struct{}{}
+		}
+	}
+	result := make([]string, len(source))
+	seen := make(map[string]struct{}, len(source))
+	for index, name := range source {
+		name = strings.TrimSpace(name)
+		if _, allowed := sensitive[name]; !allowed {
+			return nil, fmt.Errorf("%w: field %q is not a model sensitive field", release.ErrInvalid, name)
+		}
+		if _, duplicate := seen[name]; duplicate {
+			return nil, fmt.Errorf("%w: preserved sensitive field %q is duplicated", release.ErrInvalid, name)
+		}
+		seen[name] = struct{}{}
+		result[index] = name
+	}
+	sort.Strings(result)
+	return result, nil
+}
+
+func withSensitivePlaceholders(definition catalog.CollectionDefinition, source map[string]string, preserved []string) map[string]string {
+	if source == nil {
+		return nil
+	}
+	result := maps.Clone(source)
+	for _, name := range preserved {
+		if _, exists := result[name]; exists {
+			continue
+		}
+		field, _ := definition.Field(name)
+		switch field.Type {
+		case catalog.FieldTypeInt64, catalog.FieldTypeFloat64:
+			result[name] = "0"
+		case catalog.FieldTypeBool:
+			result[name] = "false"
+		case catalog.FieldTypeTimestamp:
+			result[name] = "1970-01-01T00:00:00Z"
+		case catalog.FieldTypeJSON:
+			result[name] = "null"
+		default:
+			result[name] = ""
+		}
+	}
+	return result
+}
+
+func hydratePreservedSensitiveFields(draft *canonicalReleaseDraft, actualBase, actualEffective *catalog.ConfigurationRecord) error {
+	if len(draft.preserveSensitiveFields) == 0 {
+		return nil
+	}
+	if actualBase == nil || actualEffective == nil || draft.baseBefore == nil || draft.effectiveBefore == nil || draft.after == nil {
+		return errors.New("preserved sensitive authority is missing")
+	}
+	for _, name := range draft.preserveSensitiveFields {
+		copyAuthoritativeField(draft.baseBefore.Data, actualBase.Data, name)
+		copyAuthoritativeField(draft.effectiveBefore.Data, actualEffective.Data, name)
+		copyAuthoritativeField(draft.after.Data, actualEffective.Data, name)
+	}
+	return nil
+}
+
+func copyAuthoritativeField(target, source map[string]string, name string) {
+	if value, exists := source[name]; exists {
+		target[name] = value
+	} else {
+		delete(target, name)
+	}
+}
+
+func validateStaticOptionSelections(model catalog.CompiledModel, before, after *catalog.ConfigurationRecord) error {
+	if after == nil {
+		return nil
+	}
+	for _, field := range model.Fields() {
+		source := field.OptionSource
+		if source == nil || source.Kind != catalog.OptionSourceStatic {
+			continue
+		}
+		value, present := after.Data[field.Name]
+		if !present || (before != nil && before.Data[field.Name] == value) {
+			continue
+		}
+		valid := false
+		for _, option := range source.StaticOptions {
+			if option.Code == value && !option.Disabled {
+				valid = true
+				break
+			}
+		}
+		if !valid {
+			return fmt.Errorf("field %q selection %q is missing or disabled", field.Name, value)
+		}
+	}
+	return nil
+}
+
 func sameRecordData(actual, submitted *catalog.ConfigurationRecord) bool {
 	if actual == nil || submitted == nil {
 		return actual == nil && submitted == nil
@@ -521,12 +644,14 @@ func normalizedReleaseDigest(command CreateReleaseCommand, drafts []canonicalRel
 		After                      *catalog.ConfigurationRecord `json:"after"`
 		ExpectedRecordRevision     catalog.ConfigRevision       `json:"expectedRecordRevision"`
 		ExpectedCollectionRevision catalog.ConfigRevision       `json:"expectedCollectionRevision"`
+		PreserveSensitiveFields    []string                     `json:"preserveSensitiveFields"`
 	}
 	items := make([]digestItem, len(drafts))
 	for index, draft := range drafts {
 		items[index] = digestItem{
 			Action: draft.action, BaseBefore: draft.baseBefore, EffectiveBefore: draft.effectiveBefore, After: draft.after,
 			ExpectedRecordRevision: draft.expectedRecordRevision, ExpectedCollectionRevision: draft.expectedCollectionRevision,
+			PreserveSensitiveFields: append([]string(nil), draft.preserveSensitiveFields...),
 		}
 	}
 	payload := struct {

@@ -152,6 +152,26 @@ func (definition CollectionDefinition) SDKDeliveryEnabled() bool {
 
 func (definition CollectionDefinition) SchemaVersion() int64 { return definition.schemaVersion }
 
+// CanonicalRecordKey derives identity from a partial record. Key fields are
+// never sensitive, so callers can identify a masked admin row without
+// supplying protected values.
+func (definition CollectionDefinition) CanonicalRecordKey(input map[string]string) (string, error) {
+	data := make(map[string]string, len(definition.keyFields))
+	for _, name := range definition.keyFields {
+		value, exists := input[name]
+		if !exists {
+			return "", fmt.Errorf("record key: field %q is missing", name)
+		}
+		field := definition.fieldsByName[name]
+		canonical, err := CanonicalizeScalar(field.Type, value)
+		if err != nil {
+			return "", fmt.Errorf("record key: field %q: %w", name, err)
+		}
+		data[name] = canonical
+	}
+	return EncodeKey(definition.keyFields, data)
+}
+
 // NewRecord validates and canonicalizes a complete record for one Environment.
 func (definition CollectionDefinition) NewRecord(environment string, input map[string]string) (ConfigurationRecord, error) {
 	environment = strings.TrimSpace(environment)

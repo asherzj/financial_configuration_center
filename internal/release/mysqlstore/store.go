@@ -363,6 +363,10 @@ func (transaction *transaction) InsertOrder(ctx context.Context, order *release.
 		if err != nil {
 			return err
 		}
+		preserved, err := json.Marshal(item.PreserveSensitiveFields)
+		if err != nil {
+			return err
+		}
 		if err := transaction.db.WithContext(ctx).Exec(`
 			INSERT INTO release_order_items (
 				id, release_order_id, position, action, collection_name, record_key,
@@ -370,10 +374,10 @@ func (transaction *transaction) InsertOrder(ctx context.Context, order *release.
 				expected_record_revision, expected_collection_revision, preserve_sensitive_fields,
 				status, active_conflict_key, entity_revision,
 				created_at, created_by, updated_at, updated_by
-			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, JSON_ARRAY(), ?, ?, 1, ?, ?, ?, ?)
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?)
 		`, item.ID, state.ID, position, item.Action, item.Collection, item.RecordKey,
 			item.RecordKey, item.RecordKey, baseBefore, effectiveBefore, after, item.ExpectedRecordRevision, item.ExpectedCollectionRevision,
-			item.Status, nullableString(item.ActiveConflictKey), state.CreatedAt, state.CreatedBy, state.UpdatedAt, state.UpdatedBy).Error; err != nil {
+			preserved, item.Status, nullableString(item.ActiveConflictKey), state.CreatedAt, state.CreatedBy, state.UpdatedAt, state.UpdatedBy).Error; err != nil {
 			return err
 		}
 	}
@@ -432,11 +436,12 @@ func (transaction *transaction) LoadOrderForUpdate(ctx context.Context, orderID 
 		BaseBefore, EffectiveBefore, AfterData             []byte
 		ExpectedRecordRevision, ExpectedCollectionRevision uint64
 		ActiveConflictKey                                  *string
+		PreserveSensitiveFields                            []byte
 	}
 	var itemRows []itemRow
 	if err := transaction.db.WithContext(ctx).Raw(`
 		SELECT id, action, collection_name, record_key, base_before, effective_before,
-			after_data, expected_record_revision, expected_collection_revision,
+			after_data, expected_record_revision, expected_collection_revision, preserve_sensitive_fields,
 			status, active_conflict_key
 		FROM release_order_items WHERE release_order_id = ? ORDER BY position
 	`, orderID).Scan(&itemRows).Error; err != nil {
@@ -460,11 +465,16 @@ func (transaction *transaction) LoadOrderForUpdate(ctx context.Context, orderID 
 		if row.ActiveConflictKey != nil {
 			active = *row.ActiveConflictKey
 		}
+		var preserved []string
+		if err := json.Unmarshal(row.PreserveSensitiveFields, &preserved); err != nil {
+			return nil, fmt.Errorf("decode item %q preserved sensitive fields: %w", row.ID, err)
+		}
 		items[index] = release.Item{
 			ID: row.ID, Action: release.ChangeAction(row.Action), Collection: row.CollectionName, RecordKey: row.RecordKey,
 			BaseBefore: baseBefore, EffectiveBefore: effectiveBefore, After: after,
 			ExpectedRecordRevision: catalog.ConfigRevision(row.ExpectedRecordRevision), ExpectedCollectionRevision: catalog.ConfigRevision(row.ExpectedCollectionRevision),
 			Status: release.ItemStatus(row.Status), ActiveConflictKey: active,
+			PreserveSensitiveFields: preserved,
 		}
 	}
 	type stepRow struct {

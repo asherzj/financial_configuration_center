@@ -240,6 +240,71 @@ func TestCompareApplicationUsesTemplatePreviewBucketAndPersistsMismatch(t *testi
 	}
 }
 
+func TestReleasePreservesSensitiveAuthorityAndRejectsDisabledSelection(t *testing.T) {
+	t.Parallel()
+	definition, err := catalog.CompileCollection(catalog.CollectionSpec{
+		Name: "credentials", KeyFields: []string{"name"}, SchemaVersion: 1,
+		Fields: []catalog.FieldDefinition{
+			{Name: "name", DisplayName: "Name", Type: catalog.FieldTypeString, Required: true, DisplayOrder: 0},
+			{Name: "provider", DisplayName: "Provider", Type: catalog.FieldTypeString, Required: true, DisplayOrder: 1},
+			{Name: "note", DisplayName: "Note", Type: catalog.FieldTypeString, Required: true, DisplayOrder: 2},
+			{Name: "secret", DisplayName: "Secret", Type: catalog.FieldTypeString, Required: true, Sensitive: true, DisplayOrder: 3},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	model, err := catalog.CompileModel(definition, catalog.ModelSpec{
+		Code: "credential-admin", Name: "Credentials", Collection: definition.Name(),
+		Fields: []catalog.ModelField{
+			{Name: "name", Type: catalog.FieldTypeString, Required: true, Editable: true, Queryable: true, UIControl: catalog.UIControlInput, AllowedFilterOperators: []catalog.FilterOperator{catalog.FilterExact}},
+			{Name: "provider", Type: catalog.FieldTypeString, Required: true, Editable: true, Queryable: true, UIControl: catalog.UIControlSelect, AllowedFilterOperators: []catalog.FilterOperator{catalog.FilterExact}, OptionSource: &catalog.OptionSourceDefinition{Kind: catalog.OptionSourceStatic, StaticOptions: []catalog.SelectOptionDefinition{{Code: "active", Label: "Active"}, {Code: "legacy", Label: "Legacy", Disabled: true}}}},
+			{Name: "note", Type: catalog.FieldTypeString, Required: true, Editable: true, Queryable: true, UIControl: catalog.UIControlInput, AllowedFilterOperators: []catalog.FilterOperator{catalog.FilterExact}},
+			{Name: "secret", Type: catalog.FieldTypeString, Required: true, Sensitive: true, Editable: true, UIControl: catalog.UIControlInput},
+		},
+		ProjectionFields: []string{"name", "provider", "note", "secret"}, KeyFields: []string{"name"}, DefaultPageSize: 20, MaxPageSize: 100, ConfigRevision: 7,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	template, err := release.CompileTemplate([]byte(`{"steps":[{"code":"apply","type":"OVERLAY_APPLY","params":{}},{"code":"complete","type":"COMPLETE","params":{}}]}`), release.FinalEffectOverlay)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := newFakeUnitOfWork(definition, model)
+	store.template = application.TemplateRef{Code: "scope-final", Version: 1, ReleaseTypeCode: "scope", Definition: template}
+	base, err := definition.NewRecord("production", map[string]string{"name": "primary", "provider": "active", "note": "before", "secret": "authority-secret"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	base.ConfigRevision = 5
+	store.records["production"][base.RecordKey] = base
+	service := application.NewService(store, &sequenceIDs{values: []string{"item", "order"}}, fixedClock{now: time.Date(2026, 8, 19, 20, 0, 0, 0, time.UTC)})
+	command := application.CreateReleaseCommand{
+		IdempotencyKey: "preserve", ModelCode: model.Code(), ReleaseTypeCode: "scope",
+		Scope: release.Scope{Region: "cn", Environment: "production", Stage: "blue"}, Actor: "operator",
+		Items: []application.ReleaseDraft{{
+			Action:                  release.ChangeModify,
+			BaseBefore:              map[string]string{"name": "primary", "provider": "active", "note": "before"},
+			EffectiveBefore:         map[string]string{"name": "primary", "provider": "active", "note": "before"},
+			After:                   map[string]string{"name": "primary", "provider": "legacy", "note": "after"},
+			PreserveSensitiveFields: []string{"secret"}, ExpectedRecordRevision: 5, ExpectedCollectionRevision: 7,
+		}},
+	}
+	if _, err := service.CreateRelease(context.Background(), command); !errors.Is(err, release.ErrFailedPrecondition) {
+		t.Fatalf("disabled option error = %v", err)
+	}
+	command.Items[0].After["provider"] = "active"
+	created, err := service.CreateRelease(context.Background(), command)
+	if err != nil {
+		t.Fatalf("CreateRelease preserve: %v", err)
+	}
+	item := store.orders[created.ID].Items()[0]
+	if item.After == nil || item.After.Data["secret"] != "authority-secret" || !reflect.DeepEqual(item.PreserveSensitiveFields, []string{"secret"}) {
+		t.Fatalf("preserved item = %+v", item)
+	}
+}
+
 func TestCreateBaseFinalRejectsStalePageRevision(t *testing.T) {
 	t.Parallel()
 

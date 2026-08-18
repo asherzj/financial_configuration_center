@@ -24,12 +24,12 @@ func TestReleaseHandlerMapsCreateAndAction(t *testing.T) {
 	created, err := handler.CreateReleaseOrder(context.Background(), &controlv1.CreateReleaseOrderRequest{
 		IdempotencyKey: "create-id", ModelCode: "model", ReleaseTypeCode: "direct", Description: "Add route",
 		Scope: &commonv1.Scope{Region: "cn", Environment: "production"},
-		Items: []*controlv1.ReleaseItemInput{{Action: commonv1.ChangeAction_CHANGE_ACTION_ADD, After: map[string]string{"code": "visa"}, ExpectedCollectionRevision: 7}},
+		Items: []*controlv1.ReleaseItemInput{{Action: commonv1.ChangeAction_CHANGE_ACTION_ADD, After: map[string]string{"code": "visa"}, ExpectedCollectionRevision: 7, PreserveSensitiveFields: []string{"secret"}}},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if created.Detail.Order.Id != "order" || commands.lastCreate.Actor != "operator@example.com" || commands.lastCreate.Items[0].ExpectedCollectionRevision != 7 {
+	if created.Detail.Order.Id != "order" || commands.lastCreate.Actor != "operator@example.com" || commands.lastCreate.Items[0].ExpectedCollectionRevision != 7 || len(commands.lastCreate.Items[0].PreserveSensitiveFields) != 1 {
 		t.Fatalf("create mapping response=%+v command=%+v", created, commands.lastCreate)
 	}
 	acted, err := handler.ActOnReleaseOrder(context.Background(), &controlv1.ActOnReleaseOrderRequest{

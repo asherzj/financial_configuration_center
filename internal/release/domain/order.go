@@ -105,6 +105,7 @@ type BaseFinalItemSpec struct {
 	After                      catalog.ConfigurationRecord
 	ExpectedRecordRevision     catalog.ConfigRevision
 	ExpectedCollectionRevision catalog.ConfigRevision
+	PreserveSensitiveFields    []string
 }
 
 type BaseFinalOrderSpec struct {
@@ -131,6 +132,7 @@ type OverlayFinalItemSpec struct {
 	After                      *catalog.ConfigurationRecord
 	ExpectedRecordRevision     catalog.ConfigRevision
 	ExpectedCollectionRevision catalog.ConfigRevision
+	PreserveSensitiveFields    []string
 }
 
 type OverlayFinalOrderSpec struct {
@@ -159,6 +161,7 @@ type Item struct {
 	After                      *catalog.ConfigurationRecord
 	ExpectedRecordRevision     catalog.ConfigRevision
 	ExpectedCollectionRevision catalog.ConfigRevision
+	PreserveSensitiveFields    []string
 	Status                     ItemStatus
 	ActiveConflictKey          string
 }
@@ -327,6 +330,7 @@ func NewBaseFinalOrder(spec BaseFinalOrderSpec) (*Order, error) {
 			After:                      &after,
 			ExpectedRecordRevision:     item.ExpectedRecordRevision,
 			ExpectedCollectionRevision: item.ExpectedCollectionRevision,
+			PreserveSensitiveFields:    append([]string(nil), item.PreserveSensitiveFields...),
 			Status:                     ItemPending,
 			ActiveConflictKey:          baseConflictKey(after.Collection, spec.Scope.Environment, after.RecordKey),
 		}
@@ -431,6 +435,7 @@ func NewOverlayFinalOrder(spec OverlayFinalOrderSpec) (*Order, error) {
 			After:                      cloneRecordPointer(item.After),
 			ExpectedRecordRevision:     item.ExpectedRecordRevision,
 			ExpectedCollectionRevision: item.ExpectedCollectionRevision,
+			PreserveSensitiveFields:    append([]string(nil), item.PreserveSensitiveFields...),
 			Status:                     ItemPending,
 			ActiveConflictKey:          overlayConflictKey(collection, spec.Scope, target.RecordKey),
 		}
@@ -1113,6 +1118,7 @@ func overlayScope(scope Scope) overlay.Scope {
 }
 
 func cloneItem(item Item) Item {
+	item.PreserveSensitiveFields = append([]string(nil), item.PreserveSensitiveFields...)
 	if item.BaseBefore != nil {
 		cloned := cloneRecord(*item.BaseBefore)
 		item.BaseBefore = &cloned
