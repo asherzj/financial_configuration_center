@@ -114,6 +114,67 @@ func (store *Store) MarkFailed(ctx context.Context, event outbox.Event, summary 
 	return status, err
 }
 
+func (store *Store) Replay(ctx context.Context, request outbox.ReplayRequest) (outbox.Event, error) {
+	if request.EventID == "" || request.ExpectedRevision == 0 || request.Reason == "" || request.Actor == "" || request.Now.IsZero() {
+		return outbox.Event{}, errors.New("outbox replay request is incomplete")
+	}
+	var replayed outbox.Event
+	err := store.database.WithinTransaction(ctx, &sql.TxOptions{Isolation: sql.LevelReadCommitted}, func(database *gorm.DB) error {
+		type row struct {
+			ID, AggregateType, AggregateID, EventType, IdempotencyKey, Status string
+			SequenceNo, LeaseRevision                                         uint64
+			PayloadVersion                                                    uint32
+			Payload                                                           []byte
+			Attempts                                                          int
+		}
+		var loaded row
+		result := database.WithContext(ctx).Raw(`
+			SELECT id, sequence_no, aggregate_type, aggregate_id, event_type,
+				payload_version, payload, idempotency_key, status, lease_revision, attempts
+			FROM outbox_events WHERE id = ? FOR UPDATE
+		`, request.EventID).Scan(&loaded)
+		if result.Error != nil {
+			return result.Error
+		}
+		if result.RowsAffected != 1 || outbox.LeaseRevision(loaded.LeaseRevision) != request.ExpectedRevision {
+			return fmt.Errorf("%w: event %s", outbox.ErrLeaseLost, request.EventID)
+		}
+		if outbox.Status(loaded.Status) != outbox.StatusDeadLetter {
+			return fmt.Errorf("%w: event %s", outbox.ErrNotDeadLetter, request.EventID)
+		}
+		updated := database.WithContext(ctx).Exec(`
+			UPDATE outbox_events
+			SET status = 'PENDING', lease_revision = lease_revision + 1, attempts = 0,
+				next_attempt_at = ?, locked_by = NULL, locked_until = NULL,
+				last_error = NULL, published_at = NULL, updated_at = ?
+			WHERE id = ? AND status = 'DEAD_LETTER' AND lease_revision = ?
+		`, request.Now.UTC(), request.Now.UTC(), request.EventID, request.ExpectedRevision)
+		if err := requireLeaseUpdate(updated, request.EventID); err != nil {
+			return err
+		}
+		if err := database.WithContext(ctx).Exec(`
+			INSERT INTO audit_records (
+				occurred_at, principal_subject, principal_display_name, action,
+				resource_type, resource_id, region, environment, stage, result,
+				before_data, after_data, metadata, request_id, trace_id
+			) VALUES (?, ?, ?, 'OUTBOX_REPLAY', 'OUTBOX_EVENT', ?, '', '', '', 'SUCCEEDED',
+				NULL, NULL, JSON_OBJECT('reason', ?, 'previousLeaseRevision', ?), ?, '')
+		`, request.Now.UTC(), request.Actor, request.Actor, request.EventID, truncate(request.Reason, 1024), request.ExpectedRevision, request.EventID).Error; err != nil {
+			return err
+		}
+		replayed = outbox.Event{
+			ID: loaded.ID, Sequence: loaded.SequenceNo, AggregateType: loaded.AggregateType, AggregateID: loaded.AggregateID,
+			Type: loaded.EventType, PayloadVersion: loaded.PayloadVersion, Payload: append([]byte(nil), loaded.Payload...), IdempotencyKey: loaded.IdempotencyKey,
+			Status: outbox.StatusPending, LeaseRevision: outbox.LeaseRevision(loaded.LeaseRevision + 1), Attempts: 0,
+		}
+		return nil
+	})
+	if err != nil {
+		return outbox.Event{}, fmt.Errorf("replay outbox event: %w", err)
+	}
+	return replayed, nil
+}
+
 func (store *Store) updateLease(ctx context.Context, update func(*gorm.DB) error) error {
 	err := store.database.WithinTransaction(ctx, &sql.TxOptions{Isolation: sql.LevelReadCommitted}, update)
 	if err != nil {

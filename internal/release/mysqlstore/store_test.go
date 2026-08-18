@@ -201,6 +201,14 @@ func TestRealMySQLOutboxMultiWorkerLeaseCAS(t *testing.T) {
 		t.Fatalf("dead letter = %s, %v", status, err)
 	}
 	assertCount(t, raw, `SELECT COUNT(*) FROM outbox_events WHERE status = 'DEAD_LETTER' AND lease_revision = 6`, 1)
+	if _, err := storeA.Replay(ctx, outbox.ReplayRequest{EventID: reclaimed[0].ID, ExpectedRevision: 5, Reason: "endpoint recovered", Actor: "platform-operator", Now: now.Add(time.Minute)}); !errors.Is(err, outbox.ErrLeaseLost) {
+		t.Fatalf("stale replay = %v", err)
+	}
+	replayed, err := storeA.Replay(ctx, outbox.ReplayRequest{EventID: reclaimed[0].ID, ExpectedRevision: 6, Reason: "endpoint recovered", Actor: "platform-operator", Now: now.Add(time.Minute)})
+	if err != nil || replayed.Status != outbox.StatusPending || replayed.LeaseRevision != 7 || replayed.Attempts != 0 {
+		t.Fatalf("replayed event = %+v, %v", replayed, err)
+	}
+	assertCount(t, raw, `SELECT COUNT(*) FROM audit_records WHERE action = 'OUTBOX_REPLAY' AND resource_id = '20000000-0000-4000-8000-000000000001'`, 1)
 }
 
 func TestRealMySQLReleaseConcurrencyAndIdempotency(t *testing.T) {

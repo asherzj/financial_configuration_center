@@ -1,6 +1,6 @@
 # FC-003 Concurrency and durability
 
-- Status: in-progress
+- Status: done
 - Blocked by: FC-002
 - Spec: acceptance scenarios 3, 4, 5, 13
 
@@ -23,4 +23,8 @@ Concurrent and retried writes are safe, durable and eventually distributed when 
 
 ## Evidence
 
-Not run.
+- Real MySQL 8.4.11 and 8.0.46 concurrency tests prove one active winner for the same Environment/key, independent progress across Environments, concurrent create replay, action replay and stale-authority rejection.
+- Action results and canonical request digests persist in `release_action_requests`; duplicate requests produce no second configuration, version, audit or Outbox effect.
+- Outbox contract tests cover multi-worker `SKIP LOCKED` claims, LeaseRevision CAS, lease-expiry recovery, retry/dead-letter, and audited DEAD_LETTER replay without changing payload or idempotency key.
+- RefreshHint has bounded queueing and EventID TTL deduplication; WatchHub isolates slow consumers with `RESYNC_REQUIRED`; Config Server and SDK version polls converge in a real MySQL tracer while Hint, Watch and Outbox delivery are deliberately absent.
+- Full verification passed with `go test ./...`, `go test -race ./...`, `go vet ./...` and `go build ./...`.

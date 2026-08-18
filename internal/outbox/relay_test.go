@@ -86,3 +86,7 @@ func (repository *repositoryStub) MarkFailed(_ context.Context, event outbox.Eve
 	repository.nextAttemptAt = nextAttemptAt
 	return outbox.StatusPending, nil
 }
+
+func (repository *repositoryStub) Replay(context.Context, outbox.ReplayRequest) (outbox.Event, error) {
+	return outbox.Event{}, nil
+}

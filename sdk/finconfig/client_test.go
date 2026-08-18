@@ -157,6 +157,15 @@ func TestClientRejectsInvalidCandidateAndCallbackFailureBeforeSwap(t *testing.T)
 	if got.Values["code"] != "a" {
 		t.Fatal("invalid candidate replaced last-known-good")
 	}
+	client.SetBeforePublish(func(finconfig.ChangeSet) error { panic("consumer panic") })
+	transport.response.Collections[0].Digest = digestFor(t, transport.response.Collections[0].Records[0])
+	if err := client.Refresh(context.Background()); err == nil {
+		t.Fatal("callback panic escaped as success")
+	}
+	got, _ = client.GetByKey("routes", "key")
+	if got.Values["code"] != "a" {
+		t.Fatal("callback panic replaced last-known-good")
+	}
 }
 
 func TestClientMergesIncrementalCollectionsAndDeletesRevokedOnes(t *testing.T) {

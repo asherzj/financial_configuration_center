@@ -19,7 +19,10 @@ const (
 	StatusDeadLetter Status = "DEAD_LETTER"
 )
 
-var ErrLeaseLost = errors.New("outbox lease was lost")
+var (
+	ErrLeaseLost     = errors.New("outbox lease was lost")
+	ErrNotDeadLetter = errors.New("outbox event is not dead-lettered")
+)
 
 type Event struct {
 	ID             string
@@ -48,6 +51,15 @@ type Repository interface {
 	Claim(context.Context, ClaimRequest) ([]Event, error)
 	MarkSent(context.Context, Event, time.Time) error
 	MarkFailed(context.Context, Event, string, time.Time, int, time.Time) (Status, error)
+	Replay(context.Context, ReplayRequest) (Event, error)
+}
+
+type ReplayRequest struct {
+	EventID          string
+	ExpectedRevision LeaseRevision
+	Reason           string
+	Actor            string
+	Now              time.Time
 }
 
 type Sender interface {

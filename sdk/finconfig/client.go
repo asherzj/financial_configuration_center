@@ -350,12 +350,21 @@ func (client *Client) Refresh(ctx context.Context) error {
 	callback := client.callback
 	client.callbackMu.RUnlock()
 	if callback != nil {
-		if err := callback(changes); err != nil {
+		if err := invokeBeforePublish(callback, changes); err != nil {
 			return fmt.Errorf("FinConfig before-publish callback: %w", err)
 		}
 	}
 	client.current.Store(candidate)
 	return nil
+}
+
+func invokeBeforePublish(callback func(ChangeSet) error, changes ChangeSet) (err error) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			err = fmt.Errorf("callback panic: %v", recovered)
+		}
+	}()
+	return callback(changes)
 }
 
 func (client *Client) SetBeforePublish(callback func(ChangeSet) error) {
