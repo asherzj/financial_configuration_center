@@ -29,8 +29,8 @@ const (
 
 // Digest identifies stable serialized configuration content.
 type Digest struct {
-	Algorithm string
-	Value     string
+	Algorithm string `json:"algorithm"`
+	Value     string `json:"value"`
 }
 
 // ConfigRevision is the global monotonic watermark for distribution-visible

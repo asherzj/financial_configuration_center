@@ -151,9 +151,11 @@ type OrderView struct {
 }
 
 type StepView struct {
-	Code   string             `json:"code"`
-	Type   release.StepType   `json:"type"`
-	Status release.StepStatus `json:"status"`
+	Code          string                     `json:"code"`
+	Type          release.StepType           `json:"type"`
+	Status        release.StepStatus         `json:"status"`
+	RolloutRanges []overlay.BucketRange      `json:"rolloutRanges,omitempty"`
+	CompareResult *release.CompareStepResult `json:"compareResult,omitempty"`
 }
 
 type StoredRequestResult struct {
@@ -169,6 +171,12 @@ type ActionRecord struct {
 	Comment  string
 	Scope    release.Scope
 	At       time.Time
+	Failure  *ActionFailure
+}
+
+type ActionFailure struct {
+	Code    string
+	Message string
 }
 
 // Service is the only application entry point that can cause base
@@ -572,6 +580,7 @@ func (service *Service) Act(ctx context.Context, command ActCommand) (OrderView,
 		return OrderView{}, err
 	}
 	var result OrderView
+	var resultErr error
 	err = service.withinIdempotentTransaction(ctx, func(transaction Transaction) error {
 		order, err := transaction.LoadOrderForUpdate(ctx, command.OrderID)
 		if err != nil {
@@ -596,6 +605,7 @@ func (service *Service) Act(ctx context.Context, command ActCommand) (OrderView,
 		}
 		stepBefore := order.CurrentStep()
 		now := service.clock.Now().UTC()
+		actionRecord := ActionRecord{OrderID: order.ID(), StepCode: stepBefore.Code, Action: command.Action, Actor: command.Actor, Comment: command.Comment, Scope: order.Scope(), At: now}
 		switch command.Action {
 		case ActionAdvance:
 			if err := order.Advance(command.ExpectedRevision, command.Actor, now); err != nil {
@@ -655,6 +665,20 @@ func (service *Service) Act(ctx context.Context, command ActCommand) (OrderView,
 				if err := transaction.ApplyPercentEffect(ctx, order.ID(), effect); err != nil {
 					return fmt.Errorf("apply percentage effect: %w", err)
 				}
+			case release.StepCompare:
+				actual, err := loadCompareRecords(ctx, transaction, order)
+				if err != nil {
+					return err
+				}
+				comparison, matched, err := order.ExecuteCompare(command.ExpectedRevision, actual, command.Actor, now)
+				if err != nil {
+					return err
+				}
+				if !matched {
+					message := fmt.Sprintf("comparison differs for %d record(s)", len(comparison.DiffKeys))
+					actionRecord.Failure = &ActionFailure{Code: "COMPARE_MISMATCH", Message: message}
+					resultErr = fmt.Errorf("%w: %s", release.ErrFailedPrecondition, message)
+				}
 			case release.StepComplete:
 				if err := order.Complete(command.ExpectedRevision, command.Actor, now); err != nil {
 					return err
@@ -713,19 +737,21 @@ func (service *Service) Act(ctx context.Context, command ActCommand) (OrderView,
 		if err := transaction.SaveOrder(ctx, order); err != nil {
 			return fmt.Errorf("save release order: %w", err)
 		}
-		if err := transaction.RecordAction(ctx, ActionRecord{OrderID: order.ID(), StepCode: stepBefore.Code, Action: command.Action, Actor: command.Actor, Comment: command.Comment, Scope: order.Scope(), At: now}); err != nil {
+		if err := transaction.RecordAction(ctx, actionRecord); err != nil {
 			return fmt.Errorf("record release action: %w", err)
 		}
 		result = project(order)
-		if err := transaction.InsertActionResult(ctx, command.OrderID, command.ActionRequestID, requestDigest, result, now); err != nil {
-			return fmt.Errorf("insert action request: %w", err)
+		if resultErr == nil {
+			if err := transaction.InsertActionResult(ctx, command.OrderID, command.ActionRequestID, requestDigest, result, now); err != nil {
+				return fmt.Errorf("insert action request: %w", err)
+			}
 		}
 		return nil
 	})
 	if err != nil {
 		return OrderView{}, err
 	}
-	return result, nil
+	return result, resultErr
 }
 
 func loadOverlayAuthority(ctx context.Context, transaction Transaction, order *release.Order) (release.OverlayAuthority, error) {
@@ -774,6 +800,44 @@ func loadBaseApplyAuthority(ctx context.Context, transaction Transaction, order 
 		}
 	}
 	return authority, nil
+}
+
+func loadCompareRecords(ctx context.Context, transaction Transaction, order *release.Order) ([]catalog.ConfigurationRecord, error) {
+	items := order.Items()
+	keys := make([]string, len(items))
+	for index, item := range items {
+		keys[index] = item.RecordKey
+	}
+	authority, err := transaction.LoadBaseAuthority(ctx, items[0].Collection, order.Scope().Environment, keys)
+	if err != nil {
+		return nil, fmt.Errorf("load compare base authority: %w", err)
+	}
+	base := make([]catalog.ConfigurationRecord, 0, len(authority.Records))
+	for _, key := range keys {
+		if record := authority.Records[key]; record != nil {
+			base = append(base, *record)
+		}
+	}
+	step := order.CurrentStep()
+	if step.CompareMode == release.CompareBase {
+		return base, nil
+	}
+	if step.CompareMode != release.CompareEffective {
+		return nil, fmt.Errorf("%w: compare mode %q is invalid", release.ErrInvalid, step.CompareMode)
+	}
+	rules, err := transaction.LoadOverlayRules(ctx, items[0].Collection, order.Scope(), keys)
+	if err != nil {
+		return nil, fmt.Errorf("load compare overlay rules: %w", err)
+	}
+	actual, err := overlay.Evaluate(overlay.Query{
+		Collection:    items[0].Collection,
+		Scope:         overlay.Scope{Region: order.Scope().Region, Environment: order.Scope().Environment, Stage: order.Scope().Stage},
+		PreviewBucket: step.ComparePreviewBucket,
+	}, base, rules)
+	if err != nil {
+		return nil, fmt.Errorf("evaluate compare records: %w", err)
+	}
+	return actual, nil
 }
 
 func normalizedActionDigest(command ActCommand) (string, error) {
@@ -829,7 +893,10 @@ func project(order *release.Order) OrderView {
 	state := order.State()
 	steps := make([]StepView, len(state.Steps))
 	for index, stateStep := range state.Steps {
-		steps[index] = StepView{Code: stateStep.Code, Type: stateStep.Type, Status: stateStep.Status}
+		steps[index] = StepView{
+			Code: stateStep.Code, Type: stateStep.Type, Status: stateStep.Status,
+			RolloutRanges: append([]overlay.BucketRange(nil), stateStep.RolloutRanges...), CompareResult: stateStep.CompareResult,
+		}
 	}
 	view := OrderView{ID: order.ID(), Status: order.Status(), CurrentStepCode: step.Code, CurrentStep: step.Type, CurrentStepStatus: step.Status, Revision: order.Revision(), Steps: steps}
 	applyCapabilities(&view)
@@ -849,7 +916,7 @@ func applyCapabilities(view *OrderView) {
 	case view.CurrentStepStatus == release.StepApproved || view.CurrentStepStatus == release.StepExecuted:
 		view.CanAdvance = view.CurrentStep != release.StepComplete
 		view.CanRollback = (view.CurrentStep == release.StepOverlayApply || view.CurrentStep == release.StepBaseApply) && view.CurrentStepStatus == release.StepExecuted
-	case (view.CurrentStep == release.StepBaseApply || view.CurrentStep == release.StepOverlayApply || view.CurrentStep == release.StepPercentRollout || view.CurrentStep == release.StepComplete) && view.CurrentStepStatus == release.StepPending:
+	case (view.CurrentStep == release.StepBaseApply || view.CurrentStep == release.StepOverlayApply || view.CurrentStep == release.StepPercentRollout || view.CurrentStep == release.StepCompare || view.CurrentStep == release.StepComplete) && view.CurrentStepStatus == release.StepPending:
 		view.CanExecute = true
 	}
 }

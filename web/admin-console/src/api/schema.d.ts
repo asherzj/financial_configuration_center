@@ -392,13 +392,13 @@ export interface components {
             order: {
                 id: string;
                 /** @enum {string} */
-                status: "IN_PROGRESS" | "SUCCEEDED" | "REJECTED";
+                status: "IN_PROGRESS" | "SUCCEEDED" | "REJECTED" | "ROLLED_BACK";
                 /** @description Stable step code from the template snapshot. */
                 currentStep: string;
                 /** @enum {string} */
-                currentStepType: "MANUAL_REVIEW" | "BASE_APPLY" | "COMPARE" | "COMPLETE";
+                currentStepType: "MANUAL_REVIEW" | "OVERLAY_APPLY" | "PERCENT_ROLLOUT" | "BASE_APPLY" | "COMPARE" | "COMPLETE";
                 /** @enum {string} */
-                currentStepStatus: "PENDING" | "EXECUTING" | "EXECUTED" | "APPROVED" | "REJECTED";
+                currentStepStatus: "PENDING" | "EXECUTING" | "EXECUTED" | "APPROVED" | "REJECTED" | "ROLLED_BACK";
                 /** Format: int64 */
                 entityRevision: number;
             };
@@ -407,8 +407,25 @@ export interface components {
                 code: string;
                 type: string;
                 status: string;
+                rolloutRanges?: {
+                    start: number;
+                    end: number;
+                }[];
+                compareResult?: {
+                    expectedDigest: {
+                        algorithm: string;
+                        value: string;
+                    };
+                    actualDigest: {
+                        algorithm: string;
+                        value: string;
+                    };
+                    diffKeys: string[];
+                    /** Format: date-time */
+                    checkedAt: string;
+                };
             }[];
-            allowedActions: ("EXECUTE" | "ADVANCE" | "APPROVE" | "REJECT")[];
+            allowedActions: ("EXECUTE" | "ADVANCE" | "ROLLBACK" | "APPROVE" | "REJECT")[];
         };
         RevealFieldRequest: {
             modelCode: string;

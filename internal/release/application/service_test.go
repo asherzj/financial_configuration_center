@@ -184,6 +184,62 @@ func TestPercentageRolloutApplicationPersistsTemporaryRule(t *testing.T) {
 	}
 }
 
+func TestCompareApplicationUsesTemplatePreviewBucketAndPersistsMismatch(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name          string
+		previewBucket int
+		wantMatch     bool
+	}{
+		{name: "matching rollout bucket", previewBucket: 6, wantMatch: true},
+		{name: "outside rollout bucket", previewBucket: 42, wantMatch: false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			definition, model := compiledCatalog(t)
+			store := newFakeUnitOfWork(definition, model)
+			templateJSON := fmt.Sprintf(`{"steps":[
+				{"code":"percent-10","type":"PERCENT_ROLLOUT","params":{"ranges":[{"start":0,"end":9}]}},
+				{"code":"compare","type":"COMPARE","params":{"mode":"EFFECTIVE","previewBucket":%d}},
+				{"code":"promote","type":"BASE_APPLY","params":{"cleanupScopeOverlay":true}},
+				{"code":"complete","type":"COMPLETE","params":{}}
+			]}`, test.previewBucket)
+			template, err := release.CompileTemplate([]byte(templateJSON), release.FinalEffectBase)
+			if err != nil {
+				t.Fatal(err)
+			}
+			store.template = application.TemplateRef{Code: "percent-compare", Version: 1, ReleaseTypeCode: "percentage", Definition: template}
+			service := application.NewService(store, &sequenceIDs{values: []string{"compare-order", "compare-item"}}, fixedClock{now: time.Date(2026, 8, 19, 19, 0, 0, 0, time.UTC)})
+			created, err := service.CreateRelease(context.Background(), application.CreateReleaseCommand{
+				IdempotencyKey: "create-compare", ModelCode: model.Code(), ReleaseTypeCode: "percentage",
+				Scope: release.Scope{Region: "cn", Environment: "production", Stage: "blue"}, Actor: "operator",
+				Items: []application.ReleaseDraft{{Action: release.ChangeAdd, After: map[string]string{"route_code": "visa", "priority": "9"}, ExpectedCollectionRevision: 7}},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			executed, err := service.Act(context.Background(), application.ActCommand{OrderID: created.ID, ActionRequestID: "percent", ExpectedRevision: 1, ExpectedCurrentStep: "percent-10", Action: application.ActionExecute, Actor: "operator"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			advanced, err := service.Act(context.Background(), application.ActCommand{OrderID: created.ID, ActionRequestID: "advance", ExpectedRevision: executed.Revision, ExpectedCurrentStep: "percent-10", Action: application.ActionAdvance, Actor: "operator"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			compared, compareErr := service.Act(context.Background(), application.ActCommand{OrderID: created.ID, ActionRequestID: "compare", ExpectedRevision: advanced.Revision, ExpectedCurrentStep: "compare", Action: application.ActionExecute, Actor: "operator"})
+			persisted := store.orders[created.ID].CurrentStep()
+			if test.wantMatch {
+				if compareErr != nil || compared.CurrentStepStatus != release.StepExecuted || persisted.CompareResult == nil || len(persisted.CompareResult.DiffKeys) != 0 {
+					t.Fatalf("matched compare: view=%+v step=%+v error=%v", compared, persisted, compareErr)
+				}
+			} else {
+				if !errors.Is(compareErr, release.ErrFailedPrecondition) || persisted.Status != release.StepPending || persisted.CompareResult == nil || len(persisted.CompareResult.DiffKeys) != 1 {
+					t.Fatalf("mismatched compare: view=%+v step=%+v error=%v", compared, persisted, compareErr)
+				}
+			}
+		})
+	}
+}
+
 func TestCreateBaseFinalRejectsStalePageRevision(t *testing.T) {
 	t.Parallel()
 

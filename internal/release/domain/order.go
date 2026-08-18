@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -16,6 +17,7 @@ import (
 var (
 	ErrInvalid              = errors.New("invalid release")
 	ErrAborted              = errors.New("release authority is stale")
+	ErrFailedPrecondition   = errors.New("release precondition failed")
 	ErrIdempotencyKeyReused = errors.New("idempotency key was reused for a different request")
 	ErrActiveConflict       = errors.New("another release is active for the target")
 	ErrForbidden            = errors.New("release action is forbidden")
@@ -162,18 +164,28 @@ type Item struct {
 }
 
 type StepState struct {
-	Code               string
-	Type               StepType
-	Status             StepStatus
-	RequiredRoles      []string
-	SelfApprovalPolicy SelfApprovalPolicy
-	RolloutRanges      []overlay.BucketRange
-	Approval           *ApprovalState
-	Effect             *StepEffectEnvelope
-	ExecutedAt         *time.Time
-	ExecutedBy         string
-	RolledBackAt       *time.Time
-	RolledBackBy       string
+	Code                 string
+	Type                 StepType
+	Status               StepStatus
+	RequiredRoles        []string
+	SelfApprovalPolicy   SelfApprovalPolicy
+	RolloutRanges        []overlay.BucketRange
+	CompareMode          CompareMode
+	ComparePreviewBucket *int32
+	Approval             *ApprovalState
+	Effect               *StepEffectEnvelope
+	CompareResult        *CompareStepResult
+	ExecutedAt           *time.Time
+	ExecutedBy           string
+	RolledBackAt         *time.Time
+	RolledBackBy         string
+}
+
+type CompareStepResult struct {
+	ExpectedDigest catalog.Digest `json:"expectedDigest"`
+	ActualDigest   catalog.Digest `json:"actualDigest"`
+	DiffKeys       []string       `json:"diffKeys"`
+	CheckedAt      time.Time      `json:"checkedAt"`
 }
 
 type OverlayAuthority struct {
@@ -336,6 +348,10 @@ func NewBaseFinalOrder(spec BaseFinalOrderSpec) (*Order, error) {
 		if definition.PercentRollout != nil {
 			steps[index].RolloutRanges = append([]overlay.BucketRange(nil), definition.PercentRollout.Ranges...)
 		}
+		if definition.Compare != nil {
+			steps[index].CompareMode = definition.Compare.Mode
+			steps[index].ComparePreviewBucket = int32PointerFromInt(definition.Compare.PreviewBucket)
+		}
 	}
 	return &Order{
 		id:              spec.ID,
@@ -426,6 +442,10 @@ func NewOverlayFinalOrder(spec OverlayFinalOrderSpec) (*Order, error) {
 		steps[index] = StepState{Code: definition.Code, Type: definition.Type, Status: StepPending, RequiredRoles: append([]string(nil), definition.RequiredRoles...)}
 		if definition.ManualReview != nil {
 			steps[index].SelfApprovalPolicy = definition.ManualReview.SelfApprovalPolicy
+		}
+		if definition.Compare != nil {
+			steps[index].CompareMode = definition.Compare.Mode
+			steps[index].ComparePreviewBucket = int32PointerFromInt(definition.Compare.PreviewBucket)
 		}
 	}
 	createdAt := spec.CreatedAt.UTC()
@@ -799,6 +819,79 @@ func (order *Order) ExecutePercentRollout(authority OverlayAuthority, newRevisio
 	return *clonePercentEffectPointer(&effect), nil
 }
 
+// ExecuteCompare records a deterministic comparison of the release targets.
+// A mismatch is an observed result, not an aggregate error: the step remains
+// pending so the application can commit diagnostics before returning a
+// failed-precondition response to the caller.
+func (order *Order) ExecuteCompare(expected EntityRevision, actual []catalog.ConfigurationRecord, actor string, at time.Time) (CompareStepResult, bool, error) {
+	if order.revision != expected {
+		return CompareStepResult{}, false, fmt.Errorf("%w: order revision is %d, expected %d", ErrAborted, order.revision, expected)
+	}
+	if err := order.requireCurrent(StepCompare, StepPending); err != nil {
+		return CompareStepResult{}, false, err
+	}
+	if strings.TrimSpace(actor) == "" || at.IsZero() {
+		return CompareStepResult{}, false, fmt.Errorf("%w: actor and comparison time are required", ErrInvalid)
+	}
+
+	expectedRecords := make([]catalog.ConfigurationRecord, 0, len(order.items))
+	expectedByKey := make(map[string]*catalog.ConfigurationRecord, len(order.items))
+	targetKeys := make(map[string]struct{}, len(order.items))
+	for _, item := range order.items {
+		targetKeys[item.RecordKey] = struct{}{}
+		if item.After != nil {
+			record := cloneRecord(*item.After)
+			expectedRecords = append(expectedRecords, record)
+			expectedByKey[item.RecordKey] = &record
+		}
+	}
+	actualRecords := make([]catalog.ConfigurationRecord, 0, len(actual))
+	actualByKey := make(map[string]*catalog.ConfigurationRecord, len(actual))
+	for _, record := range actual {
+		if _, wanted := targetKeys[record.RecordKey]; !wanted {
+			continue
+		}
+		if record.Collection != order.items[0].Collection || record.Environment != order.scope.Environment || record.Data == nil {
+			return CompareStepResult{}, false, fmt.Errorf("%w: actual compare record %q has inconsistent identity", ErrInvalid, record.RecordKey)
+		}
+		if _, duplicate := actualByKey[record.RecordKey]; duplicate {
+			return CompareStepResult{}, false, fmt.Errorf("%w: duplicate actual compare record %q", ErrInvalid, record.RecordKey)
+		}
+		copy := cloneRecord(record)
+		actualRecords = append(actualRecords, copy)
+		actualByKey[record.RecordKey] = &copy
+	}
+
+	diffKeys := make([]string, 0, len(targetKeys))
+	for key := range targetKeys {
+		expectedRecord, expectedPresent := expectedByKey[key]
+		actualRecord, actualPresent := actualByKey[key]
+		if expectedPresent != actualPresent || (expectedPresent && !equalData(expectedRecord.Data, actualRecord.Data)) {
+			diffKeys = append(diffKeys, key)
+		}
+	}
+	sort.Strings(diffKeys)
+	expectedDigest, err := catalog.ComputeBaseDigest(expectedRecords)
+	if err != nil {
+		return CompareStepResult{}, false, fmt.Errorf("%w: compute expected compare digest: %v", ErrInvalid, err)
+	}
+	actualDigest, err := catalog.ComputeBaseDigest(actualRecords)
+	if err != nil {
+		return CompareStepResult{}, false, fmt.Errorf("%w: compute actual compare digest: %v", ErrInvalid, err)
+	}
+	at = at.UTC()
+	result := CompareStepResult{ExpectedDigest: expectedDigest, ActualDigest: actualDigest, DiffKeys: diffKeys, CheckedAt: at}
+	step := &order.steps[order.currentStep]
+	step.CompareResult = cloneCompareResultPointer(&result)
+	if len(diffKeys) == 0 {
+		step.Status = StepExecuted
+		step.ExecutedAt = timePointer(at)
+		step.ExecutedBy = actor
+	}
+	order.bump(actor, at)
+	return *cloneCompareResultPointer(&result), len(diffKeys) == 0, nil
+}
+
 func (order *Order) RollbackOverlay(expected EntityRevision, currentCollectionRevision, newRevision catalog.ConfigRevision, actor string, at time.Time) (OverlayEffect, error) {
 	if order.revision != expected {
 		return OverlayEffect{}, fmt.Errorf("%w: order revision is %d, expected %d", ErrAborted, order.revision, expected)
@@ -1139,6 +1232,11 @@ func cloneBaseEffectPointer(effect *BaseEffect) *BaseEffect {
 func cloneStep(step StepState) StepState {
 	step.RequiredRoles = append([]string(nil), step.RequiredRoles...)
 	step.RolloutRanges = append([]overlay.BucketRange(nil), step.RolloutRanges...)
+	if step.ComparePreviewBucket != nil {
+		value := *step.ComparePreviewBucket
+		step.ComparePreviewBucket = &value
+	}
+	step.CompareResult = cloneCompareResultPointer(step.CompareResult)
 	if step.Approval != nil {
 		approval := *step.Approval
 		if approval.DecidedAt != nil {
@@ -1160,6 +1258,24 @@ func cloneStep(step StepState) StepState {
 		step.Effect = &effect
 	}
 	return step
+}
+
+func cloneCompareResultPointer(result *CompareStepResult) *CompareStepResult {
+	if result == nil {
+		return nil
+	}
+	cloned := *result
+	cloned.DiffKeys = make([]string, len(result.DiffKeys))
+	copy(cloned.DiffKeys, result.DiffKeys)
+	return &cloned
+}
+
+func int32PointerFromInt(value *int) *int32 {
+	if value == nil {
+		return nil
+	}
+	converted := int32(*value)
+	return &converted
 }
 
 func equalData(left, right map[string]string) bool {

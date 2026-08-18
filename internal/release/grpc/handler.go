@@ -12,6 +12,7 @@ import (
 	controlv1 "github.com/asherzj/financial_configuration_center/kitex_gen/finconfig/control/v1"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 type Commands interface {
@@ -152,7 +153,21 @@ func project(view application.OrderView) *controlv1.ReleaseOrderDetail {
 	}
 	steps := make([]*controlv1.ReleaseStepState, len(view.Steps))
 	for index, step := range view.Steps {
-		steps[index] = &controlv1.ReleaseStepState{StepCode: step.Code, StepType: string(step.Type), Sequence: int32(index), Status: string(step.Status), EntityRevision: int64(view.Revision)}
+		ranges := make([]*controlv1.ReleaseBucketRange, len(step.RolloutRanges))
+		for rangeIndex, bucketRange := range step.RolloutRanges {
+			ranges[rangeIndex] = &controlv1.ReleaseBucketRange{Start: bucketRange.Start, End: bucketRange.End}
+		}
+		var compareResult *controlv1.ReleaseCompareResult
+		if step.CompareResult != nil {
+			compareResult = &controlv1.ReleaseCompareResult{
+				ExpectedDigest: step.CompareResult.ExpectedDigest.Value, ActualDigest: step.CompareResult.ActualDigest.Value,
+				DiffKeys: append([]string(nil), step.CompareResult.DiffKeys...), CheckedAt: timestamppb.New(step.CompareResult.CheckedAt),
+			}
+		}
+		steps[index] = &controlv1.ReleaseStepState{
+			StepCode: step.Code, StepType: string(step.Type), Sequence: int32(index), Status: string(step.Status), EntityRevision: int64(view.Revision),
+			RolloutRanges: ranges, CompareResult: compareResult,
+		}
 	}
 	return &controlv1.ReleaseOrderDetail{
 		Order: &controlv1.ReleaseOrder{
@@ -184,6 +199,8 @@ func mapError(err error) error {
 		return status.Error(codes.Aborted, err.Error())
 	case errors.Is(err, release.ErrForbidden):
 		return status.Error(codes.PermissionDenied, err.Error())
+	case errors.Is(err, release.ErrFailedPrecondition):
+		return status.Error(codes.FailedPrecondition, err.Error())
 	case errors.Is(err, release.ErrInvalid):
 		return status.Error(codes.InvalidArgument, err.Error())
 	default:

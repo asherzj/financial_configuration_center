@@ -378,10 +378,10 @@ components:
           required: [id, status, currentStep, currentStepType, currentStepStatus, entityRevision]
           properties:
             id: {type: string}
-            status: {type: string, enum: [IN_PROGRESS, SUCCEEDED, REJECTED]}
+            status: {type: string, enum: [IN_PROGRESS, SUCCEEDED, REJECTED, ROLLED_BACK]}
             currentStep: {type: string, description: Stable step code from the template snapshot.}
-            currentStepType: {type: string, enum: [MANUAL_REVIEW, BASE_APPLY, COMPARE, COMPLETE]}
-            currentStepStatus: {type: string, enum: [PENDING, EXECUTING, EXECUTED, APPROVED, REJECTED]}
+            currentStepType: {type: string, enum: [MANUAL_REVIEW, OVERLAY_APPLY, PERCENT_ROLLOUT, BASE_APPLY, COMPARE, COMPLETE]}
+            currentStepStatus: {type: string, enum: [PENDING, EXECUTING, EXECUTED, APPROVED, REJECTED, ROLLED_BACK]}
             entityRevision: {type: integer, format: int64, minimum: 1}
         items: {type: array, items: {type: object}}
         steps:
@@ -394,7 +394,35 @@ components:
               code: {type: string}
               type: {type: string}
               status: {type: string}
-        allowedActions: {type: array, items: {type: string, enum: [EXECUTE, ADVANCE, APPROVE, REJECT]}}
+              rolloutRanges:
+                type: array
+                items:
+                  type: object
+                  additionalProperties: false
+                  required: [start, end]
+                  properties:
+                    start: {type: integer, minimum: 0, maximum: 99}
+                    end: {type: integer, minimum: 0, maximum: 99}
+              compareResult:
+                type: object
+                additionalProperties: false
+                required: [expectedDigest, actualDigest, diffKeys, checkedAt]
+                properties:
+                  expectedDigest:
+                    type: object
+                    required: [algorithm, value]
+                    properties:
+                      algorithm: {type: string}
+                      value: {type: string}
+                  actualDigest:
+                    type: object
+                    required: [algorithm, value]
+                    properties:
+                      algorithm: {type: string}
+                      value: {type: string}
+                  diffKeys: {type: array, items: {type: string}}
+                  checkedAt: {type: string, format: date-time}
+        allowedActions: {type: array, items: {type: string, enum: [EXECUTE, ADVANCE, ROLLBACK, APPROVE, REJECT]}}
     RevealFieldRequest:
       type: object
       additionalProperties: false

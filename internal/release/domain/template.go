@@ -39,8 +39,15 @@ type PercentRolloutParams struct {
 	Ranges []overlay.BucketRange
 }
 
+type CompareMode string
+
+const (
+	CompareEffective CompareMode = "EFFECTIVE"
+	CompareBase      CompareMode = "BASE"
+)
+
 type CompareParams struct {
-	Mode          string
+	Mode          CompareMode
 	PreviewBucket *int
 }
 
@@ -157,13 +164,13 @@ func CompileTemplate(document []byte, finalEffect FinalEffect) (CompiledTemplate
 			step.PercentRollout = &PercentRolloutParams{Ranges: canonical}
 		case StepCompare:
 			var params struct {
-				Mode          string `json:"mode"`
-				PreviewBucket *int   `json:"previewBucket"`
+				Mode          CompareMode `json:"mode"`
+				PreviewBucket *int        `json:"previewBucket"`
 			}
 			if err := decodeStrict(envelope.Params, &params); err != nil {
 				return CompiledTemplate{}, fmt.Errorf("compile template step %q params: %w", envelope.Code, err)
 			}
-			if params.Mode != "EFFECTIVE" && params.Mode != "BASE" {
+			if params.Mode != CompareEffective && params.Mode != CompareBase {
 				return CompiledTemplate{}, fmt.Errorf("compile template step %q: compare mode is invalid", envelope.Code)
 			}
 			if params.PreviewBucket != nil && (*params.PreviewBucket < 0 || *params.PreviewBucket > 99) {

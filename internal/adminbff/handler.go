@@ -243,6 +243,8 @@ func writeDomainError(writer http.ResponseWriter, err error) {
 		writeError(writer, http.StatusForbidden, "PERMISSION_DENIED", err.Error())
 	case errors.Is(err, release.ErrAborted):
 		writeError(writer, http.StatusConflict, "ABORTED", err.Error())
+	case errors.Is(err, release.ErrFailedPrecondition):
+		writeError(writer, http.StatusPreconditionFailed, "COMPARE_MISMATCH", err.Error())
 	case errors.Is(err, release.ErrInvalid):
 		writeError(writer, http.StatusBadRequest, "INVALID_ARGUMENT", err.Error())
 	default:
@@ -280,7 +282,14 @@ func releaseDetail(view application.OrderView) map[string]any {
 	}
 	steps := make([]map[string]any, len(view.Steps))
 	for index, step := range view.Steps {
-		steps[index] = map[string]any{"code": step.Code, "type": step.Type, "status": step.Status}
+		projected := map[string]any{"code": step.Code, "type": step.Type, "status": step.Status}
+		if len(step.RolloutRanges) != 0 {
+			projected["rolloutRanges"] = step.RolloutRanges
+		}
+		if step.CompareResult != nil {
+			projected["compareResult"] = step.CompareResult
+		}
+		steps[index] = projected
 	}
 	return map[string]any{
 		"order": map[string]any{"id": view.ID, "status": view.Status, "currentStep": view.CurrentStepCode, "currentStepType": view.CurrentStep, "currentStepStatus": view.CurrentStepStatus, "entityRevision": view.Revision},

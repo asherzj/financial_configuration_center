@@ -124,6 +124,21 @@ func TestBFFMapsManualApprovalRolesAndServerCapabilities(t *testing.T) {
 	}
 }
 
+func TestBFFMapsCompareMismatchToPreconditionFailed(t *testing.T) {
+	t.Parallel()
+	releases := &releaseStub{actErr: release.ErrFailedPrecondition}
+	handler, err := adminbff.New(&queryStub{}, releases, authenticator{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	response := serveJSON(t, handler, http.MethodPost, "/api/v1/releases/order/actions", "compare-id", map[string]any{
+		"action": "EXECUTE", "expectedOrderRevision": 3, "expectedCurrentStep": "compare",
+	})
+	if response.Code != http.StatusPreconditionFailed || !bytes.Contains(response.Body.Bytes(), []byte(`"code":"COMPARE_MISMATCH"`)) {
+		t.Fatalf("response=%d %s", response.Code, response.Body.String())
+	}
+}
+
 func TestBFFMapsOverlayReleaseAndRollbackCapability(t *testing.T) {
 	t.Parallel()
 	releases := &releaseStub{

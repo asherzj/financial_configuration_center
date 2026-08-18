@@ -283,6 +283,20 @@ message ReleaseStepState {
   string status = 4;
   int64 entity_revision = 5;
   optional string error_code = 6;
+  repeated ReleaseBucketRange rollout_ranges = 7;
+  optional ReleaseCompareResult compare_result = 8;
+}
+
+message ReleaseBucketRange {
+  int32 start = 1;
+  int32 end = 2;
+}
+
+message ReleaseCompareResult {
+  string expected_digest = 1;
+  string actual_digest = 2;
+  repeated string diff_keys = 3;
+  google.protobuf.Timestamp checked_at = 4;
 }
 
 message ReleaseOrder {

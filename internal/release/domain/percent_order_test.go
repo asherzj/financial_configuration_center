@@ -136,6 +136,69 @@ func TestPercentagePromotionAndRollbackRestoreBaseAndRanges(t *testing.T) {
 	}
 }
 
+func TestComparePersistsDigestsAndKeepsMismatchPending(t *testing.T) {
+	t.Parallel()
+	order, after := newCompareOrder(t)
+	now := time.Date(2026, 8, 19, 18, 0, 0, 0, time.UTC)
+
+	mismatch := after
+	mismatch.Data = map[string]string{"route_code": "visa", "priority": "8"}
+	result, matched, err := order.ExecuteCompare(1, []catalog.ConfigurationRecord{mismatch}, "operator", now)
+	if err != nil {
+		t.Fatalf("ExecuteCompare mismatch: %v", err)
+	}
+	if matched || !reflect.DeepEqual(result.DiffKeys, []string{after.RecordKey}) || result.ExpectedDigest.Value == result.ActualDigest.Value {
+		t.Fatalf("mismatch result = %+v matched=%t", result, matched)
+	}
+	step := order.CurrentStep()
+	if step.Status != release.StepPending || step.CompareResult == nil || order.Revision() != 2 {
+		t.Fatalf("mismatch step = %+v revision=%d", step, order.Revision())
+	}
+
+	result, matched, err = order.ExecuteCompare(2, []catalog.ConfigurationRecord{after}, "operator", now.Add(time.Minute))
+	if err != nil {
+		t.Fatalf("ExecuteCompare match: %v", err)
+	}
+	if !matched || len(result.DiffKeys) != 0 || result.ExpectedDigest != result.ActualDigest {
+		t.Fatalf("match result = %+v matched=%t", result, matched)
+	}
+	step = order.CurrentStep()
+	if step.Status != release.StepExecuted || step.CompareResult == nil || step.ExecutedBy != "operator" || order.Revision() != 3 {
+		t.Fatalf("matched step = %+v revision=%d", step, order.Revision())
+	}
+}
+
+func newCompareOrder(t *testing.T) (*release.Order, catalog.ConfigurationRecord) {
+	t.Helper()
+	template, err := release.CompileTemplate([]byte(`{"steps":[
+		{"code":"compare","type":"COMPARE","params":{"mode":"EFFECTIVE","previewBucket":6}},
+		{"code":"apply","type":"BASE_APPLY","params":{"cleanupScopeOverlay":true}},
+		{"code":"complete","type":"COMPLETE","params":{}}
+	]}`), release.FinalEffectBase)
+	if err != nil {
+		t.Fatal(err)
+	}
+	after := catalog.ConfigurationRecord{
+		Collection: "payment_routes", Environment: "production", RecordKey: "route-a",
+		Data: map[string]string{"route_code": "visa", "priority": "9"},
+	}
+	order, err := release.NewBaseFinalOrder(release.BaseFinalOrderSpec{
+		ID: "compare-order", ReleaseNumber: "REL-COMPARE-1", IdempotencyKey: "compare-create",
+		ModelCode: "payment-route-admin", TemplateCode: "compare-final", TemplateVersion: 1,
+		ReleaseTypeCode: "compare", RequestDigest: "0000000000000000000000000000000000000000000000000000000000000000",
+		Scope: release.Scope{Region: "cn", Environment: "production", Stage: "blue"}, CreatedBy: "operator", CreatedAt: time.Date(2026, 8, 19, 17, 0, 0, 0, time.UTC), Template: template,
+		Items: []release.BaseFinalItemSpec{{ID: "compare-item", After: after, ExpectedCollectionRevision: 7}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	step := order.CurrentStep()
+	if step.CompareMode != release.CompareEffective || step.ComparePreviewBucket == nil || *step.ComparePreviewBucket != 6 {
+		t.Fatalf("compiled compare context = %+v", step)
+	}
+	return order, after
+}
+
 func newPercentageOrder(t *testing.T) (*release.Order, catalog.ConfigurationRecord) {
 	t.Helper()
 	template, err := release.CompileTemplate([]byte(`{"steps":[

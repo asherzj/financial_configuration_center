@@ -543,6 +543,7 @@ func TestRealMySQLPercentageRolloutTransaction(t *testing.T) {
 			'percent-final', 1, 'payment-route-admin', 'percentage', 'A', 'BASE_FINAL',
 			JSON_OBJECT('steps', JSON_ARRAY(
 				JSON_OBJECT('code', 'percent-10', 'type', 'PERCENT_ROLLOUT', 'params', JSON_OBJECT('ranges', JSON_ARRAY(JSON_OBJECT('start', 0, 'end', 9)))),
+				JSON_OBJECT('code', 'compare', 'type', 'COMPARE', 'params', JSON_OBJECT('mode', 'EFFECTIVE', 'previewBucket', 6)),
 				JSON_OBJECT('code', 'promote', 'type', 'BASE_APPLY', 'params', JSON_OBJECT('cleanupScopeOverlay', TRUE)),
 				JSON_OBJECT('code', 'complete', 'type', 'COMPLETE', 'params', JSON_OBJECT())
 			)), ?, 'seed'
@@ -618,12 +619,27 @@ func TestRealMySQLPercentageRolloutTransaction(t *testing.T) {
 		OrderID: created.ID, ActionRequestID: "50000000-0000-4000-8000-000000000002",
 		ExpectedRevision: executed.Revision, ExpectedCurrentStep: "percent-10", Action: application.ActionAdvance, Actor: "operator@example.com",
 	})
-	if err != nil || advanced.CurrentStep != release.StepBaseApply || advanced.CurrentStepCode != "promote" {
+	if err != nil || advanced.CurrentStep != release.StepCompare || advanced.CurrentStepCode != "compare" {
 		t.Fatalf("reload and advance percentage order: view=%+v error=%v", advanced, err)
 	}
-	promoted, err := service.Act(ctx, application.ActCommand{
+	compared, err := service.Act(ctx, application.ActCommand{
 		OrderID: created.ID, ActionRequestID: "50000000-0000-4000-8000-000000000003",
-		ExpectedRevision: advanced.Revision, ExpectedCurrentStep: "promote", Action: application.ActionExecute, Actor: "operator@example.com",
+		ExpectedRevision: advanced.Revision, ExpectedCurrentStep: "compare", Action: application.ActionExecute, Actor: "operator@example.com",
+	})
+	if err != nil {
+		t.Fatalf("compare percentage: %v", err)
+	}
+	assertCount(t, raw, `SELECT COUNT(*) FROM release_step_states WHERE release_order_id = '`+created.ID+`' AND step_code = 'compare' AND status = 'EXECUTED' AND JSON_LENGTH(JSON_EXTRACT(compare_result, '$.diffKeys')) = 0 AND JSON_UNQUOTE(JSON_EXTRACT(compare_result, '$.expectedDigest.value')) = JSON_UNQUOTE(JSON_EXTRACT(compare_result, '$.actualDigest.value'))`, 1)
+	advancedToPromote, err := service.Act(ctx, application.ActCommand{
+		OrderID: created.ID, ActionRequestID: "50000000-0000-4000-8000-000000000004",
+		ExpectedRevision: compared.Revision, ExpectedCurrentStep: "compare", Action: application.ActionAdvance, Actor: "operator@example.com",
+	})
+	if err != nil || advancedToPromote.CurrentStep != release.StepBaseApply || advancedToPromote.CurrentStepCode != "promote" {
+		t.Fatalf("advance compare: view=%+v error=%v", advancedToPromote, err)
+	}
+	promoted, err := service.Act(ctx, application.ActCommand{
+		OrderID: created.ID, ActionRequestID: "50000000-0000-4000-8000-000000000005",
+		ExpectedRevision: advancedToPromote.Revision, ExpectedCurrentStep: "promote", Action: application.ActionExecute, Actor: "operator@example.com",
 	})
 	if err != nil {
 		t.Fatalf("promote percentage: %v", err)
@@ -646,7 +662,7 @@ func TestRealMySQLPercentageRolloutTransaction(t *testing.T) {
 	}
 
 	rolledBack, err := service.Act(ctx, application.ActCommand{
-		OrderID: created.ID, ActionRequestID: "50000000-0000-4000-8000-000000000004",
+		OrderID: created.ID, ActionRequestID: "50000000-0000-4000-8000-000000000006",
 		ExpectedRevision: promoted.Revision, ExpectedCurrentStep: "promote", Action: application.ActionRollback, Actor: "operator@example.com",
 	})
 	if err != nil {
@@ -668,6 +684,17 @@ func TestRealMySQLPercentageRolloutTransaction(t *testing.T) {
 	if _, ok := unselectedClient.GetByKey("payment_routes", rolloutRecord.RecordKey); ok {
 		t.Fatal("promotion rollback did not restore unselected SDK view")
 	}
+	if err := store.WithinTransaction(ctx, func(transaction application.Transaction) error {
+		return transaction.RecordAction(ctx, application.ActionRecord{
+			OrderID: created.ID, StepCode: "compare", Action: application.ActionExecute,
+			Actor: "operator@example.com", Scope: release.Scope{Region: "cn", Environment: "production", Stage: "blue"}, At: now,
+			Failure: &application.ActionFailure{Code: "COMPARE_MISMATCH", Message: "comparison differs for 1 record(s)"},
+		})
+	}); err != nil {
+		t.Fatalf("persist failed compare diagnostics: %v", err)
+	}
+	assertCount(t, raw, `SELECT COUNT(*) FROM release_operation_logs WHERE release_order_id = '`+created.ID+`' AND step_code = 'compare' AND result = 'FAILED' AND error_code = 'COMPARE_MISMATCH'`, 1)
+	assertCount(t, raw, `SELECT COUNT(*) FROM audit_records WHERE resource_id = '`+created.ID+`' AND action = 'EXECUTE' AND result = 'FAILED' AND JSON_UNQUOTE(JSON_EXTRACT(metadata, '$.errorCode')) = 'COMPARE_MISMATCH'`, 1)
 }
 
 func TestRealMySQLHTTPWalkingSkeleton(t *testing.T) {

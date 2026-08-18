@@ -74,6 +74,21 @@ func TestReleaseHandlerMapsIdempotencyConflict(t *testing.T) {
 	}
 }
 
+func TestReleaseHandlerMapsCompareMismatch(t *testing.T) {
+	t.Parallel()
+	handler, err := releasegrpc.New(&commandStub{actErr: release.ErrFailedPrecondition}, actorResolver{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = handler.ActOnReleaseOrder(context.Background(), &controlv1.ActOnReleaseOrderRequest{
+		OrderId: "order", ActionRequestId: "compare-id", ExpectedOrderRevision: 3,
+		ExpectedCurrentStep: "compare", Action: commonv1.ReleaseAction_RELEASE_ACTION_EXECUTE,
+	})
+	if status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("status = %v, want FailedPrecondition", err)
+	}
+}
+
 type actorResolver struct{}
 
 func (actorResolver) Subject(context.Context) (string, error) { return "operator@example.com", nil }

@@ -2316,6 +2316,8 @@ type ReleaseStepState struct {
 	Status         string                 `protobuf:"bytes,4,opt,name=status,proto3" json:"status,omitempty"`
 	EntityRevision int64                  `protobuf:"varint,5,opt,name=entity_revision,json=entityRevision,proto3" json:"entity_revision,omitempty"`
 	ErrorCode      *string                `protobuf:"bytes,6,opt,name=error_code,json=errorCode,proto3,oneof" json:"error_code,omitempty"`
+	RolloutRanges  []*ReleaseBucketRange  `protobuf:"bytes,7,rep,name=rollout_ranges,json=rolloutRanges,proto3" json:"rollout_ranges,omitempty"`
+	CompareResult  *ReleaseCompareResult  `protobuf:"bytes,8,opt,name=compare_result,json=compareResult,proto3,oneof" json:"compare_result,omitempty"`
 	unknownFields  protoimpl.UnknownFields
 	sizeCache      protoimpl.SizeCache
 }
@@ -2392,6 +2394,140 @@ func (x *ReleaseStepState) GetErrorCode() string {
 	return ""
 }
 
+func (x *ReleaseStepState) GetRolloutRanges() []*ReleaseBucketRange {
+	if x != nil {
+		return x.RolloutRanges
+	}
+	return nil
+}
+
+func (x *ReleaseStepState) GetCompareResult() *ReleaseCompareResult {
+	if x != nil {
+		return x.CompareResult
+	}
+	return nil
+}
+
+type ReleaseBucketRange struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Start         int32                  `protobuf:"varint,1,opt,name=start,proto3" json:"start,omitempty"`
+	End           int32                  `protobuf:"varint,2,opt,name=end,proto3" json:"end,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ReleaseBucketRange) Reset() {
+	*x = ReleaseBucketRange{}
+	mi := &file_finconfig_control_v1_control_proto_msgTypes[38]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ReleaseBucketRange) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ReleaseBucketRange) ProtoMessage() {}
+
+func (x *ReleaseBucketRange) ProtoReflect() protoreflect.Message {
+	mi := &file_finconfig_control_v1_control_proto_msgTypes[38]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ReleaseBucketRange.ProtoReflect.Descriptor instead.
+func (*ReleaseBucketRange) Descriptor() ([]byte, []int) {
+	return file_finconfig_control_v1_control_proto_rawDescGZIP(), []int{38}
+}
+
+func (x *ReleaseBucketRange) GetStart() int32 {
+	if x != nil {
+		return x.Start
+	}
+	return 0
+}
+
+func (x *ReleaseBucketRange) GetEnd() int32 {
+	if x != nil {
+		return x.End
+	}
+	return 0
+}
+
+type ReleaseCompareResult struct {
+	state          protoimpl.MessageState `protogen:"open.v1"`
+	ExpectedDigest string                 `protobuf:"bytes,1,opt,name=expected_digest,json=expectedDigest,proto3" json:"expected_digest,omitempty"`
+	ActualDigest   string                 `protobuf:"bytes,2,opt,name=actual_digest,json=actualDigest,proto3" json:"actual_digest,omitempty"`
+	DiffKeys       []string               `protobuf:"bytes,3,rep,name=diff_keys,json=diffKeys,proto3" json:"diff_keys,omitempty"`
+	CheckedAt      *timestamppb.Timestamp `protobuf:"bytes,4,opt,name=checked_at,json=checkedAt,proto3" json:"checked_at,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
+}
+
+func (x *ReleaseCompareResult) Reset() {
+	*x = ReleaseCompareResult{}
+	mi := &file_finconfig_control_v1_control_proto_msgTypes[39]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ReleaseCompareResult) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ReleaseCompareResult) ProtoMessage() {}
+
+func (x *ReleaseCompareResult) ProtoReflect() protoreflect.Message {
+	mi := &file_finconfig_control_v1_control_proto_msgTypes[39]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ReleaseCompareResult.ProtoReflect.Descriptor instead.
+func (*ReleaseCompareResult) Descriptor() ([]byte, []int) {
+	return file_finconfig_control_v1_control_proto_rawDescGZIP(), []int{39}
+}
+
+func (x *ReleaseCompareResult) GetExpectedDigest() string {
+	if x != nil {
+		return x.ExpectedDigest
+	}
+	return ""
+}
+
+func (x *ReleaseCompareResult) GetActualDigest() string {
+	if x != nil {
+		return x.ActualDigest
+	}
+	return ""
+}
+
+func (x *ReleaseCompareResult) GetDiffKeys() []string {
+	if x != nil {
+		return x.DiffKeys
+	}
+	return nil
+}
+
+func (x *ReleaseCompareResult) GetCheckedAt() *timestamppb.Timestamp {
+	if x != nil {
+		return x.CheckedAt
+	}
+	return nil
+}
+
 type ReleaseOrder struct {
 	state              protoimpl.MessageState `protogen:"open.v1"`
 	Id                 string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
@@ -2413,7 +2549,7 @@ type ReleaseOrder struct {
 
 func (x *ReleaseOrder) Reset() {
 	*x = ReleaseOrder{}
-	mi := &file_finconfig_control_v1_control_proto_msgTypes[38]
+	mi := &file_finconfig_control_v1_control_proto_msgTypes[40]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2425,7 +2561,7 @@ func (x *ReleaseOrder) String() string {
 func (*ReleaseOrder) ProtoMessage() {}
 
 func (x *ReleaseOrder) ProtoReflect() protoreflect.Message {
-	mi := &file_finconfig_control_v1_control_proto_msgTypes[38]
+	mi := &file_finconfig_control_v1_control_proto_msgTypes[40]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2438,7 +2574,7 @@ func (x *ReleaseOrder) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ReleaseOrder.ProtoReflect.Descriptor instead.
 func (*ReleaseOrder) Descriptor() ([]byte, []int) {
-	return file_finconfig_control_v1_control_proto_rawDescGZIP(), []int{38}
+	return file_finconfig_control_v1_control_proto_rawDescGZIP(), []int{40}
 }
 
 func (x *ReleaseOrder) GetId() string {
@@ -2544,7 +2680,7 @@ type ReleaseOrderDetail struct {
 
 func (x *ReleaseOrderDetail) Reset() {
 	*x = ReleaseOrderDetail{}
-	mi := &file_finconfig_control_v1_control_proto_msgTypes[39]
+	mi := &file_finconfig_control_v1_control_proto_msgTypes[41]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2556,7 +2692,7 @@ func (x *ReleaseOrderDetail) String() string {
 func (*ReleaseOrderDetail) ProtoMessage() {}
 
 func (x *ReleaseOrderDetail) ProtoReflect() protoreflect.Message {
-	mi := &file_finconfig_control_v1_control_proto_msgTypes[39]
+	mi := &file_finconfig_control_v1_control_proto_msgTypes[41]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2569,7 +2705,7 @@ func (x *ReleaseOrderDetail) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ReleaseOrderDetail.ProtoReflect.Descriptor instead.
 func (*ReleaseOrderDetail) Descriptor() ([]byte, []int) {
-	return file_finconfig_control_v1_control_proto_rawDescGZIP(), []int{39}
+	return file_finconfig_control_v1_control_proto_rawDescGZIP(), []int{41}
 }
 
 func (x *ReleaseOrderDetail) GetOrder() *ReleaseOrder {
@@ -2609,7 +2745,7 @@ type CreateReleaseOrderResponse struct {
 
 func (x *CreateReleaseOrderResponse) Reset() {
 	*x = CreateReleaseOrderResponse{}
-	mi := &file_finconfig_control_v1_control_proto_msgTypes[40]
+	mi := &file_finconfig_control_v1_control_proto_msgTypes[42]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2621,7 +2757,7 @@ func (x *CreateReleaseOrderResponse) String() string {
 func (*CreateReleaseOrderResponse) ProtoMessage() {}
 
 func (x *CreateReleaseOrderResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_finconfig_control_v1_control_proto_msgTypes[40]
+	mi := &file_finconfig_control_v1_control_proto_msgTypes[42]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2634,7 +2770,7 @@ func (x *CreateReleaseOrderResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CreateReleaseOrderResponse.ProtoReflect.Descriptor instead.
 func (*CreateReleaseOrderResponse) Descriptor() ([]byte, []int) {
-	return file_finconfig_control_v1_control_proto_rawDescGZIP(), []int{40}
+	return file_finconfig_control_v1_control_proto_rawDescGZIP(), []int{42}
 }
 
 func (x *CreateReleaseOrderResponse) GetDetail() *ReleaseOrderDetail {
@@ -2653,7 +2789,7 @@ type GetReleaseOrderResponse struct {
 
 func (x *GetReleaseOrderResponse) Reset() {
 	*x = GetReleaseOrderResponse{}
-	mi := &file_finconfig_control_v1_control_proto_msgTypes[41]
+	mi := &file_finconfig_control_v1_control_proto_msgTypes[43]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2665,7 +2801,7 @@ func (x *GetReleaseOrderResponse) String() string {
 func (*GetReleaseOrderResponse) ProtoMessage() {}
 
 func (x *GetReleaseOrderResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_finconfig_control_v1_control_proto_msgTypes[41]
+	mi := &file_finconfig_control_v1_control_proto_msgTypes[43]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2678,7 +2814,7 @@ func (x *GetReleaseOrderResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetReleaseOrderResponse.ProtoReflect.Descriptor instead.
 func (*GetReleaseOrderResponse) Descriptor() ([]byte, []int) {
-	return file_finconfig_control_v1_control_proto_rawDescGZIP(), []int{41}
+	return file_finconfig_control_v1_control_proto_rawDescGZIP(), []int{43}
 }
 
 func (x *GetReleaseOrderResponse) GetDetail() *ReleaseOrderDetail {
@@ -2697,7 +2833,7 @@ type ActOnReleaseOrderResponse struct {
 
 func (x *ActOnReleaseOrderResponse) Reset() {
 	*x = ActOnReleaseOrderResponse{}
-	mi := &file_finconfig_control_v1_control_proto_msgTypes[42]
+	mi := &file_finconfig_control_v1_control_proto_msgTypes[44]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2709,7 +2845,7 @@ func (x *ActOnReleaseOrderResponse) String() string {
 func (*ActOnReleaseOrderResponse) ProtoMessage() {}
 
 func (x *ActOnReleaseOrderResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_finconfig_control_v1_control_proto_msgTypes[42]
+	mi := &file_finconfig_control_v1_control_proto_msgTypes[44]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2722,7 +2858,7 @@ func (x *ActOnReleaseOrderResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ActOnReleaseOrderResponse.ProtoReflect.Descriptor instead.
 func (*ActOnReleaseOrderResponse) Descriptor() ([]byte, []int) {
-	return file_finconfig_control_v1_control_proto_rawDescGZIP(), []int{42}
+	return file_finconfig_control_v1_control_proto_rawDescGZIP(), []int{44}
 }
 
 func (x *ActOnReleaseOrderResponse) GetDetail() *ReleaseOrderDetail {
@@ -2741,7 +2877,7 @@ type CreateCompensatingReleaseResponse struct {
 
 func (x *CreateCompensatingReleaseResponse) Reset() {
 	*x = CreateCompensatingReleaseResponse{}
-	mi := &file_finconfig_control_v1_control_proto_msgTypes[43]
+	mi := &file_finconfig_control_v1_control_proto_msgTypes[45]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2753,7 +2889,7 @@ func (x *CreateCompensatingReleaseResponse) String() string {
 func (*CreateCompensatingReleaseResponse) ProtoMessage() {}
 
 func (x *CreateCompensatingReleaseResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_finconfig_control_v1_control_proto_msgTypes[43]
+	mi := &file_finconfig_control_v1_control_proto_msgTypes[45]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2766,7 +2902,7 @@ func (x *CreateCompensatingReleaseResponse) ProtoReflect() protoreflect.Message 
 
 // Deprecated: Use CreateCompensatingReleaseResponse.ProtoReflect.Descriptor instead.
 func (*CreateCompensatingReleaseResponse) Descriptor() ([]byte, []int) {
-	return file_finconfig_control_v1_control_proto_rawDescGZIP(), []int{43}
+	return file_finconfig_control_v1_control_proto_rawDescGZIP(), []int{45}
 }
 
 func (x *CreateCompensatingReleaseResponse) GetDetail() *ReleaseOrderDetail {
@@ -2785,7 +2921,7 @@ type GetReleaseOrderRequest struct {
 
 func (x *GetReleaseOrderRequest) Reset() {
 	*x = GetReleaseOrderRequest{}
-	mi := &file_finconfig_control_v1_control_proto_msgTypes[44]
+	mi := &file_finconfig_control_v1_control_proto_msgTypes[46]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2797,7 +2933,7 @@ func (x *GetReleaseOrderRequest) String() string {
 func (*GetReleaseOrderRequest) ProtoMessage() {}
 
 func (x *GetReleaseOrderRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_finconfig_control_v1_control_proto_msgTypes[44]
+	mi := &file_finconfig_control_v1_control_proto_msgTypes[46]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2810,7 +2946,7 @@ func (x *GetReleaseOrderRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetReleaseOrderRequest.ProtoReflect.Descriptor instead.
 func (*GetReleaseOrderRequest) Descriptor() ([]byte, []int) {
-	return file_finconfig_control_v1_control_proto_rawDescGZIP(), []int{44}
+	return file_finconfig_control_v1_control_proto_rawDescGZIP(), []int{46}
 }
 
 func (x *GetReleaseOrderRequest) GetOrderId() string {
@@ -2831,7 +2967,7 @@ type ListReleaseOrdersRequest struct {
 
 func (x *ListReleaseOrdersRequest) Reset() {
 	*x = ListReleaseOrdersRequest{}
-	mi := &file_finconfig_control_v1_control_proto_msgTypes[45]
+	mi := &file_finconfig_control_v1_control_proto_msgTypes[47]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2843,7 +2979,7 @@ func (x *ListReleaseOrdersRequest) String() string {
 func (*ListReleaseOrdersRequest) ProtoMessage() {}
 
 func (x *ListReleaseOrdersRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_finconfig_control_v1_control_proto_msgTypes[45]
+	mi := &file_finconfig_control_v1_control_proto_msgTypes[47]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2856,7 +2992,7 @@ func (x *ListReleaseOrdersRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListReleaseOrdersRequest.ProtoReflect.Descriptor instead.
 func (*ListReleaseOrdersRequest) Descriptor() ([]byte, []int) {
-	return file_finconfig_control_v1_control_proto_rawDescGZIP(), []int{45}
+	return file_finconfig_control_v1_control_proto_rawDescGZIP(), []int{47}
 }
 
 func (x *ListReleaseOrdersRequest) GetModelCode() string {
@@ -2890,7 +3026,7 @@ type ListReleaseOrdersResponse struct {
 
 func (x *ListReleaseOrdersResponse) Reset() {
 	*x = ListReleaseOrdersResponse{}
-	mi := &file_finconfig_control_v1_control_proto_msgTypes[46]
+	mi := &file_finconfig_control_v1_control_proto_msgTypes[48]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2902,7 +3038,7 @@ func (x *ListReleaseOrdersResponse) String() string {
 func (*ListReleaseOrdersResponse) ProtoMessage() {}
 
 func (x *ListReleaseOrdersResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_finconfig_control_v1_control_proto_msgTypes[46]
+	mi := &file_finconfig_control_v1_control_proto_msgTypes[48]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2915,7 +3051,7 @@ func (x *ListReleaseOrdersResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListReleaseOrdersResponse.ProtoReflect.Descriptor instead.
 func (*ListReleaseOrdersResponse) Descriptor() ([]byte, []int) {
-	return file_finconfig_control_v1_control_proto_rawDescGZIP(), []int{46}
+	return file_finconfig_control_v1_control_proto_rawDescGZIP(), []int{48}
 }
 
 func (x *ListReleaseOrdersResponse) GetOrders() []*ReleaseOrder {
@@ -2946,7 +3082,7 @@ type ActOnReleaseOrderRequest struct {
 
 func (x *ActOnReleaseOrderRequest) Reset() {
 	*x = ActOnReleaseOrderRequest{}
-	mi := &file_finconfig_control_v1_control_proto_msgTypes[47]
+	mi := &file_finconfig_control_v1_control_proto_msgTypes[49]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2958,7 +3094,7 @@ func (x *ActOnReleaseOrderRequest) String() string {
 func (*ActOnReleaseOrderRequest) ProtoMessage() {}
 
 func (x *ActOnReleaseOrderRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_finconfig_control_v1_control_proto_msgTypes[47]
+	mi := &file_finconfig_control_v1_control_proto_msgTypes[49]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2971,7 +3107,7 @@ func (x *ActOnReleaseOrderRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ActOnReleaseOrderRequest.ProtoReflect.Descriptor instead.
 func (*ActOnReleaseOrderRequest) Descriptor() ([]byte, []int) {
-	return file_finconfig_control_v1_control_proto_rawDescGZIP(), []int{47}
+	return file_finconfig_control_v1_control_proto_rawDescGZIP(), []int{49}
 }
 
 func (x *ActOnReleaseOrderRequest) GetOrderId() string {
@@ -3027,7 +3163,7 @@ type CreateCompensatingReleaseRequest struct {
 
 func (x *CreateCompensatingReleaseRequest) Reset() {
 	*x = CreateCompensatingReleaseRequest{}
-	mi := &file_finconfig_control_v1_control_proto_msgTypes[48]
+	mi := &file_finconfig_control_v1_control_proto_msgTypes[50]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3039,7 +3175,7 @@ func (x *CreateCompensatingReleaseRequest) String() string {
 func (*CreateCompensatingReleaseRequest) ProtoMessage() {}
 
 func (x *CreateCompensatingReleaseRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_finconfig_control_v1_control_proto_msgTypes[48]
+	mi := &file_finconfig_control_v1_control_proto_msgTypes[50]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3052,7 +3188,7 @@ func (x *CreateCompensatingReleaseRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CreateCompensatingReleaseRequest.ProtoReflect.Descriptor instead.
 func (*CreateCompensatingReleaseRequest) Descriptor() ([]byte, []int) {
-	return file_finconfig_control_v1_control_proto_rawDescGZIP(), []int{48}
+	return file_finconfig_control_v1_control_proto_rawDescGZIP(), []int{50}
 }
 
 func (x *CreateCompensatingReleaseRequest) GetOrderId() string {
@@ -3093,7 +3229,7 @@ type AuditRecord struct {
 
 func (x *AuditRecord) Reset() {
 	*x = AuditRecord{}
-	mi := &file_finconfig_control_v1_control_proto_msgTypes[49]
+	mi := &file_finconfig_control_v1_control_proto_msgTypes[51]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3105,7 +3241,7 @@ func (x *AuditRecord) String() string {
 func (*AuditRecord) ProtoMessage() {}
 
 func (x *AuditRecord) ProtoReflect() protoreflect.Message {
-	mi := &file_finconfig_control_v1_control_proto_msgTypes[49]
+	mi := &file_finconfig_control_v1_control_proto_msgTypes[51]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3118,7 +3254,7 @@ func (x *AuditRecord) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AuditRecord.ProtoReflect.Descriptor instead.
 func (*AuditRecord) Descriptor() ([]byte, []int) {
-	return file_finconfig_control_v1_control_proto_rawDescGZIP(), []int{49}
+	return file_finconfig_control_v1_control_proto_rawDescGZIP(), []int{51}
 }
 
 func (x *AuditRecord) GetId() int64 {
@@ -3198,7 +3334,7 @@ type ListAuditRecordsRequest struct {
 
 func (x *ListAuditRecordsRequest) Reset() {
 	*x = ListAuditRecordsRequest{}
-	mi := &file_finconfig_control_v1_control_proto_msgTypes[50]
+	mi := &file_finconfig_control_v1_control_proto_msgTypes[52]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3210,7 +3346,7 @@ func (x *ListAuditRecordsRequest) String() string {
 func (*ListAuditRecordsRequest) ProtoMessage() {}
 
 func (x *ListAuditRecordsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_finconfig_control_v1_control_proto_msgTypes[50]
+	mi := &file_finconfig_control_v1_control_proto_msgTypes[52]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3223,7 +3359,7 @@ func (x *ListAuditRecordsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListAuditRecordsRequest.ProtoReflect.Descriptor instead.
 func (*ListAuditRecordsRequest) Descriptor() ([]byte, []int) {
-	return file_finconfig_control_v1_control_proto_rawDescGZIP(), []int{50}
+	return file_finconfig_control_v1_control_proto_rawDescGZIP(), []int{52}
 }
 
 func (x *ListAuditRecordsRequest) GetPrincipalSubject() string {
@@ -3278,7 +3414,7 @@ type ListAuditRecordsResponse struct {
 
 func (x *ListAuditRecordsResponse) Reset() {
 	*x = ListAuditRecordsResponse{}
-	mi := &file_finconfig_control_v1_control_proto_msgTypes[51]
+	mi := &file_finconfig_control_v1_control_proto_msgTypes[53]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3290,7 +3426,7 @@ func (x *ListAuditRecordsResponse) String() string {
 func (*ListAuditRecordsResponse) ProtoMessage() {}
 
 func (x *ListAuditRecordsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_finconfig_control_v1_control_proto_msgTypes[51]
+	mi := &file_finconfig_control_v1_control_proto_msgTypes[53]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3303,7 +3439,7 @@ func (x *ListAuditRecordsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListAuditRecordsResponse.ProtoReflect.Descriptor instead.
 func (*ListAuditRecordsResponse) Descriptor() ([]byte, []int) {
-	return file_finconfig_control_v1_control_proto_rawDescGZIP(), []int{51}
+	return file_finconfig_control_v1_control_proto_rawDescGZIP(), []int{53}
 }
 
 func (x *ListAuditRecordsResponse) GetRecords() []*AuditRecord {
@@ -3340,7 +3476,7 @@ type RevealFieldRequest struct {
 
 func (x *RevealFieldRequest) Reset() {
 	*x = RevealFieldRequest{}
-	mi := &file_finconfig_control_v1_control_proto_msgTypes[52]
+	mi := &file_finconfig_control_v1_control_proto_msgTypes[54]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3352,7 +3488,7 @@ func (x *RevealFieldRequest) String() string {
 func (*RevealFieldRequest) ProtoMessage() {}
 
 func (x *RevealFieldRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_finconfig_control_v1_control_proto_msgTypes[52]
+	mi := &file_finconfig_control_v1_control_proto_msgTypes[54]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3365,7 +3501,7 @@ func (x *RevealFieldRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RevealFieldRequest.ProtoReflect.Descriptor instead.
 func (*RevealFieldRequest) Descriptor() ([]byte, []int) {
-	return file_finconfig_control_v1_control_proto_rawDescGZIP(), []int{52}
+	return file_finconfig_control_v1_control_proto_rawDescGZIP(), []int{54}
 }
 
 func (x *RevealFieldRequest) GetModelCode() string {
@@ -3462,7 +3598,7 @@ type RevealFieldResponse struct {
 
 func (x *RevealFieldResponse) Reset() {
 	*x = RevealFieldResponse{}
-	mi := &file_finconfig_control_v1_control_proto_msgTypes[53]
+	mi := &file_finconfig_control_v1_control_proto_msgTypes[55]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3474,7 +3610,7 @@ func (x *RevealFieldResponse) String() string {
 func (*RevealFieldResponse) ProtoMessage() {}
 
 func (x *RevealFieldResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_finconfig_control_v1_control_proto_msgTypes[53]
+	mi := &file_finconfig_control_v1_control_proto_msgTypes[55]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3487,7 +3623,7 @@ func (x *RevealFieldResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RevealFieldResponse.ProtoReflect.Descriptor instead.
 func (*RevealFieldResponse) Descriptor() ([]byte, []int) {
-	return file_finconfig_control_v1_control_proto_rawDescGZIP(), []int{53}
+	return file_finconfig_control_v1_control_proto_rawDescGZIP(), []int{55}
 }
 
 func (x *RevealFieldResponse) GetValue() string {
@@ -3520,7 +3656,7 @@ type OutboxEvent struct {
 
 func (x *OutboxEvent) Reset() {
 	*x = OutboxEvent{}
-	mi := &file_finconfig_control_v1_control_proto_msgTypes[54]
+	mi := &file_finconfig_control_v1_control_proto_msgTypes[56]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3532,7 +3668,7 @@ func (x *OutboxEvent) String() string {
 func (*OutboxEvent) ProtoMessage() {}
 
 func (x *OutboxEvent) ProtoReflect() protoreflect.Message {
-	mi := &file_finconfig_control_v1_control_proto_msgTypes[54]
+	mi := &file_finconfig_control_v1_control_proto_msgTypes[56]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3545,7 +3681,7 @@ func (x *OutboxEvent) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use OutboxEvent.ProtoReflect.Descriptor instead.
 func (*OutboxEvent) Descriptor() ([]byte, []int) {
-	return file_finconfig_control_v1_control_proto_rawDescGZIP(), []int{54}
+	return file_finconfig_control_v1_control_proto_rawDescGZIP(), []int{56}
 }
 
 func (x *OutboxEvent) GetId() string {
@@ -3614,7 +3750,7 @@ type ListOutboxEventsRequest struct {
 
 func (x *ListOutboxEventsRequest) Reset() {
 	*x = ListOutboxEventsRequest{}
-	mi := &file_finconfig_control_v1_control_proto_msgTypes[55]
+	mi := &file_finconfig_control_v1_control_proto_msgTypes[57]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3626,7 +3762,7 @@ func (x *ListOutboxEventsRequest) String() string {
 func (*ListOutboxEventsRequest) ProtoMessage() {}
 
 func (x *ListOutboxEventsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_finconfig_control_v1_control_proto_msgTypes[55]
+	mi := &file_finconfig_control_v1_control_proto_msgTypes[57]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3639,7 +3775,7 @@ func (x *ListOutboxEventsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListOutboxEventsRequest.ProtoReflect.Descriptor instead.
 func (*ListOutboxEventsRequest) Descriptor() ([]byte, []int) {
-	return file_finconfig_control_v1_control_proto_rawDescGZIP(), []int{55}
+	return file_finconfig_control_v1_control_proto_rawDescGZIP(), []int{57}
 }
 
 func (x *ListOutboxEventsRequest) GetStatus() string {
@@ -3666,7 +3802,7 @@ type ListOutboxEventsResponse struct {
 
 func (x *ListOutboxEventsResponse) Reset() {
 	*x = ListOutboxEventsResponse{}
-	mi := &file_finconfig_control_v1_control_proto_msgTypes[56]
+	mi := &file_finconfig_control_v1_control_proto_msgTypes[58]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3678,7 +3814,7 @@ func (x *ListOutboxEventsResponse) String() string {
 func (*ListOutboxEventsResponse) ProtoMessage() {}
 
 func (x *ListOutboxEventsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_finconfig_control_v1_control_proto_msgTypes[56]
+	mi := &file_finconfig_control_v1_control_proto_msgTypes[58]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3691,7 +3827,7 @@ func (x *ListOutboxEventsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListOutboxEventsResponse.ProtoReflect.Descriptor instead.
 func (*ListOutboxEventsResponse) Descriptor() ([]byte, []int) {
-	return file_finconfig_control_v1_control_proto_rawDescGZIP(), []int{56}
+	return file_finconfig_control_v1_control_proto_rawDescGZIP(), []int{58}
 }
 
 func (x *ListOutboxEventsResponse) GetEvents() []*OutboxEvent {
@@ -3720,7 +3856,7 @@ type ReplayOutboxEventRequest struct {
 
 func (x *ReplayOutboxEventRequest) Reset() {
 	*x = ReplayOutboxEventRequest{}
-	mi := &file_finconfig_control_v1_control_proto_msgTypes[57]
+	mi := &file_finconfig_control_v1_control_proto_msgTypes[59]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3732,7 +3868,7 @@ func (x *ReplayOutboxEventRequest) String() string {
 func (*ReplayOutboxEventRequest) ProtoMessage() {}
 
 func (x *ReplayOutboxEventRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_finconfig_control_v1_control_proto_msgTypes[57]
+	mi := &file_finconfig_control_v1_control_proto_msgTypes[59]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3745,7 +3881,7 @@ func (x *ReplayOutboxEventRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ReplayOutboxEventRequest.ProtoReflect.Descriptor instead.
 func (*ReplayOutboxEventRequest) Descriptor() ([]byte, []int) {
-	return file_finconfig_control_v1_control_proto_rawDescGZIP(), []int{57}
+	return file_finconfig_control_v1_control_proto_rawDescGZIP(), []int{59}
 }
 
 func (x *ReplayOutboxEventRequest) GetEventId() string {
@@ -3785,7 +3921,7 @@ type ReplayOutboxEventResponse struct {
 
 func (x *ReplayOutboxEventResponse) Reset() {
 	*x = ReplayOutboxEventResponse{}
-	mi := &file_finconfig_control_v1_control_proto_msgTypes[58]
+	mi := &file_finconfig_control_v1_control_proto_msgTypes[60]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3797,7 +3933,7 @@ func (x *ReplayOutboxEventResponse) String() string {
 func (*ReplayOutboxEventResponse) ProtoMessage() {}
 
 func (x *ReplayOutboxEventResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_finconfig_control_v1_control_proto_msgTypes[58]
+	mi := &file_finconfig_control_v1_control_proto_msgTypes[60]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3810,7 +3946,7 @@ func (x *ReplayOutboxEventResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ReplayOutboxEventResponse.ProtoReflect.Descriptor instead.
 func (*ReplayOutboxEventResponse) Descriptor() ([]byte, []int) {
-	return file_finconfig_control_v1_control_proto_rawDescGZIP(), []int{58}
+	return file_finconfig_control_v1_control_proto_rawDescGZIP(), []int{60}
 }
 
 func (x *ReplayOutboxEventResponse) GetEvent() *OutboxEvent {
@@ -4044,7 +4180,7 @@ const file_finconfig_control_v1_control_proto_rawDesc = "" +
 	"\n" +
 	"AfterEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xdc\x01\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\x98\x03\n" +
 	"\x10ReleaseStepState\x12\x1b\n" +
 	"\tstep_code\x18\x01 \x01(\tR\bstepCode\x12\x1b\n" +
 	"\tstep_type\x18\x02 \x01(\tR\bstepType\x12\x1a\n" +
@@ -4052,8 +4188,20 @@ const file_finconfig_control_v1_control_proto_rawDesc = "" +
 	"\x06status\x18\x04 \x01(\tR\x06status\x12'\n" +
 	"\x0fentity_revision\x18\x05 \x01(\x03R\x0eentityRevision\x12\"\n" +
 	"\n" +
-	"error_code\x18\x06 \x01(\tH\x00R\terrorCode\x88\x01\x01B\r\n" +
-	"\v_error_code\"\xd6\x04\n" +
+	"error_code\x18\x06 \x01(\tH\x00R\terrorCode\x88\x01\x01\x12O\n" +
+	"\x0erollout_ranges\x18\a \x03(\v2(.finconfig.control.v1.ReleaseBucketRangeR\rrolloutRanges\x12V\n" +
+	"\x0ecompare_result\x18\b \x01(\v2*.finconfig.control.v1.ReleaseCompareResultH\x01R\rcompareResult\x88\x01\x01B\r\n" +
+	"\v_error_codeB\x11\n" +
+	"\x0f_compare_result\"<\n" +
+	"\x12ReleaseBucketRange\x12\x14\n" +
+	"\x05start\x18\x01 \x01(\x05R\x05start\x12\x10\n" +
+	"\x03end\x18\x02 \x01(\x05R\x03end\"\xbc\x01\n" +
+	"\x14ReleaseCompareResult\x12'\n" +
+	"\x0fexpected_digest\x18\x01 \x01(\tR\x0eexpectedDigest\x12#\n" +
+	"\ractual_digest\x18\x02 \x01(\tR\factualDigest\x12\x1b\n" +
+	"\tdiff_keys\x18\x03 \x03(\tR\bdiffKeys\x129\n" +
+	"\n" +
+	"checked_at\x18\x04 \x01(\v2\x1a.google.protobuf.TimestampR\tcheckedAt\"\xd6\x04\n" +
 	"\fReleaseOrder\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12%\n" +
 	"\x0erelease_number\x18\x02 \x01(\tR\rreleaseNumber\x12\x1d\n" +
@@ -4228,7 +4376,7 @@ func file_finconfig_control_v1_control_proto_rawDescGZIP() []byte {
 	return file_finconfig_control_v1_control_proto_rawDescData
 }
 
-var file_finconfig_control_v1_control_proto_msgTypes = make([]protoimpl.MessageInfo, 66)
+var file_finconfig_control_v1_control_proto_msgTypes = make([]protoimpl.MessageInfo, 68)
 var file_finconfig_control_v1_control_proto_goTypes = []any{
 	(*FieldDefinition)(nil),                   // 0: finconfig.control.v1.FieldDefinition
 	(*Collection)(nil),                        // 1: finconfig.control.v1.Collection
@@ -4268,177 +4416,182 @@ var file_finconfig_control_v1_control_proto_goTypes = []any{
 	(*CreateReleaseOrderRequest)(nil),         // 35: finconfig.control.v1.CreateReleaseOrderRequest
 	(*ReleaseItem)(nil),                       // 36: finconfig.control.v1.ReleaseItem
 	(*ReleaseStepState)(nil),                  // 37: finconfig.control.v1.ReleaseStepState
-	(*ReleaseOrder)(nil),                      // 38: finconfig.control.v1.ReleaseOrder
-	(*ReleaseOrderDetail)(nil),                // 39: finconfig.control.v1.ReleaseOrderDetail
-	(*CreateReleaseOrderResponse)(nil),        // 40: finconfig.control.v1.CreateReleaseOrderResponse
-	(*GetReleaseOrderResponse)(nil),           // 41: finconfig.control.v1.GetReleaseOrderResponse
-	(*ActOnReleaseOrderResponse)(nil),         // 42: finconfig.control.v1.ActOnReleaseOrderResponse
-	(*CreateCompensatingReleaseResponse)(nil), // 43: finconfig.control.v1.CreateCompensatingReleaseResponse
-	(*GetReleaseOrderRequest)(nil),            // 44: finconfig.control.v1.GetReleaseOrderRequest
-	(*ListReleaseOrdersRequest)(nil),          // 45: finconfig.control.v1.ListReleaseOrdersRequest
-	(*ListReleaseOrdersResponse)(nil),         // 46: finconfig.control.v1.ListReleaseOrdersResponse
-	(*ActOnReleaseOrderRequest)(nil),          // 47: finconfig.control.v1.ActOnReleaseOrderRequest
-	(*CreateCompensatingReleaseRequest)(nil),  // 48: finconfig.control.v1.CreateCompensatingReleaseRequest
-	(*AuditRecord)(nil),                       // 49: finconfig.control.v1.AuditRecord
-	(*ListAuditRecordsRequest)(nil),           // 50: finconfig.control.v1.ListAuditRecordsRequest
-	(*ListAuditRecordsResponse)(nil),          // 51: finconfig.control.v1.ListAuditRecordsResponse
-	(*RevealFieldRequest)(nil),                // 52: finconfig.control.v1.RevealFieldRequest
-	(*RevealFieldResponse)(nil),               // 53: finconfig.control.v1.RevealFieldResponse
-	(*OutboxEvent)(nil),                       // 54: finconfig.control.v1.OutboxEvent
-	(*ListOutboxEventsRequest)(nil),           // 55: finconfig.control.v1.ListOutboxEventsRequest
-	(*ListOutboxEventsResponse)(nil),          // 56: finconfig.control.v1.ListOutboxEventsResponse
-	(*ReplayOutboxEventRequest)(nil),          // 57: finconfig.control.v1.ReplayOutboxEventRequest
-	(*ReplayOutboxEventResponse)(nil),         // 58: finconfig.control.v1.ReplayOutboxEventResponse
-	nil,                                       // 59: finconfig.control.v1.ReleaseStepDefinition.ParamsEntry
-	nil,                                       // 60: finconfig.control.v1.ReleaseItemInput.BaseBeforeEntry
-	nil,                                       // 61: finconfig.control.v1.ReleaseItemInput.EffectiveBeforeEntry
-	nil,                                       // 62: finconfig.control.v1.ReleaseItemInput.AfterEntry
-	nil,                                       // 63: finconfig.control.v1.ReleaseItem.BaseBeforeEntry
-	nil,                                       // 64: finconfig.control.v1.ReleaseItem.EffectiveBeforeEntry
-	nil,                                       // 65: finconfig.control.v1.ReleaseItem.AfterEntry
-	(v1.FieldType)(0),                         // 66: finconfig.common.v1.FieldType
-	(*v11.ValidationRule)(nil),                // 67: finconfig.config.v1.ValidationRule
-	(*v1.AuditStamp)(nil),                     // 68: finconfig.common.v1.AuditStamp
-	(*v1.PageRequest)(nil),                    // 69: finconfig.common.v1.PageRequest
-	(*v1.PageResponse)(nil),                   // 70: finconfig.common.v1.PageResponse
-	(v1.FinalEffect)(0),                       // 71: finconfig.common.v1.FinalEffect
-	(v1.ChangeAction)(0),                      // 72: finconfig.common.v1.ChangeAction
-	(*v1.Scope)(nil),                          // 73: finconfig.common.v1.Scope
-	(*timestamppb.Timestamp)(nil),             // 74: google.protobuf.Timestamp
-	(v1.ReleaseStatus)(0),                     // 75: finconfig.common.v1.ReleaseStatus
-	(v1.ReleaseAction)(0),                     // 76: finconfig.common.v1.ReleaseAction
+	(*ReleaseBucketRange)(nil),                // 38: finconfig.control.v1.ReleaseBucketRange
+	(*ReleaseCompareResult)(nil),              // 39: finconfig.control.v1.ReleaseCompareResult
+	(*ReleaseOrder)(nil),                      // 40: finconfig.control.v1.ReleaseOrder
+	(*ReleaseOrderDetail)(nil),                // 41: finconfig.control.v1.ReleaseOrderDetail
+	(*CreateReleaseOrderResponse)(nil),        // 42: finconfig.control.v1.CreateReleaseOrderResponse
+	(*GetReleaseOrderResponse)(nil),           // 43: finconfig.control.v1.GetReleaseOrderResponse
+	(*ActOnReleaseOrderResponse)(nil),         // 44: finconfig.control.v1.ActOnReleaseOrderResponse
+	(*CreateCompensatingReleaseResponse)(nil), // 45: finconfig.control.v1.CreateCompensatingReleaseResponse
+	(*GetReleaseOrderRequest)(nil),            // 46: finconfig.control.v1.GetReleaseOrderRequest
+	(*ListReleaseOrdersRequest)(nil),          // 47: finconfig.control.v1.ListReleaseOrdersRequest
+	(*ListReleaseOrdersResponse)(nil),         // 48: finconfig.control.v1.ListReleaseOrdersResponse
+	(*ActOnReleaseOrderRequest)(nil),          // 49: finconfig.control.v1.ActOnReleaseOrderRequest
+	(*CreateCompensatingReleaseRequest)(nil),  // 50: finconfig.control.v1.CreateCompensatingReleaseRequest
+	(*AuditRecord)(nil),                       // 51: finconfig.control.v1.AuditRecord
+	(*ListAuditRecordsRequest)(nil),           // 52: finconfig.control.v1.ListAuditRecordsRequest
+	(*ListAuditRecordsResponse)(nil),          // 53: finconfig.control.v1.ListAuditRecordsResponse
+	(*RevealFieldRequest)(nil),                // 54: finconfig.control.v1.RevealFieldRequest
+	(*RevealFieldResponse)(nil),               // 55: finconfig.control.v1.RevealFieldResponse
+	(*OutboxEvent)(nil),                       // 56: finconfig.control.v1.OutboxEvent
+	(*ListOutboxEventsRequest)(nil),           // 57: finconfig.control.v1.ListOutboxEventsRequest
+	(*ListOutboxEventsResponse)(nil),          // 58: finconfig.control.v1.ListOutboxEventsResponse
+	(*ReplayOutboxEventRequest)(nil),          // 59: finconfig.control.v1.ReplayOutboxEventRequest
+	(*ReplayOutboxEventResponse)(nil),         // 60: finconfig.control.v1.ReplayOutboxEventResponse
+	nil,                                       // 61: finconfig.control.v1.ReleaseStepDefinition.ParamsEntry
+	nil,                                       // 62: finconfig.control.v1.ReleaseItemInput.BaseBeforeEntry
+	nil,                                       // 63: finconfig.control.v1.ReleaseItemInput.EffectiveBeforeEntry
+	nil,                                       // 64: finconfig.control.v1.ReleaseItemInput.AfterEntry
+	nil,                                       // 65: finconfig.control.v1.ReleaseItem.BaseBeforeEntry
+	nil,                                       // 66: finconfig.control.v1.ReleaseItem.EffectiveBeforeEntry
+	nil,                                       // 67: finconfig.control.v1.ReleaseItem.AfterEntry
+	(v1.FieldType)(0),                         // 68: finconfig.common.v1.FieldType
+	(*v11.ValidationRule)(nil),                // 69: finconfig.config.v1.ValidationRule
+	(*v1.AuditStamp)(nil),                     // 70: finconfig.common.v1.AuditStamp
+	(*v1.PageRequest)(nil),                    // 71: finconfig.common.v1.PageRequest
+	(*v1.PageResponse)(nil),                   // 72: finconfig.common.v1.PageResponse
+	(v1.FinalEffect)(0),                       // 73: finconfig.common.v1.FinalEffect
+	(v1.ChangeAction)(0),                      // 74: finconfig.common.v1.ChangeAction
+	(*v1.Scope)(nil),                          // 75: finconfig.common.v1.Scope
+	(*timestamppb.Timestamp)(nil),             // 76: google.protobuf.Timestamp
+	(v1.ReleaseStatus)(0),                     // 77: finconfig.common.v1.ReleaseStatus
+	(v1.ReleaseAction)(0),                     // 78: finconfig.common.v1.ReleaseAction
 }
 var file_finconfig_control_v1_control_proto_depIdxs = []int32{
-	66,  // 0: finconfig.control.v1.FieldDefinition.type:type_name -> finconfig.common.v1.FieldType
-	67,  // 1: finconfig.control.v1.FieldDefinition.validation_rules:type_name -> finconfig.config.v1.ValidationRule
+	68,  // 0: finconfig.control.v1.FieldDefinition.type:type_name -> finconfig.common.v1.FieldType
+	69,  // 1: finconfig.control.v1.FieldDefinition.validation_rules:type_name -> finconfig.config.v1.ValidationRule
 	0,   // 2: finconfig.control.v1.Collection.fields:type_name -> finconfig.control.v1.FieldDefinition
-	68,  // 3: finconfig.control.v1.Collection.audit:type_name -> finconfig.common.v1.AuditStamp
+	70,  // 3: finconfig.control.v1.Collection.audit:type_name -> finconfig.common.v1.AuditStamp
 	1,   // 4: finconfig.control.v1.CreateCollectionRequest.collection:type_name -> finconfig.control.v1.Collection
 	1,   // 5: finconfig.control.v1.UpdateCollectionRequest.collection:type_name -> finconfig.control.v1.Collection
-	69,  // 6: finconfig.control.v1.ListCollectionsRequest.page:type_name -> finconfig.common.v1.PageRequest
+	71,  // 6: finconfig.control.v1.ListCollectionsRequest.page:type_name -> finconfig.common.v1.PageRequest
 	1,   // 7: finconfig.control.v1.CreateCollectionResponse.collection:type_name -> finconfig.control.v1.Collection
 	1,   // 8: finconfig.control.v1.UpdateCollectionResponse.collection:type_name -> finconfig.control.v1.Collection
 	1,   // 9: finconfig.control.v1.GetCollectionResponse.collection:type_name -> finconfig.control.v1.Collection
 	1,   // 10: finconfig.control.v1.ListCollectionsResponse.collections:type_name -> finconfig.control.v1.Collection
-	70,  // 11: finconfig.control.v1.ListCollectionsResponse.page:type_name -> finconfig.common.v1.PageResponse
+	72,  // 11: finconfig.control.v1.ListCollectionsResponse.page:type_name -> finconfig.common.v1.PageResponse
 	10,  // 12: finconfig.control.v1.CreateSubscriptionRequest.subscription:type_name -> finconfig.control.v1.Subscription
 	10,  // 13: finconfig.control.v1.UpdateSubscriptionRequest.subscription:type_name -> finconfig.control.v1.Subscription
-	69,  // 14: finconfig.control.v1.ListSubscriptionsRequest.page:type_name -> finconfig.common.v1.PageRequest
+	71,  // 14: finconfig.control.v1.ListSubscriptionsRequest.page:type_name -> finconfig.common.v1.PageRequest
 	10,  // 15: finconfig.control.v1.CreateSubscriptionResponse.subscription:type_name -> finconfig.control.v1.Subscription
 	10,  // 16: finconfig.control.v1.UpdateSubscriptionResponse.subscription:type_name -> finconfig.control.v1.Subscription
 	10,  // 17: finconfig.control.v1.ListSubscriptionsResponse.subscriptions:type_name -> finconfig.control.v1.Subscription
-	70,  // 18: finconfig.control.v1.ListSubscriptionsResponse.page:type_name -> finconfig.common.v1.PageResponse
+	72,  // 18: finconfig.control.v1.ListSubscriptionsResponse.page:type_name -> finconfig.common.v1.PageResponse
 	17,  // 19: finconfig.control.v1.CreateModelRequest.model:type_name -> finconfig.control.v1.Model
 	17,  // 20: finconfig.control.v1.UpdateModelRequest.model:type_name -> finconfig.control.v1.Model
-	69,  // 21: finconfig.control.v1.ListModelsRequest.page:type_name -> finconfig.common.v1.PageRequest
+	71,  // 21: finconfig.control.v1.ListModelsRequest.page:type_name -> finconfig.common.v1.PageRequest
 	17,  // 22: finconfig.control.v1.CreateModelResponse.model:type_name -> finconfig.control.v1.Model
 	17,  // 23: finconfig.control.v1.UpdateModelResponse.model:type_name -> finconfig.control.v1.Model
 	17,  // 24: finconfig.control.v1.GetModelResponse.model:type_name -> finconfig.control.v1.Model
 	17,  // 25: finconfig.control.v1.ListModelsResponse.models:type_name -> finconfig.control.v1.Model
-	70,  // 26: finconfig.control.v1.ListModelsResponse.page:type_name -> finconfig.common.v1.PageResponse
-	59,  // 27: finconfig.control.v1.ReleaseStepDefinition.params:type_name -> finconfig.control.v1.ReleaseStepDefinition.ParamsEntry
-	71,  // 28: finconfig.control.v1.ReleaseTemplate.final_effect:type_name -> finconfig.common.v1.FinalEffect
+	72,  // 26: finconfig.control.v1.ListModelsResponse.page:type_name -> finconfig.common.v1.PageResponse
+	61,  // 27: finconfig.control.v1.ReleaseStepDefinition.params:type_name -> finconfig.control.v1.ReleaseStepDefinition.ParamsEntry
+	73,  // 28: finconfig.control.v1.ReleaseTemplate.final_effect:type_name -> finconfig.common.v1.FinalEffect
 	26,  // 29: finconfig.control.v1.ReleaseTemplate.steps:type_name -> finconfig.control.v1.ReleaseStepDefinition
 	27,  // 30: finconfig.control.v1.CreateReleaseTemplateRequest.release_template:type_name -> finconfig.control.v1.ReleaseTemplate
-	69,  // 31: finconfig.control.v1.ListReleaseTemplatesRequest.page:type_name -> finconfig.common.v1.PageRequest
+	71,  // 31: finconfig.control.v1.ListReleaseTemplatesRequest.page:type_name -> finconfig.common.v1.PageRequest
 	27,  // 32: finconfig.control.v1.CreateReleaseTemplateResponse.release_template:type_name -> finconfig.control.v1.ReleaseTemplate
 	27,  // 33: finconfig.control.v1.GetReleaseTemplateResponse.release_template:type_name -> finconfig.control.v1.ReleaseTemplate
 	27,  // 34: finconfig.control.v1.ListReleaseTemplatesResponse.release_templates:type_name -> finconfig.control.v1.ReleaseTemplate
-	70,  // 35: finconfig.control.v1.ListReleaseTemplatesResponse.page:type_name -> finconfig.common.v1.PageResponse
-	72,  // 36: finconfig.control.v1.ReleaseItemInput.action:type_name -> finconfig.common.v1.ChangeAction
-	60,  // 37: finconfig.control.v1.ReleaseItemInput.base_before:type_name -> finconfig.control.v1.ReleaseItemInput.BaseBeforeEntry
-	61,  // 38: finconfig.control.v1.ReleaseItemInput.effective_before:type_name -> finconfig.control.v1.ReleaseItemInput.EffectiveBeforeEntry
-	62,  // 39: finconfig.control.v1.ReleaseItemInput.after:type_name -> finconfig.control.v1.ReleaseItemInput.AfterEntry
-	73,  // 40: finconfig.control.v1.CreateReleaseOrderRequest.scope:type_name -> finconfig.common.v1.Scope
+	72,  // 35: finconfig.control.v1.ListReleaseTemplatesResponse.page:type_name -> finconfig.common.v1.PageResponse
+	74,  // 36: finconfig.control.v1.ReleaseItemInput.action:type_name -> finconfig.common.v1.ChangeAction
+	62,  // 37: finconfig.control.v1.ReleaseItemInput.base_before:type_name -> finconfig.control.v1.ReleaseItemInput.BaseBeforeEntry
+	63,  // 38: finconfig.control.v1.ReleaseItemInput.effective_before:type_name -> finconfig.control.v1.ReleaseItemInput.EffectiveBeforeEntry
+	64,  // 39: finconfig.control.v1.ReleaseItemInput.after:type_name -> finconfig.control.v1.ReleaseItemInput.AfterEntry
+	75,  // 40: finconfig.control.v1.CreateReleaseOrderRequest.scope:type_name -> finconfig.common.v1.Scope
 	34,  // 41: finconfig.control.v1.CreateReleaseOrderRequest.items:type_name -> finconfig.control.v1.ReleaseItemInput
-	74,  // 42: finconfig.control.v1.CreateReleaseOrderRequest.effective_from:type_name -> google.protobuf.Timestamp
-	74,  // 43: finconfig.control.v1.CreateReleaseOrderRequest.effective_until:type_name -> google.protobuf.Timestamp
-	72,  // 44: finconfig.control.v1.ReleaseItem.action:type_name -> finconfig.common.v1.ChangeAction
-	63,  // 45: finconfig.control.v1.ReleaseItem.base_before:type_name -> finconfig.control.v1.ReleaseItem.BaseBeforeEntry
-	64,  // 46: finconfig.control.v1.ReleaseItem.effective_before:type_name -> finconfig.control.v1.ReleaseItem.EffectiveBeforeEntry
-	65,  // 47: finconfig.control.v1.ReleaseItem.after:type_name -> finconfig.control.v1.ReleaseItem.AfterEntry
-	73,  // 48: finconfig.control.v1.ReleaseOrder.scope:type_name -> finconfig.common.v1.Scope
-	75,  // 49: finconfig.control.v1.ReleaseOrder.status:type_name -> finconfig.common.v1.ReleaseStatus
-	74,  // 50: finconfig.control.v1.ReleaseOrder.created_at:type_name -> google.protobuf.Timestamp
-	74,  // 51: finconfig.control.v1.ReleaseOrder.completed_at:type_name -> google.protobuf.Timestamp
-	38,  // 52: finconfig.control.v1.ReleaseOrderDetail.order:type_name -> finconfig.control.v1.ReleaseOrder
-	36,  // 53: finconfig.control.v1.ReleaseOrderDetail.items:type_name -> finconfig.control.v1.ReleaseItem
-	37,  // 54: finconfig.control.v1.ReleaseOrderDetail.steps:type_name -> finconfig.control.v1.ReleaseStepState
-	76,  // 55: finconfig.control.v1.ReleaseOrderDetail.allowed_actions:type_name -> finconfig.common.v1.ReleaseAction
-	39,  // 56: finconfig.control.v1.CreateReleaseOrderResponse.detail:type_name -> finconfig.control.v1.ReleaseOrderDetail
-	39,  // 57: finconfig.control.v1.GetReleaseOrderResponse.detail:type_name -> finconfig.control.v1.ReleaseOrderDetail
-	39,  // 58: finconfig.control.v1.ActOnReleaseOrderResponse.detail:type_name -> finconfig.control.v1.ReleaseOrderDetail
-	39,  // 59: finconfig.control.v1.CreateCompensatingReleaseResponse.detail:type_name -> finconfig.control.v1.ReleaseOrderDetail
-	75,  // 60: finconfig.control.v1.ListReleaseOrdersRequest.status:type_name -> finconfig.common.v1.ReleaseStatus
-	69,  // 61: finconfig.control.v1.ListReleaseOrdersRequest.page:type_name -> finconfig.common.v1.PageRequest
-	38,  // 62: finconfig.control.v1.ListReleaseOrdersResponse.orders:type_name -> finconfig.control.v1.ReleaseOrder
-	70,  // 63: finconfig.control.v1.ListReleaseOrdersResponse.page:type_name -> finconfig.common.v1.PageResponse
-	76,  // 64: finconfig.control.v1.ActOnReleaseOrderRequest.action:type_name -> finconfig.common.v1.ReleaseAction
-	74,  // 65: finconfig.control.v1.AuditRecord.occurred_at:type_name -> google.protobuf.Timestamp
-	73,  // 66: finconfig.control.v1.AuditRecord.scope:type_name -> finconfig.common.v1.Scope
-	74,  // 67: finconfig.control.v1.ListAuditRecordsRequest.from:type_name -> google.protobuf.Timestamp
-	74,  // 68: finconfig.control.v1.ListAuditRecordsRequest.until:type_name -> google.protobuf.Timestamp
-	69,  // 69: finconfig.control.v1.ListAuditRecordsRequest.page:type_name -> finconfig.common.v1.PageRequest
-	49,  // 70: finconfig.control.v1.ListAuditRecordsResponse.records:type_name -> finconfig.control.v1.AuditRecord
-	70,  // 71: finconfig.control.v1.ListAuditRecordsResponse.page:type_name -> finconfig.common.v1.PageResponse
-	73,  // 72: finconfig.control.v1.RevealFieldRequest.scope:type_name -> finconfig.common.v1.Scope
-	74,  // 73: finconfig.control.v1.RevealFieldResponse.expires_at:type_name -> google.protobuf.Timestamp
-	74,  // 74: finconfig.control.v1.OutboxEvent.next_attempt_at:type_name -> google.protobuf.Timestamp
-	69,  // 75: finconfig.control.v1.ListOutboxEventsRequest.page:type_name -> finconfig.common.v1.PageRequest
-	54,  // 76: finconfig.control.v1.ListOutboxEventsResponse.events:type_name -> finconfig.control.v1.OutboxEvent
-	70,  // 77: finconfig.control.v1.ListOutboxEventsResponse.page:type_name -> finconfig.common.v1.PageResponse
-	54,  // 78: finconfig.control.v1.ReplayOutboxEventResponse.event:type_name -> finconfig.control.v1.OutboxEvent
-	2,   // 79: finconfig.control.v1.CatalogAdminService.CreateCollection:input_type -> finconfig.control.v1.CreateCollectionRequest
-	3,   // 80: finconfig.control.v1.CatalogAdminService.UpdateCollection:input_type -> finconfig.control.v1.UpdateCollectionRequest
-	4,   // 81: finconfig.control.v1.CatalogAdminService.GetCollection:input_type -> finconfig.control.v1.GetCollectionRequest
-	5,   // 82: finconfig.control.v1.CatalogAdminService.ListCollections:input_type -> finconfig.control.v1.ListCollectionsRequest
-	11,  // 83: finconfig.control.v1.CatalogAdminService.CreateSubscription:input_type -> finconfig.control.v1.CreateSubscriptionRequest
-	12,  // 84: finconfig.control.v1.CatalogAdminService.UpdateSubscription:input_type -> finconfig.control.v1.UpdateSubscriptionRequest
-	13,  // 85: finconfig.control.v1.CatalogAdminService.ListSubscriptions:input_type -> finconfig.control.v1.ListSubscriptionsRequest
-	18,  // 86: finconfig.control.v1.CatalogAdminService.CreateModel:input_type -> finconfig.control.v1.CreateModelRequest
-	19,  // 87: finconfig.control.v1.CatalogAdminService.UpdateModel:input_type -> finconfig.control.v1.UpdateModelRequest
-	20,  // 88: finconfig.control.v1.CatalogAdminService.GetModel:input_type -> finconfig.control.v1.GetModelRequest
-	21,  // 89: finconfig.control.v1.CatalogAdminService.ListModels:input_type -> finconfig.control.v1.ListModelsRequest
-	28,  // 90: finconfig.control.v1.CatalogAdminService.CreateReleaseTemplate:input_type -> finconfig.control.v1.CreateReleaseTemplateRequest
-	29,  // 91: finconfig.control.v1.CatalogAdminService.GetReleaseTemplate:input_type -> finconfig.control.v1.GetReleaseTemplateRequest
-	30,  // 92: finconfig.control.v1.CatalogAdminService.ListReleaseTemplates:input_type -> finconfig.control.v1.ListReleaseTemplatesRequest
-	35,  // 93: finconfig.control.v1.ReleaseService.CreateReleaseOrder:input_type -> finconfig.control.v1.CreateReleaseOrderRequest
-	44,  // 94: finconfig.control.v1.ReleaseService.GetReleaseOrder:input_type -> finconfig.control.v1.GetReleaseOrderRequest
-	45,  // 95: finconfig.control.v1.ReleaseService.ListReleaseOrders:input_type -> finconfig.control.v1.ListReleaseOrdersRequest
-	47,  // 96: finconfig.control.v1.ReleaseService.ActOnReleaseOrder:input_type -> finconfig.control.v1.ActOnReleaseOrderRequest
-	48,  // 97: finconfig.control.v1.ReleaseService.CreateCompensatingRelease:input_type -> finconfig.control.v1.CreateCompensatingReleaseRequest
-	50,  // 98: finconfig.control.v1.AuditService.ListAuditRecords:input_type -> finconfig.control.v1.ListAuditRecordsRequest
-	52,  // 99: finconfig.control.v1.SensitiveAccessService.RevealField:input_type -> finconfig.control.v1.RevealFieldRequest
-	55,  // 100: finconfig.control.v1.OperationsService.ListOutboxEvents:input_type -> finconfig.control.v1.ListOutboxEventsRequest
-	57,  // 101: finconfig.control.v1.OperationsService.ReplayOutboxEvent:input_type -> finconfig.control.v1.ReplayOutboxEventRequest
-	6,   // 102: finconfig.control.v1.CatalogAdminService.CreateCollection:output_type -> finconfig.control.v1.CreateCollectionResponse
-	7,   // 103: finconfig.control.v1.CatalogAdminService.UpdateCollection:output_type -> finconfig.control.v1.UpdateCollectionResponse
-	8,   // 104: finconfig.control.v1.CatalogAdminService.GetCollection:output_type -> finconfig.control.v1.GetCollectionResponse
-	9,   // 105: finconfig.control.v1.CatalogAdminService.ListCollections:output_type -> finconfig.control.v1.ListCollectionsResponse
-	14,  // 106: finconfig.control.v1.CatalogAdminService.CreateSubscription:output_type -> finconfig.control.v1.CreateSubscriptionResponse
-	15,  // 107: finconfig.control.v1.CatalogAdminService.UpdateSubscription:output_type -> finconfig.control.v1.UpdateSubscriptionResponse
-	16,  // 108: finconfig.control.v1.CatalogAdminService.ListSubscriptions:output_type -> finconfig.control.v1.ListSubscriptionsResponse
-	22,  // 109: finconfig.control.v1.CatalogAdminService.CreateModel:output_type -> finconfig.control.v1.CreateModelResponse
-	23,  // 110: finconfig.control.v1.CatalogAdminService.UpdateModel:output_type -> finconfig.control.v1.UpdateModelResponse
-	24,  // 111: finconfig.control.v1.CatalogAdminService.GetModel:output_type -> finconfig.control.v1.GetModelResponse
-	25,  // 112: finconfig.control.v1.CatalogAdminService.ListModels:output_type -> finconfig.control.v1.ListModelsResponse
-	31,  // 113: finconfig.control.v1.CatalogAdminService.CreateReleaseTemplate:output_type -> finconfig.control.v1.CreateReleaseTemplateResponse
-	32,  // 114: finconfig.control.v1.CatalogAdminService.GetReleaseTemplate:output_type -> finconfig.control.v1.GetReleaseTemplateResponse
-	33,  // 115: finconfig.control.v1.CatalogAdminService.ListReleaseTemplates:output_type -> finconfig.control.v1.ListReleaseTemplatesResponse
-	40,  // 116: finconfig.control.v1.ReleaseService.CreateReleaseOrder:output_type -> finconfig.control.v1.CreateReleaseOrderResponse
-	41,  // 117: finconfig.control.v1.ReleaseService.GetReleaseOrder:output_type -> finconfig.control.v1.GetReleaseOrderResponse
-	46,  // 118: finconfig.control.v1.ReleaseService.ListReleaseOrders:output_type -> finconfig.control.v1.ListReleaseOrdersResponse
-	42,  // 119: finconfig.control.v1.ReleaseService.ActOnReleaseOrder:output_type -> finconfig.control.v1.ActOnReleaseOrderResponse
-	43,  // 120: finconfig.control.v1.ReleaseService.CreateCompensatingRelease:output_type -> finconfig.control.v1.CreateCompensatingReleaseResponse
-	51,  // 121: finconfig.control.v1.AuditService.ListAuditRecords:output_type -> finconfig.control.v1.ListAuditRecordsResponse
-	53,  // 122: finconfig.control.v1.SensitiveAccessService.RevealField:output_type -> finconfig.control.v1.RevealFieldResponse
-	56,  // 123: finconfig.control.v1.OperationsService.ListOutboxEvents:output_type -> finconfig.control.v1.ListOutboxEventsResponse
-	58,  // 124: finconfig.control.v1.OperationsService.ReplayOutboxEvent:output_type -> finconfig.control.v1.ReplayOutboxEventResponse
-	102, // [102:125] is the sub-list for method output_type
-	79,  // [79:102] is the sub-list for method input_type
-	79,  // [79:79] is the sub-list for extension type_name
-	79,  // [79:79] is the sub-list for extension extendee
-	0,   // [0:79] is the sub-list for field type_name
+	76,  // 42: finconfig.control.v1.CreateReleaseOrderRequest.effective_from:type_name -> google.protobuf.Timestamp
+	76,  // 43: finconfig.control.v1.CreateReleaseOrderRequest.effective_until:type_name -> google.protobuf.Timestamp
+	74,  // 44: finconfig.control.v1.ReleaseItem.action:type_name -> finconfig.common.v1.ChangeAction
+	65,  // 45: finconfig.control.v1.ReleaseItem.base_before:type_name -> finconfig.control.v1.ReleaseItem.BaseBeforeEntry
+	66,  // 46: finconfig.control.v1.ReleaseItem.effective_before:type_name -> finconfig.control.v1.ReleaseItem.EffectiveBeforeEntry
+	67,  // 47: finconfig.control.v1.ReleaseItem.after:type_name -> finconfig.control.v1.ReleaseItem.AfterEntry
+	38,  // 48: finconfig.control.v1.ReleaseStepState.rollout_ranges:type_name -> finconfig.control.v1.ReleaseBucketRange
+	39,  // 49: finconfig.control.v1.ReleaseStepState.compare_result:type_name -> finconfig.control.v1.ReleaseCompareResult
+	76,  // 50: finconfig.control.v1.ReleaseCompareResult.checked_at:type_name -> google.protobuf.Timestamp
+	75,  // 51: finconfig.control.v1.ReleaseOrder.scope:type_name -> finconfig.common.v1.Scope
+	77,  // 52: finconfig.control.v1.ReleaseOrder.status:type_name -> finconfig.common.v1.ReleaseStatus
+	76,  // 53: finconfig.control.v1.ReleaseOrder.created_at:type_name -> google.protobuf.Timestamp
+	76,  // 54: finconfig.control.v1.ReleaseOrder.completed_at:type_name -> google.protobuf.Timestamp
+	40,  // 55: finconfig.control.v1.ReleaseOrderDetail.order:type_name -> finconfig.control.v1.ReleaseOrder
+	36,  // 56: finconfig.control.v1.ReleaseOrderDetail.items:type_name -> finconfig.control.v1.ReleaseItem
+	37,  // 57: finconfig.control.v1.ReleaseOrderDetail.steps:type_name -> finconfig.control.v1.ReleaseStepState
+	78,  // 58: finconfig.control.v1.ReleaseOrderDetail.allowed_actions:type_name -> finconfig.common.v1.ReleaseAction
+	41,  // 59: finconfig.control.v1.CreateReleaseOrderResponse.detail:type_name -> finconfig.control.v1.ReleaseOrderDetail
+	41,  // 60: finconfig.control.v1.GetReleaseOrderResponse.detail:type_name -> finconfig.control.v1.ReleaseOrderDetail
+	41,  // 61: finconfig.control.v1.ActOnReleaseOrderResponse.detail:type_name -> finconfig.control.v1.ReleaseOrderDetail
+	41,  // 62: finconfig.control.v1.CreateCompensatingReleaseResponse.detail:type_name -> finconfig.control.v1.ReleaseOrderDetail
+	77,  // 63: finconfig.control.v1.ListReleaseOrdersRequest.status:type_name -> finconfig.common.v1.ReleaseStatus
+	71,  // 64: finconfig.control.v1.ListReleaseOrdersRequest.page:type_name -> finconfig.common.v1.PageRequest
+	40,  // 65: finconfig.control.v1.ListReleaseOrdersResponse.orders:type_name -> finconfig.control.v1.ReleaseOrder
+	72,  // 66: finconfig.control.v1.ListReleaseOrdersResponse.page:type_name -> finconfig.common.v1.PageResponse
+	78,  // 67: finconfig.control.v1.ActOnReleaseOrderRequest.action:type_name -> finconfig.common.v1.ReleaseAction
+	76,  // 68: finconfig.control.v1.AuditRecord.occurred_at:type_name -> google.protobuf.Timestamp
+	75,  // 69: finconfig.control.v1.AuditRecord.scope:type_name -> finconfig.common.v1.Scope
+	76,  // 70: finconfig.control.v1.ListAuditRecordsRequest.from:type_name -> google.protobuf.Timestamp
+	76,  // 71: finconfig.control.v1.ListAuditRecordsRequest.until:type_name -> google.protobuf.Timestamp
+	71,  // 72: finconfig.control.v1.ListAuditRecordsRequest.page:type_name -> finconfig.common.v1.PageRequest
+	51,  // 73: finconfig.control.v1.ListAuditRecordsResponse.records:type_name -> finconfig.control.v1.AuditRecord
+	72,  // 74: finconfig.control.v1.ListAuditRecordsResponse.page:type_name -> finconfig.common.v1.PageResponse
+	75,  // 75: finconfig.control.v1.RevealFieldRequest.scope:type_name -> finconfig.common.v1.Scope
+	76,  // 76: finconfig.control.v1.RevealFieldResponse.expires_at:type_name -> google.protobuf.Timestamp
+	76,  // 77: finconfig.control.v1.OutboxEvent.next_attempt_at:type_name -> google.protobuf.Timestamp
+	71,  // 78: finconfig.control.v1.ListOutboxEventsRequest.page:type_name -> finconfig.common.v1.PageRequest
+	56,  // 79: finconfig.control.v1.ListOutboxEventsResponse.events:type_name -> finconfig.control.v1.OutboxEvent
+	72,  // 80: finconfig.control.v1.ListOutboxEventsResponse.page:type_name -> finconfig.common.v1.PageResponse
+	56,  // 81: finconfig.control.v1.ReplayOutboxEventResponse.event:type_name -> finconfig.control.v1.OutboxEvent
+	2,   // 82: finconfig.control.v1.CatalogAdminService.CreateCollection:input_type -> finconfig.control.v1.CreateCollectionRequest
+	3,   // 83: finconfig.control.v1.CatalogAdminService.UpdateCollection:input_type -> finconfig.control.v1.UpdateCollectionRequest
+	4,   // 84: finconfig.control.v1.CatalogAdminService.GetCollection:input_type -> finconfig.control.v1.GetCollectionRequest
+	5,   // 85: finconfig.control.v1.CatalogAdminService.ListCollections:input_type -> finconfig.control.v1.ListCollectionsRequest
+	11,  // 86: finconfig.control.v1.CatalogAdminService.CreateSubscription:input_type -> finconfig.control.v1.CreateSubscriptionRequest
+	12,  // 87: finconfig.control.v1.CatalogAdminService.UpdateSubscription:input_type -> finconfig.control.v1.UpdateSubscriptionRequest
+	13,  // 88: finconfig.control.v1.CatalogAdminService.ListSubscriptions:input_type -> finconfig.control.v1.ListSubscriptionsRequest
+	18,  // 89: finconfig.control.v1.CatalogAdminService.CreateModel:input_type -> finconfig.control.v1.CreateModelRequest
+	19,  // 90: finconfig.control.v1.CatalogAdminService.UpdateModel:input_type -> finconfig.control.v1.UpdateModelRequest
+	20,  // 91: finconfig.control.v1.CatalogAdminService.GetModel:input_type -> finconfig.control.v1.GetModelRequest
+	21,  // 92: finconfig.control.v1.CatalogAdminService.ListModels:input_type -> finconfig.control.v1.ListModelsRequest
+	28,  // 93: finconfig.control.v1.CatalogAdminService.CreateReleaseTemplate:input_type -> finconfig.control.v1.CreateReleaseTemplateRequest
+	29,  // 94: finconfig.control.v1.CatalogAdminService.GetReleaseTemplate:input_type -> finconfig.control.v1.GetReleaseTemplateRequest
+	30,  // 95: finconfig.control.v1.CatalogAdminService.ListReleaseTemplates:input_type -> finconfig.control.v1.ListReleaseTemplatesRequest
+	35,  // 96: finconfig.control.v1.ReleaseService.CreateReleaseOrder:input_type -> finconfig.control.v1.CreateReleaseOrderRequest
+	46,  // 97: finconfig.control.v1.ReleaseService.GetReleaseOrder:input_type -> finconfig.control.v1.GetReleaseOrderRequest
+	47,  // 98: finconfig.control.v1.ReleaseService.ListReleaseOrders:input_type -> finconfig.control.v1.ListReleaseOrdersRequest
+	49,  // 99: finconfig.control.v1.ReleaseService.ActOnReleaseOrder:input_type -> finconfig.control.v1.ActOnReleaseOrderRequest
+	50,  // 100: finconfig.control.v1.ReleaseService.CreateCompensatingRelease:input_type -> finconfig.control.v1.CreateCompensatingReleaseRequest
+	52,  // 101: finconfig.control.v1.AuditService.ListAuditRecords:input_type -> finconfig.control.v1.ListAuditRecordsRequest
+	54,  // 102: finconfig.control.v1.SensitiveAccessService.RevealField:input_type -> finconfig.control.v1.RevealFieldRequest
+	57,  // 103: finconfig.control.v1.OperationsService.ListOutboxEvents:input_type -> finconfig.control.v1.ListOutboxEventsRequest
+	59,  // 104: finconfig.control.v1.OperationsService.ReplayOutboxEvent:input_type -> finconfig.control.v1.ReplayOutboxEventRequest
+	6,   // 105: finconfig.control.v1.CatalogAdminService.CreateCollection:output_type -> finconfig.control.v1.CreateCollectionResponse
+	7,   // 106: finconfig.control.v1.CatalogAdminService.UpdateCollection:output_type -> finconfig.control.v1.UpdateCollectionResponse
+	8,   // 107: finconfig.control.v1.CatalogAdminService.GetCollection:output_type -> finconfig.control.v1.GetCollectionResponse
+	9,   // 108: finconfig.control.v1.CatalogAdminService.ListCollections:output_type -> finconfig.control.v1.ListCollectionsResponse
+	14,  // 109: finconfig.control.v1.CatalogAdminService.CreateSubscription:output_type -> finconfig.control.v1.CreateSubscriptionResponse
+	15,  // 110: finconfig.control.v1.CatalogAdminService.UpdateSubscription:output_type -> finconfig.control.v1.UpdateSubscriptionResponse
+	16,  // 111: finconfig.control.v1.CatalogAdminService.ListSubscriptions:output_type -> finconfig.control.v1.ListSubscriptionsResponse
+	22,  // 112: finconfig.control.v1.CatalogAdminService.CreateModel:output_type -> finconfig.control.v1.CreateModelResponse
+	23,  // 113: finconfig.control.v1.CatalogAdminService.UpdateModel:output_type -> finconfig.control.v1.UpdateModelResponse
+	24,  // 114: finconfig.control.v1.CatalogAdminService.GetModel:output_type -> finconfig.control.v1.GetModelResponse
+	25,  // 115: finconfig.control.v1.CatalogAdminService.ListModels:output_type -> finconfig.control.v1.ListModelsResponse
+	31,  // 116: finconfig.control.v1.CatalogAdminService.CreateReleaseTemplate:output_type -> finconfig.control.v1.CreateReleaseTemplateResponse
+	32,  // 117: finconfig.control.v1.CatalogAdminService.GetReleaseTemplate:output_type -> finconfig.control.v1.GetReleaseTemplateResponse
+	33,  // 118: finconfig.control.v1.CatalogAdminService.ListReleaseTemplates:output_type -> finconfig.control.v1.ListReleaseTemplatesResponse
+	42,  // 119: finconfig.control.v1.ReleaseService.CreateReleaseOrder:output_type -> finconfig.control.v1.CreateReleaseOrderResponse
+	43,  // 120: finconfig.control.v1.ReleaseService.GetReleaseOrder:output_type -> finconfig.control.v1.GetReleaseOrderResponse
+	48,  // 121: finconfig.control.v1.ReleaseService.ListReleaseOrders:output_type -> finconfig.control.v1.ListReleaseOrdersResponse
+	44,  // 122: finconfig.control.v1.ReleaseService.ActOnReleaseOrder:output_type -> finconfig.control.v1.ActOnReleaseOrderResponse
+	45,  // 123: finconfig.control.v1.ReleaseService.CreateCompensatingRelease:output_type -> finconfig.control.v1.CreateCompensatingReleaseResponse
+	53,  // 124: finconfig.control.v1.AuditService.ListAuditRecords:output_type -> finconfig.control.v1.ListAuditRecordsResponse
+	55,  // 125: finconfig.control.v1.SensitiveAccessService.RevealField:output_type -> finconfig.control.v1.RevealFieldResponse
+	58,  // 126: finconfig.control.v1.OperationsService.ListOutboxEvents:output_type -> finconfig.control.v1.ListOutboxEventsResponse
+	60,  // 127: finconfig.control.v1.OperationsService.ReplayOutboxEvent:output_type -> finconfig.control.v1.ReplayOutboxEventResponse
+	105, // [105:128] is the sub-list for method output_type
+	82,  // [82:105] is the sub-list for method input_type
+	82,  // [82:82] is the sub-list for extension type_name
+	82,  // [82:82] is the sub-list for extension extendee
+	0,   // [0:82] is the sub-list for field type_name
 }
 
 func init() { file_finconfig_control_v1_control_proto_init() }
@@ -4452,19 +4605,19 @@ func file_finconfig_control_v1_control_proto_init() {
 	file_finconfig_control_v1_control_proto_msgTypes[30].OneofWrappers = []any{}
 	file_finconfig_control_v1_control_proto_msgTypes[35].OneofWrappers = []any{}
 	file_finconfig_control_v1_control_proto_msgTypes[37].OneofWrappers = []any{}
-	file_finconfig_control_v1_control_proto_msgTypes[38].OneofWrappers = []any{}
-	file_finconfig_control_v1_control_proto_msgTypes[45].OneofWrappers = []any{}
-	file_finconfig_control_v1_control_proto_msgTypes[50].OneofWrappers = []any{}
+	file_finconfig_control_v1_control_proto_msgTypes[40].OneofWrappers = []any{}
+	file_finconfig_control_v1_control_proto_msgTypes[47].OneofWrappers = []any{}
 	file_finconfig_control_v1_control_proto_msgTypes[52].OneofWrappers = []any{}
 	file_finconfig_control_v1_control_proto_msgTypes[54].OneofWrappers = []any{}
-	file_finconfig_control_v1_control_proto_msgTypes[55].OneofWrappers = []any{}
+	file_finconfig_control_v1_control_proto_msgTypes[56].OneofWrappers = []any{}
+	file_finconfig_control_v1_control_proto_msgTypes[57].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_finconfig_control_v1_control_proto_rawDesc), len(file_finconfig_control_v1_control_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   66,
+			NumMessages:   68,
 			NumExtensions: 0,
 			NumServices:   5,
 		},

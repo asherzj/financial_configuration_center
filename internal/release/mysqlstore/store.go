@@ -280,13 +280,12 @@ func (transaction *transaction) FindCreateResult(ctx context.Context, actor, ide
 		CurrentStepStatus: release.StepStatus(loaded.CurrentStepStatus), Revision: release.EntityRevision(loaded.EntityRevision),
 	}
 	type stepProjectionRow struct {
-		Code   string
-		Type   string
-		Status string
+		Code, Type, Status     string
+		Context, CompareResult []byte
 	}
 	var stepRows []stepProjectionRow
 	if err := transaction.db.WithContext(ctx).Raw(`
-		SELECT step_code AS code, step_type AS type, status
+		SELECT step_code AS code, step_type AS type, status, context, compare_result
 		FROM release_step_states
 		WHERE release_order_id = ?
 		ORDER BY sequence_no
@@ -295,7 +294,11 @@ func (transaction *transaction) FindCreateResult(ctx context.Context, actor, ide
 	}
 	view.Steps = make([]application.StepView, len(stepRows))
 	for index, step := range stepRows {
-		view.Steps[index] = application.StepView{Code: step.Code, Type: release.StepType(step.Type), Status: release.StepStatus(step.Status)}
+		projection, err := projectStep(step.Code, step.Type, step.Status, step.Context, step.CompareResult)
+		if err != nil {
+			return application.StoredRequestResult{}, false, err
+		}
+		view.Steps[index] = projection
 	}
 	setCapabilities(&view)
 	return application.StoredRequestResult{
@@ -316,7 +319,7 @@ func setCapabilities(view *application.OrderView) {
 	case view.CurrentStepStatus == release.StepApproved || view.CurrentStepStatus == release.StepExecuted:
 		view.CanAdvance = view.CurrentStep != release.StepComplete
 		view.CanRollback = (view.CurrentStep == release.StepOverlayApply || view.CurrentStep == release.StepBaseApply) && view.CurrentStepStatus == release.StepExecuted
-	case (view.CurrentStep == release.StepBaseApply || view.CurrentStep == release.StepPercentRollout || view.CurrentStep == release.StepComplete) && view.CurrentStepStatus == release.StepPending:
+	case (view.CurrentStep == release.StepBaseApply || view.CurrentStep == release.StepPercentRollout || view.CurrentStep == release.StepCompare || view.CurrentStep == release.StepComplete) && view.CurrentStepStatus == release.StepPending:
 		view.CanExecute = true
 	}
 }
@@ -377,7 +380,8 @@ func (transaction *transaction) InsertOrder(ctx context.Context, order *release.
 	for sequence, step := range state.Steps {
 		stepContext, err := json.Marshal(map[string]any{
 			"requiredRoles": step.RequiredRoles, "selfApprovalPolicy": step.SelfApprovalPolicy,
-			"rolloutRanges": step.RolloutRanges,
+			"rolloutRanges": step.RolloutRanges, "compareMode": step.CompareMode,
+			"comparePreviewBucket": step.ComparePreviewBucket,
 		})
 		if err != nil {
 			return err
@@ -464,14 +468,14 @@ func (transaction *transaction) LoadOrderForUpdate(ctx context.Context, orderID 
 		}
 	}
 	type stepRow struct {
-		StepCode, StepType, Status, ExecutedBy string
-		Context, Approval, Effect              []byte
-		ExecutedAt, RolledBackAt               *time.Time
-		RolledBackBy                           string
+		StepCode, StepType, Status, ExecutedBy   string
+		Context, Approval, Effect, CompareResult []byte
+		ExecutedAt, RolledBackAt                 *time.Time
+		RolledBackBy                             string
 	}
 	var stepRows []stepRow
 	if err := transaction.db.WithContext(ctx).Raw(`
-		SELECT step_code, step_type, status, context, approval, effect, executed_at,
+		SELECT step_code, step_type, status, context, approval, effect, compare_result, executed_at,
 			COALESCE(executed_by, '') AS executed_by, rolled_back_at, COALESCE(rolled_back_by, '') AS rolled_back_by
 		FROM release_step_states WHERE release_order_id = ? ORDER BY sequence_no
 	`, orderID).Scan(&stepRows).Error; err != nil {
@@ -481,9 +485,11 @@ func (transaction *transaction) LoadOrderForUpdate(ctx context.Context, orderID 
 	currentStep := -1
 	for index, row := range stepRows {
 		var contextValue struct {
-			RequiredRoles      []string                   `json:"requiredRoles"`
-			SelfApprovalPolicy release.SelfApprovalPolicy `json:"selfApprovalPolicy"`
-			RolloutRanges      []overlay.BucketRange      `json:"rolloutRanges"`
+			RequiredRoles        []string                   `json:"requiredRoles"`
+			SelfApprovalPolicy   release.SelfApprovalPolicy `json:"selfApprovalPolicy"`
+			RolloutRanges        []overlay.BucketRange      `json:"rolloutRanges"`
+			CompareMode          release.CompareMode        `json:"compareMode"`
+			ComparePreviewBucket *int32                     `json:"comparePreviewBucket"`
 		}
 		if err := json.Unmarshal(row.Context, &contextValue); err != nil {
 			return nil, fmt.Errorf("decode step %q context: %w", row.StepCode, err)
@@ -508,11 +514,18 @@ func (transaction *transaction) LoadOrderForUpdate(ctx context.Context, orderID 
 				return nil, fmt.Errorf("decode step %q effect: unsupported effect envelope", row.StepCode)
 			}
 		}
+		var compareResult *release.CompareStepResult
+		if len(row.CompareResult) != 0 {
+			compareResult = &release.CompareStepResult{}
+			if err := json.Unmarshal(row.CompareResult, compareResult); err != nil {
+				return nil, fmt.Errorf("decode step %q compare result: %w", row.StepCode, err)
+			}
+		}
 		steps[index] = release.StepState{
 			Code: row.StepCode, Type: release.StepType(row.StepType), Status: release.StepStatus(row.Status),
 			RequiredRoles: contextValue.RequiredRoles, SelfApprovalPolicy: contextValue.SelfApprovalPolicy,
-			RolloutRanges: contextValue.RolloutRanges,
-			Approval:      approval, Effect: effect, ExecutedAt: row.ExecutedAt, ExecutedBy: row.ExecutedBy,
+			RolloutRanges: contextValue.RolloutRanges, CompareMode: contextValue.CompareMode, ComparePreviewBucket: contextValue.ComparePreviewBucket,
+			Approval: approval, Effect: effect, CompareResult: compareResult, ExecutedAt: row.ExecutedAt, ExecutedBy: row.ExecutedBy,
 			RolledBackAt: row.RolledBackAt, RolledBackBy: row.RolledBackBy,
 		}
 		if row.StepCode == loaded.CurrentStepCode {
@@ -962,13 +975,21 @@ func (transaction *transaction) SaveOrder(ctx context.Context, order *release.Or
 			}
 			effect = encoded
 		}
+		var compareResult any
+		if step.CompareResult != nil {
+			encoded, err := json.Marshal(step.CompareResult)
+			if err != nil {
+				return err
+			}
+			compareResult = encoded
+		}
 		if err := transaction.db.WithContext(ctx).Exec(`
 			UPDATE release_step_states
-			SET status = ?, approval = ?, effect = ?, executed_at = ?, executed_by = ?,
+			SET status = ?, approval = ?, effect = ?, compare_result = ?, executed_at = ?, executed_by = ?,
 				rolled_back_at = ?, rolled_back_by = ?, entity_revision = entity_revision + 1,
 				updated_at = ?, updated_by = ?
 			WHERE release_order_id = ? AND step_code = ?
-		`, step.Status, approval, effect, step.ExecutedAt, nullableString(step.ExecutedBy),
+		`, step.Status, approval, effect, compareResult, step.ExecutedAt, nullableString(step.ExecutedBy),
 			step.RolledBackAt, nullableString(step.RolledBackBy), state.UpdatedAt, state.UpdatedBy, state.ID, persistedStepCode(step)).Error; err != nil {
 			return err
 		}
@@ -989,26 +1010,39 @@ func (transaction *transaction) InsertActionResult(ctx context.Context, orderID,
 }
 
 func (transaction *transaction) RecordAction(ctx context.Context, record application.ActionRecord) error {
+	result := "SUCCEEDED"
 	message := fmt.Sprintf("%s succeeded", record.Action)
+	var errorCode, errorDetail any
+	if record.Failure != nil {
+		result = "FAILED"
+		message = record.Failure.Message
+		errorCode = record.Failure.Code
+		errorDetail = record.Failure.Message
+	}
 	if err := transaction.db.WithContext(ctx).Exec(`
 		INSERT INTO release_operation_logs (
 			id, release_order_id, release_item_id, step_code, action, result,
 			actor_subject, actor_name, message, error_code, error_detail, trace_id, created_at
-		) VALUES (UUID(), ?, NULL, ?, ?, 'SUCCEEDED', ?, ?, ?, NULL, NULL, '', ?)
-	`, record.OrderID, nullableString(record.StepCode), record.Action, record.Actor, record.Actor, message, record.At).Error; err != nil {
+		) VALUES (UUID(), ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, '', ?)
+	`, record.OrderID, nullableString(record.StepCode), record.Action, result, record.Actor, record.Actor, message, errorCode, errorDetail, record.At).Error; err != nil {
 		return err
 	}
-	return transaction.insertAudit(ctx, record.At, record.Actor, string(record.Action), "RELEASE_ORDER", record.OrderID, record.Scope, record.OrderID)
+	return transaction.insertAuditResult(ctx, record.At, record.Actor, string(record.Action), "RELEASE_ORDER", record.OrderID, record.Scope, record.OrderID, result, errorCode)
 }
 
 func (transaction *transaction) insertAudit(ctx context.Context, at time.Time, actor, action, resourceType, resourceID string, scope release.Scope, requestID string) error {
+	return transaction.insertAuditResult(ctx, at, actor, action, resourceType, resourceID, scope, requestID, "SUCCEEDED", nil)
+}
+
+func (transaction *transaction) insertAuditResult(ctx context.Context, at time.Time, actor, action, resourceType, resourceID string, scope release.Scope, requestID, result string, errorCode any) error {
 	return transaction.db.WithContext(ctx).Exec(`
 		INSERT INTO audit_records (
 			occurred_at, principal_subject, principal_display_name, action,
 			resource_type, resource_id, region, environment, stage, result,
 			before_data, after_data, metadata, request_id, trace_id
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'SUCCEEDED', NULL, NULL, JSON_OBJECT(), ?, '')
-	`, at, actor, actor, action, resourceType, resourceID, scope.Region, scope.Environment, scope.Stage, requestID).Error
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL,
+			IF(? IS NULL, JSON_OBJECT(), JSON_OBJECT('errorCode', ?)), ?, '')
+	`, at, actor, actor, action, resourceType, resourceID, scope.Region, scope.Environment, scope.Stage, result, errorCode, errorCode, requestID).Error
 }
 
 func stepCode(stepType release.StepType) string {
@@ -1031,11 +1065,13 @@ func persistedStepCode(step release.StepState) string {
 
 func marshalTemplateSnapshot(steps []release.StepState) ([]byte, error) {
 	type definition struct {
-		Code               string                     `json:"code"`
-		Type               release.StepType           `json:"type"`
-		RequiredRoles      []string                   `json:"requiredRoles,omitempty"`
-		SelfApprovalPolicy release.SelfApprovalPolicy `json:"selfApprovalPolicy,omitempty"`
-		RolloutRanges      []overlay.BucketRange      `json:"rolloutRanges,omitempty"`
+		Code                 string                     `json:"code"`
+		Type                 release.StepType           `json:"type"`
+		RequiredRoles        []string                   `json:"requiredRoles,omitempty"`
+		SelfApprovalPolicy   release.SelfApprovalPolicy `json:"selfApprovalPolicy,omitempty"`
+		RolloutRanges        []overlay.BucketRange      `json:"rolloutRanges,omitempty"`
+		CompareMode          release.CompareMode        `json:"compareMode,omitempty"`
+		ComparePreviewBucket *int32                     `json:"comparePreviewBucket,omitempty"`
 	}
 	finalEffect := release.FinalEffectBase
 	for _, step := range steps {
@@ -1051,9 +1087,29 @@ func marshalTemplateSnapshot(steps []release.StepState) ([]byte, error) {
 		document.Steps[index] = definition{
 			Code: persistedStepCode(step), Type: step.Type, RequiredRoles: append([]string(nil), step.RequiredRoles...),
 			SelfApprovalPolicy: step.SelfApprovalPolicy, RolloutRanges: append([]overlay.BucketRange(nil), step.RolloutRanges...),
+			CompareMode: step.CompareMode, ComparePreviewBucket: step.ComparePreviewBucket,
 		}
 	}
 	return json.Marshal(document)
+}
+
+func projectStep(code, stepType, status string, contextJSON, compareJSON []byte) (application.StepView, error) {
+	var contextValue struct {
+		RolloutRanges []overlay.BucketRange `json:"rolloutRanges"`
+	}
+	if len(contextJSON) != 0 {
+		if err := json.Unmarshal(contextJSON, &contextValue); err != nil {
+			return application.StepView{}, fmt.Errorf("decode step %q projection context: %w", code, err)
+		}
+	}
+	var compareResult *release.CompareStepResult
+	if len(compareJSON) != 0 {
+		compareResult = &release.CompareStepResult{}
+		if err := json.Unmarshal(compareJSON, compareResult); err != nil {
+			return application.StepView{}, fmt.Errorf("decode step %q projection compare result: %w", code, err)
+		}
+	}
+	return application.StepView{Code: code, Type: release.StepType(stepType), Status: release.StepStatus(status), RolloutRanges: contextValue.RolloutRanges, CompareResult: compareResult}, nil
 }
 
 func marshalRecordData(record *catalog.ConfigurationRecord) ([]byte, error) {
