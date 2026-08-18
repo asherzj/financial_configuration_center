@@ -99,6 +99,8 @@ OverlayRule 对一个 Scope + RecordKey 执行 ADD/MODIFY/DELETE。ADD/MODIFY co
 4. 同一层级同一 RecordKey 只允许一条规则，数据库唯一约束保证。
 5. ADD 目标已存在、MODIFY/DELETE 目标不存在均视为不变量错误，使 collection refresh 失败。
 
+`OverlayDigest` 固定为全部规则按 `(collection, environment, region, stage, record_key)` 排序后，对以下 JSON tuple 数组计算 SHA-256：`[collection, region, environment, stage, record_key, action, content, sorted_rollout_ranges, activated, expired]`。`content` 使用规范 JSON object，range 按 start/end 排序；数据库 ID、ReleaseOrderID、时间戳和 revision 不参与摘要。这样摘要只表达可见语义，同一规则因重建、读取顺序或历史归属不同不会产生伪变化。空规则集摘要与规范空 JSON 数组 `[]` 的 SHA-256 相同。
+
 ### 5.1 时间边界
 
 仅比较 `time.Now()` 会让结果在没有 revision 时变化，V1 禁止这种行为。Overlay 持久化以下显式状态：
