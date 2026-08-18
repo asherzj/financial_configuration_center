@@ -10,10 +10,35 @@ import (
 	"github.com/asherzj/financial_configuration_center/internal/distribution/snapshot"
 	commonv1 "github.com/asherzj/financial_configuration_center/kitex_gen/finconfig/common/v1"
 	configv1 "github.com/asherzj/financial_configuration_center/kitex_gen/finconfig/config/v1"
+	"github.com/cloudwego/kitex/pkg/streaming"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
 )
+
+func TestWatchSendsInitialWatermarkAndHonorsCancellation(t *testing.T) {
+	t.Parallel()
+	manager, err := snapshot.NewManager(hintHandlerSource{}, snapshot.IdentitySeed{ServerEpoch: "epoch", ServerInstanceID: "server", SnapshotInstance: "instance"}, handlerClock{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	hub, err := snapshot.NewWatchHub(manager, snapshot.WatchHubOptions{QueueSize: 1, MaxSubscribers: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler, err := configgrpc.NewWithWatch(stubApplication{}, hub, watchAuthorizer{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	stream := &watchStream{ctx: ctx, cancel: cancel}
+	if err := handler.Watch(&configv1.WatchRequest{ConsumerId: "consumer", ClientId: "client", Scope: scope("production")}, stream); err != nil {
+		t.Fatal(err)
+	}
+	if len(stream.sent) != 1 || stream.sent[0].Snapshot.ServerEpoch != "epoch" {
+		t.Fatalf("watch events = %+v", stream.sent)
+	}
+}
 
 func TestGetSnapshotMapsDeterministicCollectionPayload(t *testing.T) {
 	t.Parallel()
@@ -79,3 +104,24 @@ func (application stubApplication) GetSnapshot(context.Context, configserver.Get
 }
 
 func scope(environment string) *commonv1.Scope { return &commonv1.Scope{Environment: environment} }
+
+type watchAuthorizer struct{}
+
+func (watchAuthorizer) AuthorizedCollections(context.Context, string) ([]string, error) {
+	return []string{"routes"}, nil
+}
+
+type watchStream struct {
+	streaming.Stream
+	ctx    context.Context
+	cancel context.CancelFunc
+	sent   []*configv1.WatchResponse
+}
+
+func (stream *watchStream) Context() context.Context { return stream.ctx }
+
+func (stream *watchStream) Send(response *configv1.WatchResponse) error {
+	stream.sent = append(stream.sent, response)
+	stream.cancel()
+	return nil
+}

@@ -65,11 +65,12 @@ type Snapshot struct {
 }
 
 type Manager struct {
-	source Source
-	seed   IdentitySeed
-	clock  Clock
-	mu     sync.Mutex
-	value  atomic.Pointer[Snapshot]
+	source    Source
+	seed      IdentitySeed
+	clock     Clock
+	mu        sync.Mutex
+	value     atomic.Pointer[Snapshot]
+	publisher PublicationPublisher
 }
 
 func NewManager(source Source, seed IdentitySeed, clock Clock) (*Manager, error) {
@@ -116,7 +117,23 @@ func (manager *Manager) Refresh(ctx context.Context, environment string) (Refres
 		return RefreshResult{}, err
 	}
 	manager.value.Store(candidate)
+	if manager.publisher != nil {
+		manager.publisher.Publish(candidate)
+	}
 	return RefreshResult{Generation: candidate.identity.Generation, CollectionCount: len(candidate.collections)}, nil
+}
+
+func (manager *Manager) SetPublisher(publisher PublicationPublisher) error {
+	if publisher == nil {
+		return errors.New("snapshot publisher is required")
+	}
+	manager.mu.Lock()
+	defer manager.mu.Unlock()
+	if manager.publisher != nil {
+		return errors.New("snapshot publisher is already configured")
+	}
+	manager.publisher = publisher
+	return nil
 }
 
 func (snapshot *Snapshot) Identity() Identity { return snapshot.identity }

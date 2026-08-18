@@ -59,12 +59,29 @@ type Transport interface {
 	GetSnapshot(context.Context, SnapshotRequest) (SnapshotResponse, error)
 }
 
+type WatchRequest struct {
+	ConsumerID  string
+	ClientID    string
+	Environment string
+}
+
+type WatchEvent struct {
+	Identity       SnapshotIdentity
+	ResyncRequired bool
+}
+
+type WatchTransport interface {
+	Watch(context.Context, WatchRequest) (<-chan WatchEvent, error)
+}
+
 type Config struct {
-	ConsumerID   string
-	ClientID     string
-	Environment  string
-	Transport    Transport
-	PollInterval time.Duration
+	ConsumerID       string
+	ClientID         string
+	Environment      string
+	Transport        Transport
+	PollInterval     time.Duration
+	WatchEnabled     bool
+	ReconnectBackoff time.Duration
 }
 
 var (
@@ -101,19 +118,21 @@ type clientSnapshot struct {
 }
 
 type Client struct {
-	consumerID   string
-	clientID     string
-	environment  string
-	transport    Transport
-	refreshMu    sync.Mutex
-	callbackMu   sync.RWMutex
-	callback     func(ChangeSet) error
-	current      atomic.Pointer[clientSnapshot]
-	pollInterval time.Duration
-	lifecycleMu  sync.Mutex
-	lifecycle    lifecycleState
-	cancel       context.CancelFunc
-	closed       chan struct{}
+	consumerID       string
+	clientID         string
+	environment      string
+	transport        Transport
+	refreshMu        sync.Mutex
+	callbackMu       sync.RWMutex
+	callback         func(ChangeSet) error
+	current          atomic.Pointer[clientSnapshot]
+	pollInterval     time.Duration
+	watchEnabled     bool
+	reconnectBackoff time.Duration
+	lifecycleMu      sync.Mutex
+	lifecycle        lifecycleState
+	cancel           context.CancelFunc
+	closed           chan struct{}
 }
 
 func New(config Config) (*Client, error) {
@@ -129,10 +148,21 @@ func New(config Config) (*Client, error) {
 	if config.PollInterval == 0 {
 		config.PollInterval = 30 * time.Second
 	}
+	if config.ReconnectBackoff < 0 {
+		return nil, errors.New("new FinConfig client: reconnect backoff cannot be negative")
+	}
+	if config.ReconnectBackoff == 0 {
+		config.ReconnectBackoff = 100 * time.Millisecond
+	}
+	if config.WatchEnabled {
+		if _, supported := config.Transport.(WatchTransport); !supported {
+			return nil, errors.New("new FinConfig client: watch-enabled transport does not implement Watch")
+		}
+	}
 	client := &Client{
 		consumerID: config.ConsumerID, clientID: config.ClientID,
 		environment: config.Environment, transport: config.Transport, pollInterval: config.PollInterval,
-		closed: make(chan struct{}),
+		watchEnabled: config.WatchEnabled, reconnectBackoff: config.ReconnectBackoff, closed: make(chan struct{}),
 	}
 	client.current.Store(&clientSnapshot{environment: config.Environment, collections: map[string]collectionSnapshot{}})
 	return client, nil
@@ -175,7 +205,7 @@ func (client *Client) Start(ctx context.Context) error {
 	client.cancel = cancel
 	client.lifecycle = lifecycleRunning
 	client.lifecycleMu.Unlock()
-	go client.poll(runContext)
+	go client.run(runContext)
 	return nil
 }
 
@@ -206,10 +236,27 @@ func (client *Client) Close(ctx context.Context) error {
 	}
 }
 
+func (client *Client) run(ctx context.Context) {
+	var loops sync.WaitGroup
+	loops.Add(1)
+	go func() {
+		defer loops.Done()
+		client.poll(ctx)
+	}()
+	if client.watchEnabled {
+		loops.Add(1)
+		go func() {
+			defer loops.Done()
+			client.watch(ctx)
+		}()
+	}
+	loops.Wait()
+	client.finishClosed()
+}
+
 func (client *Client) poll(ctx context.Context) {
 	ticker := time.NewTicker(client.pollInterval)
 	defer ticker.Stop()
-	defer client.finishClosed()
 	for {
 		select {
 		case <-ctx.Done():
@@ -217,6 +264,49 @@ func (client *Client) poll(ctx context.Context) {
 		case <-ticker.C:
 			_ = client.Refresh(ctx)
 		}
+	}
+}
+
+func (client *Client) watch(ctx context.Context) {
+	transport := client.transport.(WatchTransport)
+	request := WatchRequest{ConsumerID: client.consumerID, ClientID: client.clientID, Environment: client.environment}
+	for {
+		events, err := transport.Watch(ctx, request)
+		if err != nil {
+			if !waitForReconnect(ctx, client.reconnectBackoff) {
+				return
+			}
+			continue
+		}
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case event, open := <-events:
+				if !open {
+					if !waitForReconnect(ctx, client.reconnectBackoff) {
+						return
+					}
+					goto reconnect
+				}
+				current := client.Identity()
+				if event.ResyncRequired || !sameInstance(event.Identity, current) || event.Identity.Generation > current.Generation {
+					_ = client.Refresh(ctx)
+				}
+			}
+		}
+	reconnect:
+	}
+}
+
+func waitForReconnect(ctx context.Context, delay time.Duration) bool {
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-timer.C:
+		return true
 	}
 }
 

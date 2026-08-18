@@ -45,6 +45,39 @@ func TestVersionPollConvergesWithoutHintOrWatch(t *testing.T) {
 	t.Fatal("SDK did not converge through version poll")
 }
 
+func TestWatchAcceleratesRefreshWithoutReplacingPoll(t *testing.T) {
+	t.Parallel()
+	record := finconfig.Record{Key: "route", Revision: 7, Values: map[string]string{"code": "visa", "priority": "1"}}
+	transport := &watchTransport{pollTransport: pollTransport{response: finconfig.SnapshotResponse{
+		Identity: finconfig.SnapshotIdentity{ServerEpoch: "epoch", ServerInstanceID: "server", SnapshotInstance: "instance", Generation: 1}, Environment: "production",
+		Collections: []finconfig.CollectionPayload{{Name: "routes", Revision: 7, Digest: digestFor(t, record), Records: []finconfig.Record{record}}},
+	}}, events: make(chan finconfig.WatchEvent, 1)}
+	client, err := finconfig.New(finconfig.Config{
+		ConsumerID: "consumer", ClientID: "client", Environment: "production", Transport: transport,
+		PollInterval: time.Hour, WatchEnabled: true, ReconnectBackoff: time.Millisecond,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := client.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close(context.Background())
+	record.Revision = 8
+	record.Values["priority"] = "2"
+	identity := finconfig.SnapshotIdentity{ServerEpoch: "epoch", ServerInstanceID: "server", SnapshotInstance: "instance", Generation: 2}
+	transport.set(finconfig.SnapshotResponse{Identity: identity, Environment: "production", Collections: []finconfig.CollectionPayload{{Name: "routes", Revision: 8, Digest: digestFor(t, record), Records: []finconfig.Record{record}}}})
+	transport.events <- finconfig.WatchEvent{Identity: identity}
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if got, _ := client.GetByKey("routes", "route"); got.Values["priority"] == "2" {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatal("watch did not accelerate refresh")
+}
+
 func TestClientRefreshPublishesImmutableSnapshotAndRetainsLastKnownGood(t *testing.T) {
 	t.Parallel()
 
@@ -172,6 +205,15 @@ type stubTransport struct {
 type pollTransport struct {
 	mu       sync.RWMutex
 	response finconfig.SnapshotResponse
+}
+
+type watchTransport struct {
+	pollTransport
+	events chan finconfig.WatchEvent
+}
+
+func (transport *watchTransport) Watch(context.Context, finconfig.WatchRequest) (<-chan finconfig.WatchEvent, error) {
+	return transport.events, nil
 }
 
 func (transport *pollTransport) GetSnapshot(context.Context, finconfig.SnapshotRequest) (finconfig.SnapshotResponse, error) {

@@ -21,13 +21,38 @@ type Application interface {
 	GetSnapshot(context.Context, configserver.GetSnapshotRequest) (configserver.GetSnapshotResponse, error)
 }
 
-type Handler struct{ application Application }
+type Watcher interface {
+	Subscribe() (*snapshot.WatchSubscription, error)
+}
+
+type WatchAuthorizer interface {
+	AuthorizedCollections(context.Context, string) ([]string, error)
+}
+
+type Handler struct {
+	application Application
+	watcher     Watcher
+	authorizer  WatchAuthorizer
+}
 
 func New(application Application) (*Handler, error) {
 	if application == nil {
 		return nil, errors.New("new ConfigService handler: application is required")
 	}
 	return &Handler{application: application}, nil
+}
+
+func NewWithWatch(application Application, watcher Watcher, authorizer WatchAuthorizer) (*Handler, error) {
+	handler, err := New(application)
+	if err != nil {
+		return nil, err
+	}
+	if watcher == nil || authorizer == nil {
+		return nil, errors.New("new ConfigService watch handler: watcher and authorizer are required")
+	}
+	handler.watcher = watcher
+	handler.authorizer = authorizer
+	return handler, nil
 }
 
 func (handler *Handler) GetSnapshot(ctx context.Context, request *configv1.GetSnapshotRequest) (*configv1.GetSnapshotResponse, error) {
@@ -92,8 +117,57 @@ func (handler *Handler) GetCollections(context.Context, *configv1.GetCollections
 	return nil, status.Error(codes.Unimplemented, "GetCollections is not implemented in the base-only slice")
 }
 
-func (handler *Handler) Watch(*configv1.WatchRequest, configv1.ConfigService_WatchServer) error {
-	return status.Error(codes.Unimplemented, "Watch is not implemented in the base-only slice")
+func (handler *Handler) Watch(request *configv1.WatchRequest, stream configv1.ConfigService_WatchServer) error {
+	if handler.watcher == nil || handler.authorizer == nil {
+		return status.Error(codes.Unimplemented, "Watch is not configured")
+	}
+	if request == nil || request.Scope == nil || strings.TrimSpace(request.ConsumerId) == "" || strings.TrimSpace(request.ClientId) == "" || strings.TrimSpace(request.Scope.Environment) == "" {
+		return status.Error(codes.InvalidArgument, "consumer_id, client_id, and scope.environment are required")
+	}
+	ctx := stream.Context()
+	collections, err := handler.authorizer.AuthorizedCollections(ctx, request.ConsumerId)
+	if err != nil {
+		return status.Error(codes.PermissionDenied, "watch authorization failed")
+	}
+	allowed := make(map[string]struct{}, len(collections))
+	for _, collection := range collections {
+		allowed[collection] = struct{}{}
+	}
+	subscription, err := handler.watcher.Subscribe()
+	if err != nil {
+		return status.Error(codes.ResourceExhausted, "watch subscriber capacity reached")
+	}
+	defer subscription.Cancel()
+	for {
+		select {
+		case <-ctx.Done():
+			return nil
+		case event, open := <-subscription.Events:
+			if !open {
+				return nil
+			}
+			response := &configv1.WatchResponse{
+				EventId: event.EventID, Snapshot: mapIdentity(event.Identity), ResyncRequired: event.ResyncRequired,
+				OccurredAt: timestamppb.New(event.Identity.PublishedAt),
+			}
+			for _, version := range event.Versions {
+				if _, visible := allowed[version.Collection]; !visible {
+					continue
+				}
+				revision, err := revisionInt64(version.Revision)
+				if err != nil {
+					return status.Error(codes.Internal, "watch revision exceeds RPC range")
+				}
+				response.Versions = append(response.Versions, &configv1.VersionView{Collection: version.Collection, ConfigRevision: revision, BaseDigest: &commonv1.Digest{Algorithm: "SHA-256", Value: version.Digest}})
+			}
+			if err := stream.Send(response); err != nil {
+				return err
+			}
+			if event.ResyncRequired {
+				return nil
+			}
+		}
+	}
 }
 
 func mapIdentity(identity snapshot.Identity) *commonv1.SnapshotIdentity {
