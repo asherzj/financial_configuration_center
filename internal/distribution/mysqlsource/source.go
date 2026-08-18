@@ -160,6 +160,9 @@ func loadModels(ctx context.Context, db *gorm.DB, definition catalog.CollectionD
 		if err := json.Unmarshal(row.Definition, &spec); err != nil {
 			return nil, fmt.Errorf("decode model %q: %w", row.Code, err)
 		}
+		if err := resolveReleaseTypeAvailability(ctx, db, row.Code, spec.ReleaseTypes); err != nil {
+			return nil, err
+		}
 		spec.Code, spec.Name, spec.Collection = row.Code, row.Name, definition.Name()
 		spec.ConfigRevision = catalog.ConfigRevision(row.Revision)
 		model, err := catalog.CompileModel(definition, spec)
@@ -169,6 +172,41 @@ func loadModels(ctx context.Context, db *gorm.DB, definition catalog.CollectionD
 		models[index] = model
 	}
 	return models, nil
+}
+
+func resolveReleaseTypeAvailability(ctx context.Context, db *gorm.DB, modelCode string, definitions []catalog.ReleaseTypeDefinition) error {
+	type templateRow struct {
+		ReleaseTypeCode string
+		Code            string
+	}
+	var rows []templateRow
+	if err := db.WithContext(ctx).Raw(`
+		SELECT release_type_code, code
+		FROM release_templates
+		WHERE model_code = ? AND active_slot = 'A'
+	`, modelCode).Scan(&rows).Error; err != nil {
+		return fmt.Errorf("load active release templates for model %q: %w", modelCode, err)
+	}
+	active := make(map[string]string, len(rows))
+	for _, row := range rows {
+		active[row.ReleaseTypeCode] = row.Code
+	}
+	for index := range definitions {
+		definition := &definitions[index]
+		definition.Available = false
+		switch {
+		case !definition.Enabled:
+			definition.UnavailableReasonCode = "RELEASE_TYPE_DISABLED"
+		case active[definition.Code] == "":
+			definition.UnavailableReasonCode = "ACTIVE_TEMPLATE_NOT_FOUND"
+		case active[definition.Code] != definition.TemplateCode:
+			definition.UnavailableReasonCode = "ACTIVE_TEMPLATE_MISMATCH"
+		default:
+			definition.Available = true
+			definition.UnavailableReasonCode = ""
+		}
+	}
+	return nil
 }
 
 func loadRecords(ctx context.Context, db *gorm.DB, collection, environment string) ([]catalog.ConfigurationRecord, error) {

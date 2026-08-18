@@ -29,8 +29,11 @@ func TestAllReturnsRowsAndModelDrivenInteractionMetadata(t *testing.T) {
 	if len(result.Rows) != 1 || result.Rows[0].RecordKey != keys[0] || result.Rows[0].Values["priority"] != "1" {
 		t.Fatalf("rows are not stable/projected: %+v", result.Rows)
 	}
-	if len(result.ProjectionFields) != 3 || len(result.InteractionFields) != 3 {
+	if len(result.ProjectionFields) != 3 || len(result.InteractionFields) != 3 || len(result.ReleaseTypes) != 2 {
 		t.Fatalf("ALL metadata is incomplete: projection=%v fields=%+v", result.ProjectionFields, result.InteractionFields)
+	}
+	if result.ReleaseTypes[0].Code != "direct" || !result.ReleaseTypes[0].Available || result.ReleaseTypes[1].UnavailableReasonCode != "TEMPLATE_DISABLED" {
+		t.Fatalf("release types = %+v", result.ReleaseTypes)
 	}
 	first := result.InteractionFields[0]
 	if first.Name != "route_code" || !first.Projected || !first.KeyField || !first.Editable || !first.Queryable || len(first.AllowedFilterOperators) == 0 {
@@ -59,7 +62,7 @@ func TestOnlyDataOmitsInteractionMetadataAndRejectsInvalidPage(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Query ONLY_DATA: %v", err)
 	}
-	if len(result.Rows) != 2 || result.ProjectionFields != nil || result.InteractionFields != nil {
+	if len(result.Rows) != 2 || result.ProjectionFields != nil || result.InteractionFields != nil || result.ReleaseTypes != nil {
 		t.Fatalf("ONLY_DATA response = %+v", result)
 	}
 	zero := int32(0)
@@ -102,7 +105,12 @@ func querySnapshot(t *testing.T) (*snapshot.Manager, catalog.CompiledModel, []st
 			{Name: "priority", Type: catalog.FieldTypeInt64, Required: true, Editable: true, Queryable: true, UIControl: catalog.UIControlNumber, AllowedFilterOperators: []catalog.FilterOperator{catalog.FilterExact, catalog.FilterClosedRange}},
 			{Name: "enabled", Type: catalog.FieldTypeBool, Required: true, Editable: true, Queryable: true, DefaultValue: &defaultEnabled, UIControl: catalog.UIControlBoolean, AllowedFilterOperators: []catalog.FilterOperator{catalog.FilterExact}},
 		},
-		ProjectionFields: []string{"route_code", "priority", "enabled"}, KeyFields: []string{"route_code"}, DefaultPageSize: 20, MaxPageSize: 100, ConfigRevision: 7,
+		ProjectionFields: []string{"route_code", "priority", "enabled"}, KeyFields: []string{"route_code"}, DefaultPageSize: 20, MaxPageSize: 100,
+		ReleaseTypes: []catalog.ReleaseTypeDefinition{
+			{Code: "direct", Name: "Direct", TemplateCode: "base-final", Enabled: true, Available: true},
+			{Code: "approval", Name: "Approval", TemplateCode: "approval-final", Enabled: true, UnavailableReasonCode: "TEMPLATE_DISABLED"},
+		},
+		ConfigRevision: 7,
 	})
 	if err != nil {
 		t.Fatal(err)

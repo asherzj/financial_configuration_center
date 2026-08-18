@@ -17,7 +17,7 @@ import (
 func TestBrowserBaseReleaseJourneyRoutes(t *testing.T) {
 	t.Parallel()
 
-	queries := &queryStub{result: pagequery.Result{ModelCode: "model", ModelName: "Model", QueryType: pagequery.TypeAll, PageNumber: 1, PageSize: 20}}
+	queries := &queryStub{result: pagequery.Result{ModelCode: "model", ModelName: "Model", QueryType: pagequery.TypeAll, PageNumber: 1, PageSize: 20, ReleaseTypes: []pagequery.ReleaseType{{Code: "direct", Name: "Direct", TemplateCode: "base-final", Available: true}}}}
 	releases := &releaseStub{
 		created: application.OrderView{ID: "order-1", Status: release.OrderInProgress, CurrentStepCode: "base-apply", CurrentStep: release.StepBaseApply, Revision: 1},
 		acted:   application.OrderView{ID: "order-1", Status: release.OrderInProgress, CurrentStepCode: "base-apply", CurrentStep: release.StepBaseApply, Revision: 2},
@@ -32,6 +32,9 @@ func TestBrowserBaseReleaseJourneyRoutes(t *testing.T) {
 	})
 	if queryResponse.Code != http.StatusOK || queries.last.Environment != "production" || queries.last.Type != pagequery.TypeAll {
 		t.Fatalf("query response=%d command=%+v body=%s", queryResponse.Code, queries.last, queryResponse.Body.String())
+	}
+	if !bytes.Contains(queryResponse.Body.Bytes(), []byte(`"releaseTypes":[{"available":true,"code":"direct","name":"Direct","templateCode":"base-final"}]`)) {
+		t.Fatalf("release type metadata = %s", queryResponse.Body.String())
 	}
 
 	createResponse := serveJSON(t, handler, http.MethodPost, "/api/v1/releases", "create-id", map[string]any{

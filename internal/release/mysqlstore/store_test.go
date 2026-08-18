@@ -442,7 +442,9 @@ func TestRealMySQLHTTPWalkingSkeleton(t *testing.T) {
 	}
 
 	initial := postJSON(t, handler, "/api/v1/query-page", "", map[string]any{"modelCode": "payment-route-admin", "scope": map[string]string{"region": "cn", "environment": "production"}, "queryType": "ALL"})
-	if initial.Code != http.StatusOK || !bytes.Contains(initial.Body.Bytes(), []byte(`"rows":[]`)) {
+	if initial.Code != http.StatusOK || !bytes.Contains(initial.Body.Bytes(), []byte(`"rows":[]`)) ||
+		!bytes.Contains(initial.Body.Bytes(), []byte(`{"available":true,"code":"direct","name":"Direct","templateCode":"base-final"}`)) ||
+		!bytes.Contains(initial.Body.Bytes(), []byte(`{"available":false,"code":"approval","name":"Approval","templateCode":"approval-final","unavailableReasonCode":"ACTIVE_TEMPLATE_NOT_FOUND"}`)) {
 		t.Fatalf("initial query = %d %s", initial.Code, initial.Body.String())
 	}
 	created := postJSON(t, handler, "/api/v1/releases", "018fb4a7-afd0-7d19-8177-790193deaf14", map[string]any{
@@ -675,6 +677,10 @@ func seedCatalog(t *testing.T, db *sql.DB) {
 			{Name: "enabled", Type: catalog.FieldTypeBool, Required: true, Editable: true, Queryable: true, DefaultValue: &defaultEnabled, UIControl: catalog.UIControlBoolean, AllowedFilterOperators: []catalog.FilterOperator{catalog.FilterExact}},
 		},
 		ProjectionFields: []string{"route_code", "priority", "enabled"}, KeyFields: []string{"route_code"}, DefaultPageSize: 20, MaxPageSize: 100,
+		ReleaseTypes: []catalog.ReleaseTypeDefinition{
+			{Code: "direct", Name: "Direct", TemplateCode: "base-final", Enabled: true},
+			{Code: "approval", Name: "Approval", TemplateCode: "approval-final", Enabled: true},
+		},
 	}
 	fieldsJSON, _ := json.Marshal(fields)
 	keysJSON, _ := json.Marshal([]string{"route_code"})

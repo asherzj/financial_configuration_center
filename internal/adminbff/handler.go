@@ -290,10 +290,20 @@ func queryPageResponse(result pagequery.Result) map[string]any {
 			"defaultValue": field.DefaultValue, "displayOrder": field.DisplayOrder, "validationRules": []any{}, "options": []any{},
 		}
 	}
+	releaseTypes := make([]map[string]any, len(result.ReleaseTypes))
+	for index, releaseType := range result.ReleaseTypes {
+		releaseTypes[index] = map[string]any{
+			"code": releaseType.Code, "name": releaseType.Name, "templateCode": releaseType.TemplateCode,
+			"available": releaseType.Available,
+		}
+		if releaseType.UnavailableReasonCode != "" {
+			releaseTypes[index]["unavailableReasonCode"] = releaseType.UnavailableReasonCode
+		}
+	}
 	return map[string]any{
 		"modelCode": result.ModelCode, "modelName": result.ModelName, "queryType": result.QueryType,
 		"rows": rows, "projectionFields": result.ProjectionFields, "interactionFields": fields,
-		"releaseTypes": []any{},
+		"releaseTypes": releaseTypes,
 		"page":         map[string]any{"number": result.PageNumber, "size": result.PageSize, "totalNumber": result.TotalNumber, "totalPages": result.TotalPages},
 		"snapshot": map[string]any{
 			"serverEpoch": result.Snapshot.ServerEpoch, "serverInstanceId": result.Snapshot.ServerInstanceID,

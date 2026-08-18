@@ -59,6 +59,14 @@ type Row struct {
 	MaskedFields   []string
 }
 
+type ReleaseType struct {
+	Code                  string
+	Name                  string
+	TemplateCode          string
+	Available             bool
+	UnavailableReasonCode string
+}
+
 type Result struct {
 	ModelCode          string
 	ModelName          string
@@ -66,6 +74,7 @@ type Result struct {
 	Rows               []Row
 	ProjectionFields   []string
 	InteractionFields  []InteractionField
+	ReleaseTypes       []ReleaseType
 	PageNumber         int32
 	PageSize           int32
 	TotalNumber        int64
@@ -162,6 +171,14 @@ func (querier *Querier) Query(request Request) (Result, error) {
 	if request.Type == TypeAll {
 		result.ProjectionFields = slices.Clone(projection)
 		result.InteractionFields = interactionFields(definition, model, projectionSet)
+		definitions := model.ReleaseTypes()
+		result.ReleaseTypes = make([]ReleaseType, len(definitions))
+		for index, definition := range definitions {
+			result.ReleaseTypes[index] = ReleaseType{
+				Code: definition.Code, Name: definition.Name, TemplateCode: definition.TemplateCode,
+				Available: definition.Enabled && definition.Available, UnavailableReasonCode: definition.UnavailableReasonCode,
+			}
+		}
 	}
 	return result, nil
 }

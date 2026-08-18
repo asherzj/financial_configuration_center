@@ -63,6 +63,7 @@ func (handler *Handler) QueryPage(_ context.Context, request *configv1.QueryPage
 		Page:             &commonv1.PageResponse{Number: result.PageNumber, Size: result.PageSize, TotalNumber: result.TotalNumber, TotalPages: result.TotalPages},
 		Snapshot:         mapIdentity(result.Snapshot), ModelRevision: modelRevision, CollectionRevision: collectionRevision,
 		Rows: make([]*configv1.PageRow, len(result.Rows)), InteractionFields: make([]*configv1.PageInteractionField, len(result.InteractionFields)),
+		ReleaseTypes: make([]*configv1.ReleaseType, len(result.ReleaseTypes)),
 	}
 	for index, row := range result.Rows {
 		revision, err := revisionInt64(row.RecordRevision)
@@ -85,7 +86,20 @@ func (handler *Handler) QueryPage(_ context.Context, request *configv1.QueryPage
 			DefaultValue: cloneStringPointer(field.DefaultValue), DisplayOrder: field.DisplayOrder,
 		}
 	}
+	for index, releaseType := range result.ReleaseTypes {
+		response.ReleaseTypes[index] = &configv1.ReleaseType{
+			Code: releaseType.Code, Name: releaseType.Name, TemplateCode: releaseType.TemplateCode,
+			Available: releaseType.Available, UnavailableReasonCode: optionalString(releaseType.UnavailableReasonCode),
+		}
+	}
 	return response, nil
+}
+
+func optionalString(value string) *string {
+	if value == "" {
+		return nil
+	}
+	return &value
 }
 
 func fromQueryType(value commonv1.QueryPageType) (pagequery.QueryType, error) {

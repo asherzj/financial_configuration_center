@@ -130,7 +130,10 @@ func TestCompileModelRequiresCollectionSemanticsToMatch(t *testing.T) {
 		KeyFields:        []string{"route_code"},
 		DefaultPageSize:  20,
 		MaxPageSize:      100,
-		ConfigRevision:   7,
+		ReleaseTypes: []domain.ReleaseTypeDefinition{
+			{Code: "direct", Name: "Direct", TemplateCode: "base-final", Enabled: true, Available: true},
+		},
+		ConfigRevision: 7,
 	}
 	compiled, err := domain.CompileModel(definition, model)
 	if err != nil {
@@ -139,10 +142,45 @@ func TestCompileModelRequiresCollectionSemanticsToMatch(t *testing.T) {
 	if compiled.Code() != model.Code || compiled.Collection() != definition.Name() {
 		t.Fatalf("compiled model identity is wrong: %s/%s", compiled.Code(), compiled.Collection())
 	}
+	if got := compiled.ReleaseTypes(); len(got) != 1 || got[0].Code != "direct" || !got[0].Available {
+		t.Fatalf("compiled release types = %+v", got)
+	}
+	model.ReleaseTypes[0].Code = "changed"
+	if compiled.ReleaseTypes()[0].Code != "direct" {
+		t.Fatal("compiled release types leaked source mutation")
+	}
 
 	model.Fields[1].Type = domain.FieldTypeString
 	if _, err := domain.CompileModel(definition, model); err == nil {
 		t.Fatal("model with mismatched field type succeeded")
+	}
+}
+
+func TestCompileModelRejectsInvalidReleaseTypes(t *testing.T) {
+	t.Parallel()
+	definition, err := domain.CompileCollection(routeCollectionSpec())
+	if err != nil {
+		t.Fatal(err)
+	}
+	base := domain.ModelSpec{
+		Code: "model", Name: "Model", Collection: definition.Name(),
+		Fields: []domain.ModelField{
+			{Name: "route_code", Type: domain.FieldTypeString, Required: true, UIControl: domain.UIControlInput},
+			{Name: "priority", Type: domain.FieldTypeInt64, Required: true, UIControl: domain.UIControlNumber},
+			{Name: "enabled", Type: domain.FieldTypeBool, Required: true, DefaultValue: ptr("false"), UIControl: domain.UIControlBoolean},
+			{Name: "credential", Type: domain.FieldTypeString, Sensitive: true, UIControl: domain.UIControlInput},
+		},
+		ProjectionFields: []string{"route_code"}, KeyFields: []string{"route_code"}, DefaultPageSize: 20, MaxPageSize: 100, ConfigRevision: 1,
+	}
+	for _, releaseTypes := range [][]domain.ReleaseTypeDefinition{
+		{{Code: "direct", Name: "", TemplateCode: "base-final", Enabled: true, Available: true}},
+		{{Code: "direct", Name: "Direct", TemplateCode: "base-final", Available: true}},
+		{{Code: "direct", Name: "Direct", TemplateCode: "base-final"}, {Code: "direct", Name: "Duplicate", TemplateCode: "other"}},
+	} {
+		base.ReleaseTypes = releaseTypes
+		if _, err := domain.CompileModel(definition, base); err == nil {
+			t.Fatalf("invalid release types compiled: %+v", releaseTypes)
+		}
 	}
 }
 

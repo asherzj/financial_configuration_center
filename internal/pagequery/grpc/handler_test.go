@@ -24,7 +24,8 @@ func TestQueryPageMapsCompleteAllMetadata(t *testing.T) {
 			Queryable: true, Editable: true, Required: true, Projected: true, KeyField: true,
 			AllowedFilterOperators: []catalog.FilterOperator{catalog.FilterExact}, DefaultFilterOperator: catalog.FilterExact,
 		}},
-		PageNumber: 1, PageSize: 20, TotalNumber: 1, TotalPages: 1,
+		ReleaseTypes: []pagequery.ReleaseType{{Code: "direct", Name: "Direct", TemplateCode: "base-final", Available: true}},
+		PageNumber:   1, PageSize: 20, TotalNumber: 1, TotalPages: 1,
 		Snapshot:      snapshot.Identity{ServerEpoch: "epoch", ServerInstanceID: "server", SnapshotInstance: "instance", Generation: 1, PublishedAt: time.Now().UTC()},
 		ModelRevision: 7, CollectionRevision: 8,
 	}}
@@ -38,7 +39,7 @@ func TestQueryPageMapsCompleteAllMetadata(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(response.Rows) != 1 || len(response.InteractionFields) != 1 || !response.InteractionFields[0].Projected || response.InteractionFields[0].DefaultFilterOperator != commonv1.FilterOperator_FILTER_OPERATOR_EXACT {
+	if len(response.Rows) != 1 || len(response.InteractionFields) != 1 || !response.InteractionFields[0].Projected || response.InteractionFields[0].DefaultFilterOperator != commonv1.FilterOperator_FILTER_OPERATOR_EXACT || len(response.ReleaseTypes) != 1 || response.ReleaseTypes[0].TemplateCode != "base-final" {
 		t.Fatalf("QueryPage response = %+v", response)
 	}
 	if response.ModelRevision != 7 || response.CollectionRevision != 8 || response.Page.Size != 20 {

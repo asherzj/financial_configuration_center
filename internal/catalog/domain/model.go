@@ -44,6 +44,15 @@ type ModelField struct {
 	AllowedFilterOperators []FilterOperator
 }
 
+type ReleaseTypeDefinition struct {
+	Code                  string
+	Name                  string
+	TemplateCode          string
+	Enabled               bool
+	Available             bool
+	UnavailableReasonCode string
+}
+
 // ModelSpec is untrusted model input to CompileModel.
 type ModelSpec struct {
 	Code             string
@@ -54,6 +63,7 @@ type ModelSpec struct {
 	KeyFields        []string
 	DefaultPageSize  int32
 	MaxPageSize      int32
+	ReleaseTypes     []ReleaseTypeDefinition
 	ConfigRevision   ConfigRevision
 }
 
@@ -67,6 +77,7 @@ type CompiledModel struct {
 	keyFields        []string
 	defaultPageSize  int32
 	maxPageSize      int32
+	releaseTypes     []ReleaseTypeDefinition
 	configRevision   ConfigRevision
 }
 
@@ -159,6 +170,10 @@ func CompileModel(collection CollectionDefinition, spec ModelSpec) (CompiledMode
 	if !slices.Equal(spec.KeyFields, collection.keyFields) {
 		return CompiledModel{}, errors.New("compile model: release key fields must match collection key fields in order")
 	}
+	releaseTypes, err := compileReleaseTypes(spec.ReleaseTypes)
+	if err != nil {
+		return CompiledModel{}, err
+	}
 
 	return CompiledModel{
 		code:             spec.Code,
@@ -169,6 +184,7 @@ func CompileModel(collection CollectionDefinition, spec ModelSpec) (CompiledMode
 		keyFields:        slices.Clone(spec.KeyFields),
 		defaultPageSize:  spec.DefaultPageSize,
 		maxPageSize:      spec.MaxPageSize,
+		releaseTypes:     releaseTypes,
 		configRevision:   spec.ConfigRevision,
 	}, nil
 }
@@ -199,7 +215,37 @@ func (model CompiledModel) DefaultPageSize() int32 { return model.defaultPageSiz
 
 func (model CompiledModel) MaxPageSize() int32 { return model.maxPageSize }
 
+func (model CompiledModel) ReleaseTypes() []ReleaseTypeDefinition {
+	return slices.Clone(model.releaseTypes)
+}
+
 func (model CompiledModel) ConfigRevision() ConfigRevision { return model.configRevision }
+
+func compileReleaseTypes(source []ReleaseTypeDefinition) ([]ReleaseTypeDefinition, error) {
+	compiled := make([]ReleaseTypeDefinition, len(source))
+	seen := make(map[string]struct{}, len(source))
+	for index, definition := range source {
+		definition.Code = strings.TrimSpace(definition.Code)
+		definition.Name = strings.TrimSpace(definition.Name)
+		definition.TemplateCode = strings.TrimSpace(definition.TemplateCode)
+		definition.UnavailableReasonCode = strings.TrimSpace(definition.UnavailableReasonCode)
+		if !identifierPattern.MatchString(definition.Code) || !identifierPattern.MatchString(definition.TemplateCode) || definition.Name == "" {
+			return nil, fmt.Errorf("compile model: release type %d has invalid identity", index)
+		}
+		if _, duplicate := seen[definition.Code]; duplicate {
+			return nil, fmt.Errorf("compile model: duplicate release type %q", definition.Code)
+		}
+		if definition.Available && !definition.Enabled {
+			return nil, fmt.Errorf("compile model: disabled release type %q cannot be available", definition.Code)
+		}
+		if definition.Available && definition.UnavailableReasonCode != "" {
+			return nil, fmt.Errorf("compile model: available release type %q has an unavailable reason", definition.Code)
+		}
+		compiled[index] = definition
+		seen[definition.Code] = struct{}{}
+	}
+	return compiled, nil
+}
 
 func sameOptionalString(left, right *string) bool {
 	if left == nil || right == nil {
