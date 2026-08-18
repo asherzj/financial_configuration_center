@@ -31,6 +31,8 @@ type BaseApplyParams struct {
 	CleanupScopeOverlay bool
 }
 
+type OverlayApplyParams struct{}
+
 type CompareParams struct {
 	Mode          string
 	PreviewBucket *int
@@ -41,6 +43,7 @@ type StepDefinition struct {
 	Type          StepType
 	RequiredRoles []string
 	ManualReview  *ManualReviewParams
+	OverlayApply  *OverlayApplyParams
 	BaseApply     *BaseApplyParams
 	Compare       *CompareParams
 }
@@ -51,8 +54,8 @@ type CompiledTemplate struct {
 }
 
 func CompileTemplate(document []byte, finalEffect FinalEffect) (CompiledTemplate, error) {
-	if finalEffect != FinalEffectBase {
-		return CompiledTemplate{}, errors.New("compile template: only BASE_FINAL is implemented")
+	if finalEffect != FinalEffectBase && finalEffect != FinalEffectOverlay {
+		return CompiledTemplate{}, errors.New("compile template: final effect is invalid")
 	}
 	var root struct {
 		Steps []json.RawMessage `json:"steps"`
@@ -65,7 +68,7 @@ func CompileTemplate(document []byte, finalEffect FinalEffect) (CompiledTemplate
 	}
 	steps := make([]StepDefinition, len(root.Steps))
 	seenCodes := make(map[string]struct{}, len(root.Steps))
-	baseCount, completeCount := 0, 0
+	baseCount, overlayCount, completeCount := 0, 0, 0
 	for index, raw := range root.Steps {
 		var envelope struct {
 			Code          string          `json:"code"`
@@ -115,6 +118,13 @@ func CompileTemplate(document []byte, finalEffect FinalEffect) (CompiledTemplate
 				return CompiledTemplate{}, fmt.Errorf("compile template step %q: BASE_FINAL must clean scope overlay", envelope.Code)
 			}
 			step.BaseApply = &BaseApplyParams{CleanupScopeOverlay: true}
+		case StepOverlayApply:
+			overlayCount++
+			var params struct{}
+			if err := decodeStrict(envelope.Params, &params); err != nil {
+				return CompiledTemplate{}, fmt.Errorf("compile template step %q params: %w", envelope.Code, err)
+			}
+			step.OverlayApply = &OverlayApplyParams{}
 		case StepCompare:
 			var params struct {
 				Mode          string `json:"mode"`
@@ -141,8 +151,14 @@ func CompileTemplate(document []byte, finalEffect FinalEffect) (CompiledTemplate
 		}
 		steps[index] = step
 	}
-	if baseCount != 1 || completeCount != 1 || steps[len(steps)-1].Type != StepComplete {
-		return CompiledTemplate{}, errors.New("compile BASE_FINAL template: exactly one BASE_APPLY and one final COMPLETE are required")
+	if completeCount != 1 || steps[len(steps)-1].Type != StepComplete {
+		return CompiledTemplate{}, errors.New("compile template: exactly one final COMPLETE is required")
+	}
+	if finalEffect == FinalEffectBase && (baseCount != 1 || overlayCount != 0) {
+		return CompiledTemplate{}, errors.New("compile BASE_FINAL template: exactly one BASE_APPLY and no OVERLAY_APPLY are required")
+	}
+	if finalEffect == FinalEffectOverlay && (overlayCount != 1 || baseCount != 0) {
+		return CompiledTemplate{}, errors.New("compile OVERLAY_FINAL template: exactly one OVERLAY_APPLY and no BASE_APPLY are required")
 	}
 	return CompiledTemplate{finalEffect: finalEffect, steps: steps}, nil
 }
@@ -197,6 +213,10 @@ func cloneStepDefinition(step StepDefinition) StepDefinition {
 	if step.BaseApply != nil {
 		params := *step.BaseApply
 		step.BaseApply = &params
+	}
+	if step.OverlayApply != nil {
+		params := *step.OverlayApply
+		step.OverlayApply = &params
 	}
 	if step.Compare != nil {
 		params := *step.Compare

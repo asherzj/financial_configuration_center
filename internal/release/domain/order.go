@@ -41,6 +41,7 @@ type StepType string
 
 const (
 	StepManualReview StepType = "MANUAL_REVIEW"
+	StepOverlayApply StepType = "OVERLAY_APPLY"
 	StepBaseApply    StepType = "BASE_APPLY"
 	StepCompare      StepType = "COMPARE"
 	StepComplete     StepType = "COMPLETE"

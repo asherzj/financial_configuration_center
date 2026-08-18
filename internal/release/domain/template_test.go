@@ -29,6 +29,23 @@ func TestCompileBaseFinalTemplateUsesClosedTypedStepSchemas(t *testing.T) {
 	}
 }
 
+func TestCompileOverlayFinalTemplateUsesTypedOverlayApply(t *testing.T) {
+	t.Parallel()
+	template, err := release.CompileTemplate([]byte(`{
+		"steps":[
+			{"code":"apply-overlay","type":"OVERLAY_APPLY","params":{}},
+			{"code":"complete","type":"COMPLETE","params":{}}
+		]
+	}`), release.FinalEffectOverlay)
+	if err != nil {
+		t.Fatal(err)
+	}
+	steps := template.Steps()
+	if template.FinalEffect() != release.FinalEffectOverlay || len(steps) != 2 || steps[0].OverlayApply == nil || steps[0].Type != release.StepOverlayApply {
+		t.Fatalf("compiled overlay template = effect %s steps %+v", template.FinalEffect(), steps)
+	}
+}
+
 func TestCompileTemplateRejectsOpenOrUnsafeShapes(t *testing.T) {
 	t.Parallel()
 	tests := map[string]string{
@@ -42,6 +59,39 @@ func TestCompileTemplateRejectsOpenOrUnsafeShapes(t *testing.T) {
 			t.Parallel()
 			if _, err := release.CompileTemplate([]byte(document), release.FinalEffectBase); err == nil {
 				t.Fatal("invalid template compiled")
+			}
+		})
+	}
+}
+
+func TestCompileTemplateRejectsFinalEffectStepMismatch(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name        string
+		finalEffect release.FinalEffect
+		document    string
+	}{
+		{
+			name:        "overlay final with base apply",
+			finalEffect: release.FinalEffectOverlay,
+			document:    `{"steps":[{"code":"apply","type":"BASE_APPLY","params":{"cleanupScopeOverlay":true}},{"code":"complete","type":"COMPLETE","params":{}}]}`,
+		},
+		{
+			name:        "base final with overlay apply",
+			finalEffect: release.FinalEffectBase,
+			document:    `{"steps":[{"code":"apply","type":"OVERLAY_APPLY","params":{}},{"code":"complete","type":"COMPLETE","params":{}}]}`,
+		},
+		{
+			name:        "overlay apply with unknown param",
+			finalEffect: release.FinalEffectOverlay,
+			document:    `{"steps":[{"code":"apply","type":"OVERLAY_APPLY","params":{"sql":"UPDATE"}},{"code":"complete","type":"COMPLETE","params":{}}]}`,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			if _, err := release.CompileTemplate([]byte(test.document), test.finalEffect); err == nil {
+				t.Fatal("mismatched template compiled")
 			}
 		})
 	}
