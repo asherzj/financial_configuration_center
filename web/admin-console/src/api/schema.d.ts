@@ -483,6 +483,7 @@ export interface components {
         ReleaseID: string;
         ExpectedRevision: number;
         IdempotencyKey: string;
+        RequestID: string;
     };
     requestBodies: never;
     headers: never;
@@ -862,7 +863,9 @@ export interface operations {
     revealSensitiveField: {
         parameters: {
             query?: never;
-            header?: never;
+            header: {
+                "X-Request-ID": components["parameters"]["RequestID"];
+            };
             path?: never;
             cookie?: never;
         };

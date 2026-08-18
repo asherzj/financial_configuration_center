@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"strings"
 
+	access "github.com/asherzj/financial_configuration_center/internal/access/application"
 	catalog "github.com/asherzj/financial_configuration_center/internal/catalog/domain"
 	"github.com/asherzj/financial_configuration_center/internal/pagequery"
 	"github.com/asherzj/financial_configuration_center/internal/release/application"
@@ -35,22 +36,81 @@ type ReleaseCommands interface {
 	Act(context.Context, application.ActCommand) (application.OrderView, error)
 }
 
-type Handler struct {
-	queries  PageQueries
-	releases ReleaseCommands
-	auth     Authenticator
-	mux      *http.ServeMux
+type SensitiveAccess interface {
+	Reveal(context.Context, access.RevealCommand) (access.RevealResult, error)
 }
 
-func New(queries PageQueries, releases ReleaseCommands, auth Authenticator) (*Handler, error) {
+type Handler struct {
+	queries   PageQueries
+	releases  ReleaseCommands
+	sensitive SensitiveAccess
+	auth      Authenticator
+	mux       *http.ServeMux
+}
+
+func New(queries PageQueries, releases ReleaseCommands, auth Authenticator, sensitive ...SensitiveAccess) (*Handler, error) {
 	if queries == nil || releases == nil || auth == nil {
 		return nil, errors.New("new Admin BFF: queries, releases, and authenticator are required")
 	}
+	if len(sensitive) > 1 {
+		return nil, errors.New("new Admin BFF: at most one sensitive access service is allowed")
+	}
 	handler := &Handler{queries: queries, releases: releases, auth: auth, mux: http.NewServeMux()}
+	if len(sensitive) == 1 {
+		handler.sensitive = sensitive[0]
+	}
 	handler.mux.HandleFunc("POST /api/v1/query-page", handler.queryPage)
 	handler.mux.HandleFunc("POST /api/v1/releases", handler.createRelease)
 	handler.mux.HandleFunc("POST /api/v1/releases/{id}/actions", handler.actOnRelease)
+	if handler.sensitive != nil {
+		handler.mux.HandleFunc("POST /api/v1/sensitive-fields/reveal", handler.revealSensitiveField)
+	}
 	return handler, nil
+}
+
+type revealSensitiveFieldRequest struct {
+	ModelCode                  string                 `json:"modelCode"`
+	Scope                      scopeRequest           `json:"scope"`
+	RecordKey                  string                 `json:"recordKey"`
+	FieldName                  string                 `json:"fieldName"`
+	ExpectedRecordRevision     catalog.ConfigRevision `json:"expectedRecordRevision"`
+	ExpectedCollectionRevision catalog.ConfigRevision `json:"expectedCollectionRevision"`
+	ExpectedModelRevision      catalog.ConfigRevision `json:"expectedModelRevision"`
+	ExpectedServerEpoch        string                 `json:"expectedServerEpoch"`
+	ExpectedSnapshotInstance   string                 `json:"expectedSnapshotInstance"`
+	ExpectedSnapshotGeneration uint64                 `json:"expectedSnapshotGeneration"`
+	Reason                     string                 `json:"reason"`
+	PreviewBucket              *int32                 `json:"previewBucket,omitempty"`
+}
+
+func (handler *Handler) revealSensitiveField(writer http.ResponseWriter, request *http.Request) {
+	principal, ok := handler.authenticate(writer, request)
+	if !ok {
+		return
+	}
+	requestID := strings.TrimSpace(request.Header.Get("X-Request-ID"))
+	if requestID == "" {
+		writeError(writer, http.StatusBadRequest, "REQUEST_ID_REQUIRED", "X-Request-ID header is required")
+		return
+	}
+	var body revealSensitiveFieldRequest
+	if !decodeJSON(writer, request, &body) {
+		return
+	}
+	result, err := handler.sensitive.Reveal(request.Context(), access.RevealCommand{
+		ModelCode: body.ModelCode, Scope: access.Scope{Region: body.Scope.Region, Environment: body.Scope.Environment, Stage: body.Scope.Stage},
+		RecordKey: body.RecordKey, FieldName: body.FieldName, ExpectedRecordRevision: body.ExpectedRecordRevision,
+		ExpectedCollectionRevision: body.ExpectedCollectionRevision, ExpectedModelRevision: body.ExpectedModelRevision,
+		ExpectedServerEpoch: body.ExpectedServerEpoch, ExpectedSnapshotInstance: body.ExpectedSnapshotInstance,
+		ExpectedSnapshotGeneration: body.ExpectedSnapshotGeneration, Reason: body.Reason, PreviewBucket: body.PreviewBucket,
+		RequestID: requestID, TraceID: strings.TrimSpace(request.Header.Get("Traceparent")),
+		Principal: access.Principal{Subject: principal.Subject, DisplayName: principal.DisplayName, Roles: append([]string(nil), principal.Roles...)},
+	})
+	if err != nil {
+		writeDomainError(writer, err)
+		return
+	}
+	writeJSON(writer, http.StatusOK, map[string]any{"value": result.Value, "expiresAt": result.ExpiresAt})
 }
 
 func (handler *Handler) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
@@ -259,6 +319,16 @@ func decodeJSON(writer http.ResponseWriter, request *http.Request, target any) b
 
 func writeDomainError(writer http.ResponseWriter, err error) {
 	switch {
+	case errors.Is(err, access.ErrInvalid):
+		writeError(writer, http.StatusBadRequest, "INVALID_ARGUMENT", err.Error())
+	case errors.Is(err, access.ErrForbidden):
+		writeError(writer, http.StatusForbidden, "PERMISSION_DENIED", err.Error())
+	case errors.Is(err, access.ErrAborted):
+		writeError(writer, http.StatusConflict, "ABORTED", err.Error())
+	case errors.Is(err, access.ErrNotFound):
+		writeError(writer, http.StatusNotFound, "NOT_FOUND", err.Error())
+	case errors.Is(err, access.ErrFailedPrecondition):
+		writeError(writer, http.StatusPreconditionFailed, "FAILED_PRECONDITION", err.Error())
 	case errors.Is(err, pagequery.ErrInvalidArgument):
 		writeError(writer, http.StatusBadRequest, "INVALID_ARGUMENT", err.Error())
 	case errors.Is(err, release.ErrIdempotencyKeyReused):

@@ -112,6 +112,7 @@ describe("OperationPage", () => {
     const api: OperationApi = {
       queryPage: vi.fn().mockResolvedValue(page),
       createRelease,
+      revealSensitive: vi.fn(),
       actOnRelease: vi.fn().mockResolvedValue(created),
     };
 
@@ -172,6 +173,7 @@ describe("OperationPage", () => {
 	const api: OperationApi = {
 		queryPage: vi.fn().mockResolvedValue(generatedPage),
 		createRelease: vi.fn().mockResolvedValue(created),
+		revealSensitive: vi.fn(),
 		actOnRelease: vi.fn().mockResolvedValue(created),
 	};
 	render(<OperationPage api={api} />);
@@ -207,6 +209,7 @@ describe("OperationPage", () => {
 	const api: OperationApi = {
 		queryPage,
 		createRelease: vi.fn().mockResolvedValue(created),
+		revealSensitive: vi.fn(),
 		actOnRelease: vi.fn().mockResolvedValue(created),
 	};
 	render(<OperationPage api={api} />);
@@ -323,6 +326,7 @@ describe("OperationPage", () => {
     const api: OperationApi = {
       queryPage: vi.fn().mockResolvedValue(approvalPage),
       createRelease,
+      revealSensitive: vi.fn(),
       actOnRelease,
     };
 
@@ -396,7 +400,7 @@ describe("OperationPage", () => {
     };
     const queryPage = vi.fn().mockResolvedValueOnce(page).mockResolvedValue(scopedPage);
     const createRelease = vi.fn().mockResolvedValue(created);
-    const api: OperationApi = { queryPage, createRelease, actOnRelease: vi.fn().mockResolvedValue(created) };
+    const api: OperationApi = { queryPage, createRelease, revealSensitive: vi.fn(), actOnRelease: vi.fn().mockResolvedValue(created) };
 
     render(<OperationPage api={api} />);
     await screen.findByText("visa-cn");
@@ -467,6 +471,7 @@ describe("OperationPage", () => {
 	const api: OperationApi = {
 		queryPage,
 		createRelease: vi.fn().mockResolvedValue(rolloutRelease),
+		revealSensitive: vi.fn(),
 		actOnRelease: vi.fn().mockResolvedValue(rolloutRelease),
 	};
 
@@ -525,6 +530,7 @@ describe("OperationPage", () => {
 	const api: OperationApi = {
 		queryPage: vi.fn().mockResolvedValue(sensitivePage),
 		createRelease,
+		revealSensitive: vi.fn(),
 		actOnRelease: vi.fn().mockResolvedValue(created),
 	};
 	render(<OperationPage api={api} />);
@@ -572,6 +578,7 @@ describe("OperationPage", () => {
 	const api: OperationApi = {
 		queryPage: vi.fn().mockResolvedValue(sensitivePage),
 		createRelease,
+		revealSensitive: vi.fn(),
 		actOnRelease: vi.fn().mockResolvedValue(created),
 	};
 	render(<OperationPage api={api} />);
@@ -588,5 +595,67 @@ describe("OperationPage", () => {
 	await waitFor(() => expect(createRelease).toHaveBeenCalledTimes(1));
 	expect(createRelease.mock.calls[0]?.[0].items[0].preserveSensitiveFields).toBeUndefined();
 	expect(createRelease.mock.calls[0]?.[0].items[0].after.api_secret).toBe("new-secret");
+  });
+
+  it("reveals a masked value with current authority facts and expires it locally", async () => {
+	const sensitivePage: PageResult = {
+		...page,
+		rows: [{ ...page.rows[0]!, maskedFields: ["api_secret"] }],
+		projectionFields: [...page.projectionFields, "api_secret"],
+		interactionFields: [...page.interactionFields, {
+			name: "api_secret",
+			displayName: "API secret",
+			description: "Protected credential",
+			type: "STRING",
+			uiControl: "INPUT",
+			queryable: false,
+			editable: true,
+			required: false,
+			sensitive: true,
+			projected: true,
+			keyField: false,
+			allowedFilterOperators: [],
+			defaultFilterOperator: "EXACT",
+			displayOrder: 3,
+			validationRules: [],
+			options: [],
+		}],
+	};
+	const revealSensitive = vi.fn().mockResolvedValue({
+		value: "temporary-authority-secret",
+		expiresAt: new Date(Date.now() + 2_000).toISOString(),
+	});
+	const api: OperationApi = {
+		queryPage: vi.fn().mockResolvedValue(sensitivePage),
+		createRelease: vi.fn().mockResolvedValue(created),
+		revealSensitive,
+		actOnRelease: vi.fn().mockResolvedValue(created),
+	};
+	render(<OperationPage api={api} />);
+
+	await screen.findByText("••••••");
+	fireEvent.click(screen.getByRole("button", { name: "临时查看 API secret existing-key" }));
+	const confirm = await screen.findByRole("button", { name: "确认临时查看" });
+	expect(confirm).toBeDisabled();
+	fireEvent.change(screen.getByLabelText("查看原因"), { target: { value: "production incident" } });
+	fireEvent.click(confirm);
+
+	await waitFor(() => expect(revealSensitive).toHaveBeenCalledTimes(1));
+	expect(revealSensitive.mock.calls[0]?.[0]).toEqual({
+		modelCode: "payment-route-admin",
+		scope: { region: "cn", environment: "production" },
+		recordKey: "existing-key",
+		fieldName: "api_secret",
+		expectedRecordRevision: 7,
+		expectedCollectionRevision: 7,
+		expectedModelRevision: 6,
+		expectedServerEpoch: "epoch",
+		expectedSnapshotInstance: "instance",
+		expectedSnapshotGeneration: 1,
+		reason: "production incident",
+	});
+	expect(await screen.findByText("temporary-authority-secret")).toBeInTheDocument();
+	await waitFor(() => expect(screen.queryByText("temporary-authority-secret")).not.toBeInTheDocument(), { timeout: 3_000 });
+	expect(screen.getByRole("button", { name: "临时查看 API secret existing-key" })).toBeInTheDocument();
   });
 });

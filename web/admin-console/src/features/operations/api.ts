@@ -1,12 +1,12 @@
-import type { CreateReleaseRequest, OperationApi, PageResult, ReleaseDetail } from "./types";
+import type { CreateReleaseRequest, OperationApi, PageResult, ReleaseDetail, RevealSensitiveRequest } from "./types";
 
-async function requestJson<T>(path: string, body: unknown, idempotencyKey?: string): Promise<T> {
+async function requestJson<T>(path: string, body: unknown, headers: Record<string, string> = {}): Promise<T> {
   const response = await fetch(path, {
     method: "POST",
     credentials: "same-origin",
     headers: {
       "Content-Type": "application/json",
-      ...(idempotencyKey ? { "Idempotency-Key": idempotencyKey } : {}),
+      ...headers,
     },
     body: JSON.stringify(body),
   });
@@ -20,7 +20,9 @@ async function requestJson<T>(path: string, body: unknown, idempotencyKey?: stri
 export const operationApi: OperationApi = {
   queryPage: (request) => requestJson<PageResult>("/api/v1/query-page", request),
   createRelease: (request: CreateReleaseRequest, idempotencyKey: string) =>
-    requestJson<ReleaseDetail>("/api/v1/releases", request, idempotencyKey),
+    requestJson<ReleaseDetail>("/api/v1/releases", request, { "Idempotency-Key": idempotencyKey }),
+  revealSensitive: (request: RevealSensitiveRequest, requestId: string) =>
+    requestJson<{ value: string; expiresAt: string }>("/api/v1/sensitive-fields/reveal", request, { "X-Request-ID": requestId }),
   actOnRelease: (orderId, actionRequestId, request) =>
-    requestJson<ReleaseDetail>(`/api/v1/releases/${encodeURIComponent(orderId)}/actions`, request, actionRequestId),
+    requestJson<ReleaseDetail>(`/api/v1/releases/${encodeURIComponent(orderId)}/actions`, request, { "Idempotency-Key": actionRequestId }),
 };

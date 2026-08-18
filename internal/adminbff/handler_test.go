@@ -7,7 +7,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
+	access "github.com/asherzj/financial_configuration_center/internal/access/application"
 	"github.com/asherzj/financial_configuration_center/internal/adminbff"
 	catalog "github.com/asherzj/financial_configuration_center/internal/catalog/domain"
 	"github.com/asherzj/financial_configuration_center/internal/pagequery"
@@ -109,6 +111,28 @@ func TestBFFMapsInvalidPageQueryToBadRequest(t *testing.T) {
 	})
 	if response.Code != http.StatusBadRequest || !bytes.Contains(response.Body.Bytes(), []byte(`"code":"INVALID_ARGUMENT"`)) {
 		t.Fatalf("invalid query response = %d %s", response.Code, response.Body.String())
+	}
+}
+
+func TestBFFRevealsSensitiveFieldWithNoStoreAndTrustedPrincipal(t *testing.T) {
+	t.Parallel()
+	expiresAt := time.Date(2026, 8, 20, 0, 1, 0, 0, time.UTC)
+	sensitive := &sensitiveStub{result: access.RevealResult{Value: "secret", ExpiresAt: expiresAt}}
+	handler, err := adminbff.New(&queryStub{}, &releaseStub{}, authenticator{roles: []string{access.SensitiveViewerRole}}, sensitive)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response := serveJSONWithHeaders(t, handler, http.MethodPost, "/api/v1/sensitive-fields/reveal", map[string]string{"X-Request-ID": "reveal-1"}, map[string]any{
+		"modelCode": "model", "scope": map[string]any{"region": "cn", "environment": "production"},
+		"recordKey": "record", "fieldName": "secret", "expectedRecordRevision": 8,
+		"expectedCollectionRevision": 8, "expectedModelRevision": 7, "expectedServerEpoch": "epoch",
+		"expectedSnapshotInstance": "instance", "expectedSnapshotGeneration": 1, "reason": "incident",
+	})
+	if response.Code != http.StatusOK || response.Header().Get("Cache-Control") != "no-store" || !bytes.Contains(response.Body.Bytes(), []byte(`"value":"secret"`)) {
+		t.Fatalf("reveal response = %d headers=%v body=%s", response.Code, response.Header(), response.Body.String())
+	}
+	if sensitive.last.Principal.Subject != "operator@example.com" || sensitive.last.Principal.DisplayName != "Operator" || sensitive.last.RequestID != "reveal-1" || sensitive.last.ExpectedRecordRevision != 8 {
+		t.Fatalf("reveal command = %+v", sensitive.last)
 	}
 }
 
@@ -232,6 +256,17 @@ type releaseStub struct {
 	actErr     error
 }
 
+type sensitiveStub struct {
+	result access.RevealResult
+	err    error
+	last   access.RevealCommand
+}
+
+func (stub *sensitiveStub) Reveal(_ context.Context, command access.RevealCommand) (access.RevealResult, error) {
+	stub.last = command
+	return stub.result, stub.err
+}
+
 func (stub *releaseStub) CreateRelease(_ context.Context, command application.CreateReleaseCommand) (application.OrderView, error) {
 	stub.lastCreate = command
 	return stub.created, nil
@@ -252,6 +287,22 @@ func serveJSON(t *testing.T, handler http.Handler, method, path, idempotency str
 	request.Header.Set("Content-Type", "application/json")
 	if idempotency != "" {
 		request.Header.Set("Idempotency-Key", idempotency)
+	}
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, request)
+	return recorder
+}
+
+func serveJSONWithHeaders(t *testing.T, handler http.Handler, method, path string, headers map[string]string, payload any) *httptest.ResponseRecorder {
+	t.Helper()
+	encoded, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(method, path, bytes.NewReader(encoded))
+	request.Header.Set("Content-Type", "application/json")
+	for name, value := range headers {
+		request.Header.Set(name, value)
 	}
 	recorder := httptest.NewRecorder()
 	handler.ServeHTTP(recorder, request)

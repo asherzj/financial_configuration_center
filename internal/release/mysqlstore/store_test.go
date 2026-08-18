@@ -19,6 +19,8 @@ import (
 	"testing"
 	"time"
 
+	access "github.com/asherzj/financial_configuration_center/internal/access/application"
+	accessmysqlstore "github.com/asherzj/financial_configuration_center/internal/access/mysqlstore"
 	"github.com/asherzj/financial_configuration_center/internal/adminbff"
 	catalog "github.com/asherzj/financial_configuration_center/internal/catalog/domain"
 	"github.com/asherzj/financial_configuration_center/internal/configserver"
@@ -35,6 +37,92 @@ import (
 	"github.com/asherzj/financial_configuration_center/sdk/finconfig"
 	drivermysql "github.com/go-sql-driver/mysql"
 )
+
+func TestRealMySQLSensitiveRevealUsesCurrentAuthorityAndCommitsAudit(t *testing.T) {
+	dsn := isolatedDatabase(t)
+	ctx := context.Background()
+	now := time.Date(2026, 8, 19, 23, 0, 0, 0, time.UTC)
+	database, err := platformmysql.Open(ctx, platformmysql.Config{DSN: dsn, MaxOpenConns: 4, MaxIdleConns: 2, ConnMaxLifetime: time.Minute, ConnMaxIdleTime: time.Minute})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = database.Close() })
+	releaseStore, err := mysqlstore.New(database)
+	if err != nil {
+		t.Fatal(err)
+	}
+	releaseService := application.NewService(releaseStore, &numberedIDs{next: 1500, releaseNumber: "REL-20260819-1500"}, fixedClock{now: now})
+	created, err := releaseService.CreateBaseFinal(ctx, application.CreateBaseFinalCommand{
+		IdempotencyKey: "sensitive-create", ModelCode: "payment-route-admin", ReleaseTypeCode: "direct",
+		Scope: release.Scope{Region: "cn", Environment: "production"}, Actor: "operator@example.com",
+		Items: []application.AddDraft{{Data: map[string]string{"route_code": "secret-route", "priority": "1", "api_secret": "authority-secret"}, ExpectedCollectionRevision: 7}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := releaseService.Act(ctx, application.ActCommand{
+		OrderID: created.ID, ActionRequestID: "60000000-0000-4000-8000-000000000001",
+		ExpectedRevision: 1, ExpectedCurrentStep: "base-apply", Action: application.ActionExecute, Actor: "operator@example.com",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	source, err := mysqlsource.New(database)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager, err := snapshot.NewManager(source, snapshot.IdentitySeed{ServerEpoch: "reveal-epoch", ServerInstanceID: "reveal-server", SnapshotInstance: "reveal-snapshot"}, fixedClock{now: now})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manager.Refresh(ctx, "production"); err != nil {
+		t.Fatal(err)
+	}
+	page, err := pagequery.New(manager).Query(pagequery.Request{ModelCode: "payment-route-admin", Region: "cn", Environment: "production", Type: pagequery.TypeAll})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(page.Rows) != 1 || page.Rows[0].Values["api_secret"] != "" || !reflect.DeepEqual(page.Rows[0].MaskedFields, []string{"api_secret"}) {
+		t.Fatalf("masked authority page = %+v", page)
+	}
+	accessStore, err := accessmysqlstore.New(database)
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := access.NewService(accessStore, manager, fixedClock{now: now})
+	command := access.RevealCommand{
+		ModelCode: "payment-route-admin", Scope: access.Scope{Region: "cn", Environment: "production"},
+		RecordKey: page.Rows[0].RecordKey, FieldName: "api_secret",
+		ExpectedRecordRevision: page.Rows[0].RecordRevision, ExpectedCollectionRevision: page.CollectionRevision,
+		ExpectedModelRevision: page.ModelRevision, ExpectedServerEpoch: page.Snapshot.ServerEpoch,
+		ExpectedSnapshotInstance: page.Snapshot.SnapshotInstance, ExpectedSnapshotGeneration: page.Snapshot.Generation,
+		Reason: "production incident", RequestID: "60000000-0000-4000-8000-000000000002",
+		Principal: access.Principal{Subject: "viewer@example.com", DisplayName: "Viewer", Roles: []string{access.SensitiveViewerRole}},
+	}
+	revealed, err := service.Reveal(ctx, command)
+	if err != nil || revealed.Value != "authority-secret" || !revealed.ExpiresAt.Equal(now.Add(time.Minute)) {
+		t.Fatalf("reveal = %+v, %v", revealed, err)
+	}
+	raw, err := sql.Open("mysql", dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer raw.Close()
+	var metadata []byte
+	if err := raw.QueryRow(`SELECT metadata FROM audit_records WHERE action = 'SENSITIVE_FIELD_REVEALED'`).Scan(&metadata); err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(metadata, []byte("authority-secret")) || !bytes.Contains(metadata, []byte("production incident")) {
+		t.Fatalf("unsafe or incomplete audit metadata: %s", metadata)
+	}
+	stale := command
+	stale.ExpectedRecordRevision++
+	stale.RequestID = "60000000-0000-4000-8000-000000000003"
+	if result, err := service.Reveal(ctx, stale); !errors.Is(err, access.ErrAborted) || result.Value != "" {
+		t.Fatalf("stale reveal = %+v, %v", result, err)
+	}
+	assertCount(t, raw, `SELECT COUNT(*) FROM audit_records WHERE action = 'SENSITIVE_FIELD_REVEALED'`, 1)
+}
 
 func TestRealMySQLPollConvergesWithoutHintOrWatch(t *testing.T) {
 	dsn := isolatedDatabase(t)

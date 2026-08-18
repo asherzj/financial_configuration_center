@@ -90,6 +90,21 @@ export interface CreateReleaseRequest {
   }>;
 }
 
+export interface RevealSensitiveRequest {
+  modelCode: string;
+  scope: Scope;
+  recordKey: string;
+  fieldName: string;
+  expectedRecordRevision: number;
+  expectedCollectionRevision: number;
+  expectedModelRevision: number;
+  expectedServerEpoch: string;
+  expectedSnapshotInstance: string;
+  expectedSnapshotGeneration: number;
+  reason: string;
+  previewBucket?: number;
+}
+
 export interface ReleaseDetail {
   order: {
     id: string;
@@ -128,6 +143,7 @@ export interface OperationApi {
 	pageSize?: number;
   }): Promise<PageResult>;
   createRelease(request: CreateReleaseRequest, idempotencyKey: string): Promise<ReleaseDetail>;
+  revealSensitive(request: RevealSensitiveRequest, requestId: string): Promise<{ value: string; expiresAt: string }>;
   actOnRelease(
     orderId: string,
     actionRequestId: string,

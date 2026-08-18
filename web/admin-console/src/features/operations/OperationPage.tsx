@@ -21,7 +21,7 @@ import {
   message,
 } from "antd";
 import type { ColumnsType } from "antd/es/table";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { operationApi } from "./api";
 import type {
@@ -57,6 +57,11 @@ interface FilterDraft {
 	upper?: string;
 }
 
+interface RevealTarget {
+  row: PageRow;
+  field: InteractionField;
+}
+
 export function OperationPage({ api = operationApi }: { api?: OperationApi }) {
   const [form] = Form.useForm<Record<string, unknown>>();
   const [activeScope, setActiveScope] = useState<Scope>(defaultScope);
@@ -77,9 +82,23 @@ export function OperationPage({ api = operationApi }: { api?: OperationApi }) {
   const [replaceSensitive, setReplaceSensitive] = useState<Record<string, boolean>>({});
 	const [filterDrafts, setFilterDrafts] = useState<Record<string, FilterDraft>>({});
 	const [activeConditions, setActiveConditions] = useState<QueryCondition[]>([]);
+  const [revealTarget, setRevealTarget] = useState<RevealTarget>();
+  const [revealReason, setRevealReason] = useState("");
+  const [revealing, setRevealing] = useState(false);
+  const [revealedValues, setRevealedValues] = useState<Record<string, string>>({});
+  const revealTimers = useRef(new Map<string, ReturnType<typeof setTimeout>>());
+  const revealSequence = useRef(0);
   const [error, setError] = useState<string>();
 
+  const clearRevealed = useCallback(() => {
+    revealSequence.current += 1;
+    for (const timer of revealTimers.current.values()) clearTimeout(timer);
+    revealTimers.current.clear();
+    setRevealedValues({});
+  }, []);
+
   const load = useCallback(async () => {
+    clearRevealed();
     setLoading(true);
     setError(undefined);
     try {
@@ -100,11 +119,15 @@ export function OperationPage({ api = operationApi }: { api?: OperationApi }) {
     } finally {
       setLoading(false);
     }
-  }, [activePreviewBucket, activeScope, api]);
+  }, [activePreviewBucket, activeScope, api, clearRevealed]);
 
   useEffect(() => {
     void load();
   }, [load]);
+
+  useEffect(() => () => {
+    for (const timer of revealTimers.current.values()) clearTimeout(timer);
+  }, []);
 
   const projectedFields = useMemo(
     () =>
@@ -120,7 +143,19 @@ export function OperationPage({ api = operationApi }: { api?: OperationApi }) {
       key: field.name,
       render: (value: string | undefined, row: PageRow) => (
         <Space size={4}>
-          {renderValue(field, value, row.maskedFields.includes(field.name))}
+          {field.sensitive && row.maskedFields.includes(field.name) ? (
+            revealedValues[revealCellKey(row.recordKey, field.name)] !== undefined ? (
+              <>
+                <Typography.Text code>{revealedValues[revealCellKey(row.recordKey, field.name)]}</Typography.Text>
+                <Button type="link" size="small" aria-label={`隐藏 ${field.displayName} ${row.recordKey}`} onClick={() => hideRevealed(row.recordKey, field.name)}>隐藏</Button>
+              </>
+            ) : (
+              <>
+                <Tag>••••••</Tag>
+                <Button type="link" size="small" aria-label={`临时查看 ${field.displayName} ${row.recordKey}`} onClick={() => { setRevealTarget({ row, field }); setRevealReason(""); }}>临时查看</Button>
+              </>
+            )
+          ) : renderValue(field, value)}
           {row.changedFields.includes(field.name) ? <Tag color="gold">Scope 覆盖</Tag> : null}
         </Space>
       ),
@@ -208,6 +243,7 @@ export function OperationPage({ api = operationApi }: { api?: OperationApi }) {
     setDrafts([]);
     setRelease(undefined);
     setReviewOpen(false);
+	clearRevealed();
 	setFilterDrafts({});
 	setActiveConditions([]);
     setActiveScope({ region, environment, ...(stage ? { stage } : {}) });
@@ -216,6 +252,7 @@ export function OperationPage({ api = operationApi }: { api?: OperationApi }) {
 
 	const queryData = async (conditions: QueryCondition[], pageNumber = 1, pageSize = page?.page.size ?? 20) => {
 		if (!page) return false;
+		clearRevealed();
 		setLoading(true);
 		setError(undefined);
 		try {
@@ -249,6 +286,55 @@ export function OperationPage({ api = operationApi }: { api?: OperationApi }) {
 			setLoading(false);
 		}
 	};
+
+  function hideRevealed(recordKey: string, fieldName: string) {
+    const key = revealCellKey(recordKey, fieldName);
+    const timer = revealTimers.current.get(key);
+    if (timer) clearTimeout(timer);
+    revealTimers.current.delete(key);
+    setRevealedValues((current) => {
+      const next = { ...current };
+      delete next[key];
+      return next;
+    });
+  }
+
+  const revealSensitive = async () => {
+    if (!page || !revealTarget || !revealReason.trim()) return;
+    const target = revealTarget;
+    const sequence = revealSequence.current;
+    setRevealing(true);
+    try {
+      const revealed = await api.revealSensitive({
+        modelCode: page.modelCode,
+        scope: activeScope,
+        recordKey: target.row.recordKey,
+        fieldName: target.field.name,
+        expectedRecordRevision: target.row.recordRevision,
+        expectedCollectionRevision: page.collectionRevision,
+        expectedModelRevision: page.modelRevision,
+        expectedServerEpoch: page.snapshot.serverEpoch,
+        expectedSnapshotInstance: page.snapshot.snapshotInstance,
+        expectedSnapshotGeneration: page.snapshot.snapshotGeneration,
+        reason: revealReason.trim(),
+        ...(activePreviewBucket === undefined ? {} : { previewBucket: activePreviewBucket }),
+      }, crypto.randomUUID());
+      if (sequence !== revealSequence.current) return;
+      const key = revealCellKey(target.row.recordKey, target.field.name);
+      setRevealedValues((current) => ({ ...current, [key]: revealed.value }));
+      const expiresAt = Date.parse(revealed.expiresAt);
+      const delay = Number.isFinite(expiresAt) ? Math.max(0, Math.min(60_000, expiresAt - Date.now())) : 60_000;
+      const previous = revealTimers.current.get(key);
+      if (previous) clearTimeout(previous);
+      revealTimers.current.set(key, setTimeout(() => hideRevealed(target.row.recordKey, target.field.name), delay));
+      setRevealTarget(undefined);
+      setRevealReason("");
+    } catch (cause) {
+      message.error(cause instanceof Error ? cause.message : "临时查看失败");
+    } finally {
+      setRevealing(false);
+    }
+  };
 
 	const submitQuery = async () => {
 		if (!page) return;
@@ -455,6 +541,30 @@ export function OperationPage({ api = operationApi }: { api?: OperationApi }) {
             )
           ))}
         </Form>
+      </Modal>
+
+      <Modal
+        title={`临时查看${revealTarget ? ` · ${revealTarget.field.displayName}` : ""}`}
+        open={revealTarget !== undefined}
+        okText="确认临时查看"
+        okButtonProps={{ disabled: revealReason.trim() === "" }}
+        confirmLoading={revealing}
+        onOk={() => void revealSensitive()}
+        onCancel={() => { setRevealTarget(undefined); setRevealReason(""); }}
+        destroyOnHidden
+      >
+        <Space orientation="vertical" className="operation-full-width">
+          <Alert type="warning" showIcon title="敏感值仅在当前页面临时显示，最长 60 秒；本次查看会记录审计。" />
+          <label htmlFor="sensitive-reveal-reason">查看原因</label>
+          <Input.TextArea
+            id="sensitive-reveal-reason"
+            aria-label="查看原因"
+            value={revealReason}
+            onChange={(event) => setRevealReason(event.target.value)}
+            placeholder="说明本次查看的业务原因"
+            autoSize={{ minRows: 2, maxRows: 4 }}
+          />
+        </Space>
       </Modal>
 
       <Drawer title="审阅差异与发布" size="large" open={reviewOpen} onClose={() => setReviewOpen(false)}>
@@ -696,8 +806,12 @@ function sameSnapshot(left: PageResult, right: PageResult) {
 		&& left.snapshot.snapshotGeneration === right.snapshot.snapshotGeneration;
 }
 
-function renderValue(field: InteractionField, value?: string, masked = false) {
-  if (field.sensitive && (masked || value !== undefined)) return <Tag>••••••</Tag>;
+function revealCellKey(recordKey: string, fieldName: string) {
+  return `${recordKey}\u0000${fieldName}`;
+}
+
+function renderValue(field: InteractionField, value?: string) {
+  if (field.sensitive && value !== undefined) return <Tag>••••••</Tag>;
   if (field.type === "BOOL") return <Tag color={value === "true" ? "green" : "default"}>{value === "true" ? "是" : "否"}</Tag>;
   return value ?? "—";
 }
