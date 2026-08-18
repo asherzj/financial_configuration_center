@@ -49,6 +49,7 @@ type Rule struct {
 	Content           map[string]string
 	RolloutRanges     []BucketRange
 	ConfigRevision    catalog.ConfigRevision
+	ReleaseOrderID    string
 	ActivatedRevision *catalog.ConfigRevision
 	ExpiredRevision   *catalog.ConfigRevision
 }

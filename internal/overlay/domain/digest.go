@@ -53,6 +53,18 @@ func ruleIdentity(rule Rule) string {
 }
 
 func canonicalRanges(ranges []BucketRange) ([][]int32, error) {
+	ordered, err := normalizeRanges(ranges)
+	if err != nil {
+		return nil, err
+	}
+	canonical := make([][]int32, len(ordered))
+	for index, bucketRange := range ordered {
+		canonical[index] = []int32{bucketRange.Start, bucketRange.End}
+	}
+	return canonical, nil
+}
+
+func normalizeRanges(ranges []BucketRange) ([]BucketRange, error) {
 	ordered := append([]BucketRange(nil), ranges...)
 	sort.Slice(ordered, func(left, right int) bool {
 		if ordered[left].Start != ordered[right].Start {
@@ -60,7 +72,6 @@ func canonicalRanges(ranges []BucketRange) ([][]int32, error) {
 		}
 		return ordered[left].End < ordered[right].End
 	})
-	canonical := make([][]int32, len(ordered))
 	for index, bucketRange := range ordered {
 		if bucketRange.Start < 0 || bucketRange.End > 99 || bucketRange.Start > bucketRange.End {
 			return nil, fmt.Errorf("invalid bucket range [%d,%d]", bucketRange.Start, bucketRange.End)
@@ -68,7 +79,6 @@ func canonicalRanges(ranges []BucketRange) ([][]int32, error) {
 		if index > 0 && ordered[index-1].End >= bucketRange.Start {
 			return nil, fmt.Errorf("overlapping bucket ranges [%d,%d] and [%d,%d]", ordered[index-1].Start, ordered[index-1].End, bucketRange.Start, bucketRange.End)
 		}
-		canonical[index] = []int32{bucketRange.Start, bucketRange.End}
 	}
-	return canonical, nil
+	return ordered, nil
 }
