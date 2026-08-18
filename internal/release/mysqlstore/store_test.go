@@ -621,6 +621,53 @@ func TestRealMySQLPercentageRolloutTransaction(t *testing.T) {
 	if err != nil || advanced.CurrentStep != release.StepBaseApply || advanced.CurrentStepCode != "promote" {
 		t.Fatalf("reload and advance percentage order: view=%+v error=%v", advanced, err)
 	}
+	promoted, err := service.Act(ctx, application.ActCommand{
+		OrderID: created.ID, ActionRequestID: "50000000-0000-4000-8000-000000000003",
+		ExpectedRevision: advanced.Revision, ExpectedCurrentStep: "promote", Action: application.ActionExecute, Actor: "operator@example.com",
+	})
+	if err != nil {
+		t.Fatalf("promote percentage: %v", err)
+	}
+	if !promoted.CanRollback {
+		t.Fatalf("promoted order cannot roll back: %+v", promoted)
+	}
+	assertCount(t, raw, `SELECT COUNT(*) FROM configuration_records WHERE collection_name = 'payment_routes' AND environment = 'production' AND JSON_UNQUOTE(JSON_EXTRACT(data, '$.priority')) = '9'`, 1)
+	assertCount(t, raw, `SELECT COUNT(*) FROM configuration_overlays WHERE release_order_id = '`+created.ID+`'`, 0)
+	assertCount(t, raw, `SELECT COUNT(*) FROM configuration_versions WHERE collection_name = 'payment_routes' AND environment = 'production' AND config_revision = 9 AND overlay_digest = '4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945'`, 1)
+	assertCount(t, raw, `SELECT COUNT(*) FROM release_step_states WHERE release_order_id = '`+created.ID+`' AND step_code = 'promote' AND JSON_EXTRACT(effect, '$.base.appliedRevision') = 9`, 1)
+	if _, err := manager.Refresh(ctx, "production"); err != nil {
+		t.Fatal(err)
+	}
+	if err := unselectedClient.Refresh(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if record, ok := unselectedClient.GetByKey("payment_routes", rolloutRecord.RecordKey); !ok || record.Values["priority"] != "9" {
+		t.Fatalf("promoted SDK record = %+v, %t", record, ok)
+	}
+
+	rolledBack, err := service.Act(ctx, application.ActCommand{
+		OrderID: created.ID, ActionRequestID: "50000000-0000-4000-8000-000000000004",
+		ExpectedRevision: promoted.Revision, ExpectedCurrentStep: "promote", Action: application.ActionRollback, Actor: "operator@example.com",
+	})
+	if err != nil {
+		t.Fatalf("rollback promotion: %v", err)
+	}
+	if rolledBack.Status != release.OrderRolledBack {
+		t.Fatalf("rolled back promotion view = %+v", rolledBack)
+	}
+	assertCount(t, raw, `SELECT COUNT(*) FROM configuration_records WHERE collection_name = 'payment_routes' AND environment = 'production'`, 0)
+	assertCount(t, raw, `SELECT COUNT(*) FROM configuration_overlays WHERE release_order_id = '`+created.ID+`' AND JSON_EXTRACT(rollout_ranges, '$[0].start') = 0 AND JSON_EXTRACT(rollout_ranges, '$[0].end') = 9`, 1)
+	assertCount(t, raw, `SELECT COUNT(*) FROM configuration_versions WHERE collection_name = 'payment_routes' AND environment = 'production' AND config_revision = 10`, 1)
+	assertCount(t, raw, `SELECT COUNT(*) FROM outbox_events WHERE aggregate_id = '`+created.ID+`'`, 3)
+	if _, err := manager.Refresh(ctx, "production"); err != nil {
+		t.Fatal(err)
+	}
+	if err := unselectedClient.Refresh(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := unselectedClient.GetByKey("payment_routes", rolloutRecord.RecordKey); ok {
+		t.Fatal("promotion rollback did not restore unselected SDK view")
+	}
 }
 
 func TestRealMySQLHTTPWalkingSkeleton(t *testing.T) {

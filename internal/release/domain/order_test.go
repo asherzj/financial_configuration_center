@@ -45,7 +45,7 @@ func TestBaseFinalAddStateMachine(t *testing.T) {
 	effect, err := order.ExecuteBase(release.BaseAuthority{
 		CollectionRevision: 7,
 		Records:            map[string]*catalog.ConfigurationRecord{after.RecordKey: nil},
-	}, "operator@example.com", time.Date(2026, 8, 19, 3, 1, 0, 0, time.UTC))
+	}, 8, "operator@example.com", time.Date(2026, 8, 19, 3, 1, 0, 0, time.UTC))
 	if err != nil {
 		t.Fatalf("ExecuteBase: %v", err)
 	}
@@ -80,7 +80,7 @@ func TestBaseFinalExecutionRejectsStaleAuthorityWithoutMutation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := order.ExecuteBase(release.BaseAuthority{CollectionRevision: 8}, "actor", time.Now().UTC()); err == nil {
+	if _, err := order.ExecuteBase(release.BaseAuthority{CollectionRevision: 8}, 9, "actor", time.Now().UTC()); err == nil {
 		t.Fatal("stale collection revision succeeded")
 	}
 	assertOrder(t, order, release.OrderInProgress, release.StepBaseApply, release.StepPending, 1)
@@ -90,7 +90,7 @@ func TestBaseFinalExecutionRejectsStaleAuthorityWithoutMutation(t *testing.T) {
 	if _, err := order.ExecuteBase(release.BaseAuthority{
 		CollectionRevision: 7,
 		Records:            map[string]*catalog.ConfigurationRecord{"key": &existing},
-	}, "actor", time.Now().UTC()); err == nil {
+	}, 8, "actor", time.Now().UTC()); err == nil {
 		t.Fatal("ADD over existing record succeeded")
 	}
 	assertOrder(t, order, release.OrderInProgress, release.StepBaseApply, release.StepPending, 1)

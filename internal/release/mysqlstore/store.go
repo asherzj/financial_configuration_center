@@ -315,6 +315,7 @@ func setCapabilities(view *application.OrderView) {
 		view.CanApprove, view.CanReject = true, true
 	case view.CurrentStepStatus == release.StepApproved || view.CurrentStepStatus == release.StepExecuted:
 		view.CanAdvance = view.CurrentStep != release.StepComplete
+		view.CanRollback = (view.CurrentStep == release.StepOverlayApply || view.CurrentStep == release.StepBaseApply) && view.CurrentStepStatus == release.StepExecuted
 	case (view.CurrentStep == release.StepBaseApply || view.CurrentStep == release.StepPercentRollout || view.CurrentStep == release.StepComplete) && view.CurrentStepStatus == release.StepPending:
 		view.CanExecute = true
 	}
@@ -500,9 +501,10 @@ func (transaction *transaction) LoadOrderForUpdate(ctx context.Context, orderID 
 			if err := json.Unmarshal(row.Effect, effect); err != nil {
 				return nil, fmt.Errorf("decode step %q effect: %w", row.StepCode, err)
 			}
-			validOverlay := effect.EffectVersion == 1 && effect.Overlay != nil && effect.Percent == nil && effect.Overlay.EffectVersion == 1
-			validPercent := effect.EffectVersion == 1 && effect.Percent != nil && effect.Overlay == nil && effect.Percent.EffectVersion == 1
-			if !validOverlay && !validPercent {
+			validOverlay := effect.EffectVersion == 1 && effect.Overlay != nil && effect.Percent == nil && effect.Base == nil && effect.Overlay.EffectVersion == 1
+			validPercent := effect.EffectVersion == 1 && effect.Percent != nil && effect.Overlay == nil && effect.Base == nil && effect.Percent.EffectVersion == 1
+			validBase := effect.EffectVersion == 1 && effect.Base != nil && effect.Overlay == nil && effect.Percent == nil && effect.Base.EffectVersion == 1
+			if !validOverlay && !validPercent && !validBase {
 				return nil, fmt.Errorf("decode step %q effect: unsupported effect envelope", row.StepCode)
 			}
 		}
@@ -574,31 +576,104 @@ func (transaction *transaction) AllocateConfigRevision(ctx context.Context) (cat
 	return catalog.ConfigRevision(next), nil
 }
 
-func (transaction *transaction) ApplyBaseEffect(ctx context.Context, orderID string, effect release.BaseEffect, revision catalog.ConfigRevision) error {
+func (transaction *transaction) ApplyBaseEffect(ctx context.Context, orderID string, effect release.BaseEffect) error {
+	if effect.EffectVersion != 1 || effect.AppliedRevision <= effect.PreviousRevision || len(effect.Changes) == 0 {
+		return errors.New("invalid base effect")
+	}
 	for _, change := range effect.Changes {
-		if change.Action != release.ChangeAdd {
-			return fmt.Errorf("base effect action %q is not implemented", change.Action)
-		}
-		data, err := json.Marshal(change.After.Data)
+		before, err := marshalRecordData(change.Before)
 		if err != nil {
 			return err
 		}
-		if err := transaction.db.WithContext(ctx).Exec(`
-			INSERT INTO configuration_records (
-				collection_name, environment, record_key, data, config_revision,
-				created_at, created_by, updated_at, updated_by
-			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-		`, effect.Collection, effect.Environment, change.After.RecordKey, data, revision,
-			effect.ExecutedAt, effect.ExecutedBy, effect.ExecutedAt, effect.ExecutedBy).Error; err != nil {
+		after, err := marshalRecordData(change.After)
+		if err != nil {
 			return err
+		}
+		recordKey := ""
+		if change.After != nil {
+			recordKey = change.After.RecordKey
+		} else if change.Before != nil {
+			recordKey = change.Before.RecordKey
+		}
+		switch change.Action {
+		case release.ChangeAdd:
+			if change.After == nil {
+				return errors.New("base ADD requires after")
+			}
+			if err := transaction.db.WithContext(ctx).Exec(`
+				INSERT INTO configuration_records (
+					collection_name, environment, record_key, data, config_revision,
+					created_at, created_by, updated_at, updated_by
+				) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+			`, effect.Collection, effect.Scope.Environment, recordKey, after, effect.AppliedRevision,
+				effect.ExecutedAt, effect.ExecutedBy, effect.ExecutedAt, effect.ExecutedBy).Error; err != nil {
+				return err
+			}
+		case release.ChangeModify:
+			if change.Before == nil || change.After == nil {
+				return errors.New("base MODIFY requires before and after")
+			}
+			if err := transaction.db.WithContext(ctx).Exec(`
+				UPDATE configuration_records SET data = ?, config_revision = ?, updated_at = ?, updated_by = ?
+				WHERE collection_name = ? AND environment = ? AND record_key = ?
+			`, after, effect.AppliedRevision, effect.ExecutedAt, effect.ExecutedBy,
+				effect.Collection, effect.Scope.Environment, recordKey).Error; err != nil {
+				return err
+			}
+		case release.ChangeDelete:
+			if change.Before == nil || change.After != nil {
+				return errors.New("base DELETE requires only before")
+			}
+			if err := transaction.db.WithContext(ctx).Exec(`
+				DELETE FROM configuration_records WHERE collection_name = ? AND environment = ? AND record_key = ?
+			`, effect.Collection, effect.Scope.Environment, recordKey).Error; err != nil {
+				return err
+			}
+		default:
+			return fmt.Errorf("unsupported base effect action %q", change.Action)
 		}
 		if err := transaction.db.WithContext(ctx).Exec(`
 			INSERT INTO configuration_change_log (
 				collection_name, kind, region, environment, stage, record_key, action,
 				before_data, after_data, config_revision, release_order_id, created_at
-			) SELECT ?, 'BASE_RECORD', region, environment, stage, ?, 'ADD', NULL, ?, ?, id, ?
-			FROM release_orders WHERE id = ?
-		`, effect.Collection, change.After.RecordKey, data, revision, effect.ExecutedAt, orderID).Error; err != nil {
+			) VALUES (?, 'BASE_RECORD', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		`, effect.Collection, effect.Scope.Region, effect.Scope.Environment, effect.Scope.Stage,
+			recordKey, change.Action, before, after, effect.AppliedRevision, orderID, effect.ExecutedAt).Error; err != nil {
+			return err
+		}
+	}
+	for _, change := range effect.OverlayChanges {
+		if change.NewRule == nil {
+			if err := transaction.db.WithContext(ctx).Exec(`
+				DELETE FROM configuration_overlays
+				WHERE collection_name = ? AND region = ? AND environment = ? AND stage = ? AND record_key = ?
+			`, effect.Collection, effect.Scope.Region, effect.Scope.Environment, effect.Scope.Stage, change.RecordKey).Error; err != nil {
+				return err
+			}
+		} else if err := transaction.upsertOverlayRule(ctx, *change.NewRule); err != nil {
+			return err
+		}
+		before, err := overlayChangeData(change.PreviousRule)
+		if err != nil {
+			return err
+		}
+		after, err := overlayChangeData(change.NewRule)
+		if err != nil {
+			return err
+		}
+		action := release.ChangeModify
+		if change.PreviousRule == nil {
+			action = release.ChangeAdd
+		} else if change.NewRule == nil {
+			action = release.ChangeDelete
+		}
+		if err := transaction.db.WithContext(ctx).Exec(`
+			INSERT INTO configuration_change_log (
+				collection_name, kind, region, environment, stage, record_key, action,
+				before_data, after_data, config_revision, release_order_id, created_at
+			) VALUES (?, 'OVERLAY', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		`, effect.Collection, effect.Scope.Region, effect.Scope.Environment, effect.Scope.Stage,
+			change.RecordKey, action, before, after, effect.AppliedRevision, orderID, effect.ExecutedAt).Error; err != nil {
 			return err
 		}
 	}
@@ -611,7 +686,7 @@ func (transaction *transaction) ApplyBaseEffect(ctx context.Context, orderID str
 	if err := transaction.db.WithContext(ctx).Raw(`
 		SELECT record_key, data FROM configuration_records
 		WHERE collection_name = ? AND environment = ? ORDER BY record_key
-	`, effect.Collection, effect.Environment).Scan(&rows).Error; err != nil {
+	`, effect.Collection, effect.Scope.Environment).Scan(&rows).Error; err != nil {
 		return err
 	}
 	records := make([]catalog.ConfigurationRecord, len(rows))
@@ -622,15 +697,24 @@ func (transaction *transaction) ApplyBaseEffect(ctx context.Context, orderID str
 		}
 		records[index] = catalog.ConfigurationRecord{RecordKey: row.RecordKey, Data: data}
 	}
-	digest, err := catalog.ComputeBaseDigest(records)
+	baseDigest, err := catalog.ComputeBaseDigest(records)
+	if err != nil {
+		return err
+	}
+	overlayRules, err := transaction.loadEnvironmentOverlayRules(ctx, effect.Collection, effect.Scope.Environment)
+	if err != nil {
+		return err
+	}
+	overlayDigest, err := overlay.ComputeDigest(overlayRules)
 	if err != nil {
 		return err
 	}
 	result := transaction.db.WithContext(ctx).Exec(`
 		UPDATE configuration_versions
-		SET config_revision = ?, base_digest = ?, release_order_id = ?, updated_at = ?
+		SET config_revision = ?, base_digest = ?, overlay_digest = ?, release_order_id = ?, updated_at = ?
 		WHERE collection_name = ? AND environment = ? AND config_revision = ?
-	`, revision, digest.Value, orderID, effect.ExecutedAt, effect.Collection, effect.Environment, effect.PreviousRevision)
+	`, effect.AppliedRevision, baseDigest.Value, overlayDigest.Value, orderID, effect.ExecutedAt,
+		effect.Collection, effect.Scope.Environment, effect.PreviousRevision)
 	if result.Error != nil {
 		return result.Error
 	}
@@ -638,8 +722,8 @@ func (transaction *transaction) ApplyBaseEffect(ctx context.Context, orderID str
 		return fmt.Errorf("%w: collection version changed while applying base effect", release.ErrAborted)
 	}
 	payload, _ := json.Marshal(map[string]any{
-		"schemaVersion": 1, "collection": effect.Collection, "environment": effect.Environment,
-		"configRevision": revision, "releaseOrderId": orderID,
+		"schemaVersion": 1, "collection": effect.Collection, "environment": effect.Scope.Environment,
+		"configRevision": effect.AppliedRevision, "releaseOrderId": orderID,
 	})
 	if err := transaction.db.WithContext(ctx).Exec(`
 		INSERT INTO outbox_events (
@@ -647,10 +731,10 @@ func (transaction *transaction) ApplyBaseEffect(ctx context.Context, orderID str
 			idempotency_key, status, lease_revision, attempts, next_attempt_at,
 			created_at, updated_at
 		) VALUES (UUID(), 'RELEASE_ORDER', ?, 'CONFIGURATION_CHANGED', 1, ?, ?, 'PENDING', 1, 0, ?, ?, ?)
-	`, orderID, payload, fmt.Sprintf("configuration-changed:%s:%d", orderID, revision), effect.ExecutedAt, effect.ExecutedAt, effect.ExecutedAt).Error; err != nil {
+	`, orderID, payload, fmt.Sprintf("configuration-changed:%s:%d", orderID, effect.AppliedRevision), effect.ExecutedAt, effect.ExecutedAt, effect.ExecutedAt).Error; err != nil {
 		return err
 	}
-	return transaction.insertAudit(ctx, effect.ExecutedAt, effect.ExecutedBy, "BASE_APPLY", "RELEASE_ORDER", orderID, release.Scope{Environment: effect.Environment}, orderID)
+	return transaction.insertAudit(ctx, effect.ExecutedAt, effect.ExecutedBy, "BASE_APPLY", "RELEASE_ORDER", orderID, effect.Scope, orderID)
 }
 
 func (transaction *transaction) ApplyOverlayEffect(ctx context.Context, orderID string, effect release.OverlayEffect) error {

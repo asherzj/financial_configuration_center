@@ -51,7 +51,7 @@ type Transaction interface {
 	LoadOrderForUpdate(context.Context, string) (*release.Order, error)
 	FindActionResult(context.Context, string, string) (StoredRequestResult, bool, error)
 	AllocateConfigRevision(context.Context) (catalog.ConfigRevision, error)
-	ApplyBaseEffect(context.Context, string, release.BaseEffect, catalog.ConfigRevision) error
+	ApplyBaseEffect(context.Context, string, release.BaseEffect) error
 	ApplyOverlayEffect(context.Context, string, release.OverlayEffect) error
 	ApplyPercentEffect(context.Context, string, release.PercentEffect) error
 	SaveOrder(context.Context, *release.Order) error
@@ -608,16 +608,7 @@ func (service *Service) Act(ctx context.Context, command ActCommand) (OrderView,
 					return err
 				}
 			case release.StepBaseApply:
-				items := order.Items()
-				keys := make([]string, len(items))
-				for index, item := range items {
-					keys[index] = item.RecordKey
-				}
-				authority, err := transaction.LoadBaseAuthority(ctx, items[0].Collection, order.Scope().Environment, keys)
-				if err != nil {
-					return fmt.Errorf("load base authority: %w", err)
-				}
-				effect, err := order.ExecuteBase(authority, command.Actor, now)
+				authority, err := loadBaseApplyAuthority(ctx, transaction, order)
 				if err != nil {
 					return err
 				}
@@ -625,7 +616,11 @@ func (service *Service) Act(ctx context.Context, command ActCommand) (OrderView,
 				if err != nil {
 					return fmt.Errorf("allocate config revision: %w", err)
 				}
-				if err := transaction.ApplyBaseEffect(ctx, order.ID(), effect, revision); err != nil {
+				effect, err := order.ExecuteBase(authority, revision, command.Actor, now)
+				if err != nil {
+					return err
+				}
+				if err := transaction.ApplyBaseEffect(ctx, order.ID(), effect); err != nil {
 					return fmt.Errorf("apply base effect: %w", err)
 				}
 			case release.StepOverlayApply:
@@ -676,20 +671,41 @@ func (service *Service) Act(ctx context.Context, command ActCommand) (OrderView,
 				return err
 			}
 		case ActionRollback:
-			authority, err := loadOverlayAuthority(ctx, transaction, order)
-			if err != nil {
-				return err
-			}
-			revision, err := transaction.AllocateConfigRevision(ctx)
-			if err != nil {
-				return fmt.Errorf("allocate config revision: %w", err)
-			}
-			effect, err := order.RollbackOverlay(command.ExpectedRevision, authority.CollectionRevision, revision, command.Actor, now)
-			if err != nil {
-				return err
-			}
-			if err := transaction.ApplyOverlayEffect(ctx, order.ID(), effect); err != nil {
-				return fmt.Errorf("apply overlay compensation: %w", err)
+			switch order.CurrentStep().Type {
+			case release.StepOverlayApply:
+				authority, err := loadOverlayAuthority(ctx, transaction, order)
+				if err != nil {
+					return err
+				}
+				revision, err := transaction.AllocateConfigRevision(ctx)
+				if err != nil {
+					return fmt.Errorf("allocate config revision: %w", err)
+				}
+				effect, err := order.RollbackOverlay(command.ExpectedRevision, authority.CollectionRevision, revision, command.Actor, now)
+				if err != nil {
+					return err
+				}
+				if err := transaction.ApplyOverlayEffect(ctx, order.ID(), effect); err != nil {
+					return fmt.Errorf("apply overlay compensation: %w", err)
+				}
+			case release.StepBaseApply:
+				authority, err := loadBaseApplyAuthority(ctx, transaction, order)
+				if err != nil {
+					return err
+				}
+				revision, err := transaction.AllocateConfigRevision(ctx)
+				if err != nil {
+					return fmt.Errorf("allocate config revision: %w", err)
+				}
+				effect, err := order.RollbackBase(command.ExpectedRevision, authority, revision, command.Actor, now)
+				if err != nil {
+					return err
+				}
+				if err := transaction.ApplyBaseEffect(ctx, order.ID(), effect); err != nil {
+					return fmt.Errorf("apply base compensation: %w", err)
+				}
+			default:
+				return fmt.Errorf("%w: current step cannot be rolled back", release.ErrInvalid)
 			}
 		default:
 			return fmt.Errorf("%w: unsupported action %q", release.ErrInvalid, command.Action)
@@ -734,6 +750,30 @@ func loadOverlayAuthority(ctx context.Context, transaction Transaction, order *r
 		}
 	}
 	return release.OverlayAuthority{CollectionRevision: base.CollectionRevision, BaseRecords: base.Records, Rules: exact}, nil
+}
+
+func loadBaseApplyAuthority(ctx context.Context, transaction Transaction, order *release.Order) (release.BaseAuthority, error) {
+	items := order.Items()
+	keys := make([]string, len(items))
+	for index, item := range items {
+		keys[index] = item.RecordKey
+	}
+	authority, err := transaction.LoadBaseAuthority(ctx, items[0].Collection, order.Scope().Environment, keys)
+	if err != nil {
+		return release.BaseAuthority{}, fmt.Errorf("load base authority: %w", err)
+	}
+	rules, err := transaction.LoadOverlayRules(ctx, items[0].Collection, order.Scope(), keys)
+	if err != nil {
+		return release.BaseAuthority{}, fmt.Errorf("load base cleanup rules: %w", err)
+	}
+	authority.Rules = make(map[string]*overlay.Rule, len(keys))
+	for index := range rules {
+		rule := rules[index]
+		if rule.Scope.Stage == order.Scope().Stage {
+			authority.Rules[rule.RecordKey] = &rule
+		}
+	}
+	return authority, nil
 }
 
 func normalizedActionDigest(command ActCommand) (string, error) {
@@ -808,7 +848,7 @@ func applyCapabilities(view *OrderView) {
 		view.CanReject = true
 	case view.CurrentStepStatus == release.StepApproved || view.CurrentStepStatus == release.StepExecuted:
 		view.CanAdvance = view.CurrentStep != release.StepComplete
-		view.CanRollback = view.CurrentStep == release.StepOverlayApply && view.CurrentStepStatus == release.StepExecuted
+		view.CanRollback = (view.CurrentStep == release.StepOverlayApply || view.CurrentStep == release.StepBaseApply) && view.CurrentStepStatus == release.StepExecuted
 	case (view.CurrentStep == release.StepBaseApply || view.CurrentStep == release.StepOverlayApply || view.CurrentStep == release.StepPercentRollout || view.CurrentStep == release.StepComplete) && view.CurrentStepStatus == release.StepPending:
 		view.CanExecute = true
 	}

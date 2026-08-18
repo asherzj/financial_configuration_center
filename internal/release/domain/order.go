@@ -215,26 +215,31 @@ type StepEffectEnvelope struct {
 	EffectVersion int32          `json:"effectVersion"`
 	Overlay       *OverlayEffect `json:"overlay,omitempty"`
 	Percent       *PercentEffect `json:"percent,omitempty"`
+	Base          *BaseEffect    `json:"base,omitempty"`
 }
 
 type BaseAuthority struct {
 	CollectionRevision catalog.ConfigRevision
 	Records            map[string]*catalog.ConfigurationRecord
+	Rules              map[string]*overlay.Rule
 }
 
 type BaseChange struct {
-	Action ChangeAction
-	Before *catalog.ConfigurationRecord
-	After  catalog.ConfigurationRecord
+	Action ChangeAction                 `json:"action"`
+	Before *catalog.ConfigurationRecord `json:"before,omitempty"`
+	After  *catalog.ConfigurationRecord `json:"after,omitempty"`
 }
 
 type BaseEffect struct {
-	Collection       string
-	Environment      string
-	PreviousRevision catalog.ConfigRevision
-	Changes          []BaseChange
-	ExecutedAt       time.Time
-	ExecutedBy       string
+	EffectVersion    int32                  `json:"effectVersion"`
+	Collection       string                 `json:"collection"`
+	Scope            Scope                  `json:"scope"`
+	PreviousRevision catalog.ConfigRevision `json:"previousRevision"`
+	AppliedRevision  catalog.ConfigRevision `json:"appliedRevision"`
+	Changes          []BaseChange           `json:"changes"`
+	OverlayChanges   []OverlayRuleChange    `json:"overlayChanges"`
+	ExecutedAt       time.Time              `json:"executedAt"`
+	ExecutedBy       string                 `json:"executedBy"`
 }
 
 // Order is the only aggregate root allowed to decide release state changes.
@@ -526,37 +531,125 @@ func (order *Order) authorizeManualDecision(expected EntityRevision, principal P
 	return nil
 }
 
-func (order *Order) ExecuteBase(authority BaseAuthority, actor string, at time.Time) (BaseEffect, error) {
+func (order *Order) ExecuteBase(authority BaseAuthority, newRevision catalog.ConfigRevision, actor string, at time.Time) (BaseEffect, error) {
 	if err := order.requireCurrent(StepBaseApply, StepPending); err != nil {
 		return BaseEffect{}, err
 	}
-	if strings.TrimSpace(actor) == "" || at.IsZero() {
-		return BaseEffect{}, fmt.Errorf("%w: actor and execution time are required", ErrInvalid)
+	if strings.TrimSpace(actor) == "" || at.IsZero() || newRevision <= authority.CollectionRevision {
+		return BaseEffect{}, fmt.Errorf("%w: actor, execution time, and a new revision are required", ErrInvalid)
+	}
+	expectedRevision := order.items[0].ExpectedCollectionRevision
+	hasPercentEffect := false
+	for index := order.currentStep - 1; index >= 0; index-- {
+		if effect := order.steps[index].Effect; effect != nil && effect.Percent != nil {
+			expectedRevision = effect.Percent.AppliedRevision
+			hasPercentEffect = true
+			break
+		}
+	}
+	if authority.CollectionRevision != expectedRevision {
+		return BaseEffect{}, fmt.Errorf("%w: collection revision is %d, expected %d", ErrAborted, authority.CollectionRevision, expectedRevision)
 	}
 	changes := make([]BaseChange, len(order.items))
+	overlayChanges := make([]OverlayRuleChange, 0, len(order.items))
 	for index, item := range order.items {
-		if authority.CollectionRevision != item.ExpectedCollectionRevision {
-			return BaseEffect{}, fmt.Errorf("%w: collection revision is %d, expected %d", ErrAborted, authority.CollectionRevision, item.ExpectedCollectionRevision)
-		}
 		if existing := authority.Records[item.RecordKey]; existing != nil {
 			return BaseEffect{}, fmt.Errorf("%w: ADD target %q already exists at revision %d", ErrAborted, item.RecordKey, existing.ConfigRevision)
 		}
-		changes[index] = BaseChange{Action: ChangeAdd, After: cloneRecord(*item.After)}
+		after := cloneRecord(*item.After)
+		changes[index] = BaseChange{Action: ChangeAdd, After: &after}
+		rule := cloneOverlayRulePointer(authority.Rules[item.RecordKey])
+		if hasPercentEffect {
+			if rule == nil || rule.ReleaseOrderID != order.id {
+				return BaseEffect{}, fmt.Errorf("%w: rollout rule %q is missing or belongs to another order", ErrAborted, item.RecordKey)
+			}
+		}
+		if rule != nil {
+			if rule.Collection != item.Collection || rule.RecordKey != item.RecordKey || rule.Scope != overlayScope(order.scope) {
+				return BaseEffect{}, fmt.Errorf("%w: cleanup rule identity is inconsistent", ErrInvalid)
+			}
+			overlayChanges = append(overlayChanges, OverlayRuleChange{RecordKey: item.RecordKey, PreviousRule: rule})
+		}
 	}
 
 	at = at.UTC()
-	order.steps[order.currentStep].Status = StepExecuted
-	order.steps[order.currentStep].ExecutedAt = timePointer(at)
-	order.steps[order.currentStep].ExecutedBy = actor
+	effect := BaseEffect{
+		EffectVersion: 1, Collection: order.items[0].Collection, Scope: order.scope,
+		PreviousRevision: authority.CollectionRevision, AppliedRevision: newRevision,
+		Changes: changes, OverlayChanges: overlayChanges, ExecutedAt: at, ExecutedBy: actor,
+	}
+	step := &order.steps[order.currentStep]
+	step.Status = StepExecuted
+	step.ExecutedAt = timePointer(at)
+	step.ExecutedBy = actor
+	step.Effect = &StepEffectEnvelope{EffectVersion: 1, Base: cloneBaseEffectPointer(&effect)}
 	order.bump(actor, at)
-	return BaseEffect{
-		Collection:       order.items[0].Collection,
-		Environment:      order.scope.Environment,
-		PreviousRevision: authority.CollectionRevision,
-		Changes:          changes,
-		ExecutedAt:       at,
-		ExecutedBy:       actor,
-	}, nil
+	return *cloneBaseEffectPointer(&effect), nil
+}
+
+func (order *Order) RollbackBase(expected EntityRevision, authority BaseAuthority, newRevision catalog.ConfigRevision, actor string, at time.Time) (BaseEffect, error) {
+	if order.revision != expected {
+		return BaseEffect{}, fmt.Errorf("%w: order revision is %d, expected %d", ErrAborted, order.revision, expected)
+	}
+	if order.status != OrderInProgress || strings.TrimSpace(actor) == "" || at.IsZero() || newRevision <= authority.CollectionRevision {
+		return BaseEffect{}, fmt.Errorf("%w: base step cannot be rolled back", ErrInvalid)
+	}
+	effectIndex := -1
+	for index := len(order.steps) - 1; index >= 0; index-- {
+		if order.steps[index].Effect != nil && order.steps[index].Effect.Base != nil {
+			effectIndex = index
+			break
+		}
+	}
+	if effectIndex < 0 {
+		return BaseEffect{}, fmt.Errorf("%w: order has no applied base effect", ErrInvalid)
+	}
+	original := order.steps[effectIndex].Effect.Base
+	if authority.CollectionRevision != original.AppliedRevision {
+		return BaseEffect{}, fmt.Errorf("%w: collection revision is %d, expected %d", ErrAborted, authority.CollectionRevision, original.AppliedRevision)
+	}
+	changes := make([]BaseChange, len(original.Changes))
+	for index := range original.Changes {
+		source := original.Changes[len(original.Changes)-1-index]
+		switch source.Action {
+		case ChangeAdd:
+			current := authority.Records[source.After.RecordKey]
+			if current == nil || current.ConfigRevision != original.AppliedRevision || !equalData(current.Data, source.After.Data) {
+				return BaseEffect{}, fmt.Errorf("%w: promoted base %q drifted", ErrAborted, source.After.RecordKey)
+			}
+			before := cloneRecord(*current)
+			changes[index] = BaseChange{Action: ChangeDelete, Before: &before}
+		default:
+			return BaseEffect{}, fmt.Errorf("%w: rollback for base action %q is unsupported", ErrInvalid, source.Action)
+		}
+	}
+	overlayChanges := make([]OverlayRuleChange, len(original.OverlayChanges))
+	for index := range original.OverlayChanges {
+		source := original.OverlayChanges[len(original.OverlayChanges)-1-index]
+		if authority.Rules[source.RecordKey] != nil {
+			return BaseEffect{}, fmt.Errorf("%w: cleanup overlay %q drifted", ErrAborted, source.RecordKey)
+		}
+		overlayChanges[index] = OverlayRuleChange{RecordKey: source.RecordKey, NewRule: cloneOverlayRulePointer(source.PreviousRule)}
+	}
+	at = at.UTC()
+	compensation := BaseEffect{
+		EffectVersion: 1, Collection: original.Collection, Scope: original.Scope,
+		PreviousRevision: authority.CollectionRevision, AppliedRevision: newRevision,
+		Changes: changes, OverlayChanges: overlayChanges, ExecutedAt: at, ExecutedBy: actor,
+	}
+	step := &order.steps[effectIndex]
+	step.Status = StepRolledBack
+	step.RolledBackAt = timePointer(at)
+	step.RolledBackBy = actor
+	for index := range order.items {
+		order.items[index].Status = ItemRolledBack
+		order.items[index].ActiveConflictKey = ""
+	}
+	order.currentStep = effectIndex
+	order.status = OrderRolledBack
+	order.completedAt = timePointer(at)
+	order.bump(actor, at)
+	return *cloneBaseEffectPointer(&compensation), nil
 }
 
 func (order *Order) ExecuteOverlay(authority OverlayAuthority, newRevision catalog.ConfigRevision, actor string, at time.Time) (OverlayEffect, error) {
@@ -1025,6 +1118,24 @@ func clonePercentEffectPointer(effect *PercentEffect) *PercentEffect {
 	return &cloned
 }
 
+func cloneBaseEffectPointer(effect *BaseEffect) *BaseEffect {
+	if effect == nil {
+		return nil
+	}
+	cloned := *effect
+	cloned.Changes = make([]BaseChange, len(effect.Changes))
+	for index, change := range effect.Changes {
+		cloned.Changes[index] = BaseChange{Action: change.Action, Before: cloneRecordPointer(change.Before), After: cloneRecordPointer(change.After)}
+	}
+	cloned.OverlayChanges = make([]OverlayRuleChange, len(effect.OverlayChanges))
+	for index, change := range effect.OverlayChanges {
+		cloned.OverlayChanges[index] = OverlayRuleChange{
+			RecordKey: change.RecordKey, PreviousRule: cloneOverlayRulePointer(change.PreviousRule), NewRule: cloneOverlayRulePointer(change.NewRule),
+		}
+	}
+	return &cloned
+}
+
 func cloneStep(step StepState) StepState {
 	step.RequiredRoles = append([]string(nil), step.RequiredRoles...)
 	step.RolloutRanges = append([]overlay.BucketRange(nil), step.RolloutRanges...)
@@ -1045,6 +1156,7 @@ func cloneStep(step StepState) StepState {
 		effect := *step.Effect
 		effect.Overlay = cloneOverlayEffectPointer(step.Effect.Overlay)
 		effect.Percent = clonePercentEffectPointer(step.Effect.Percent)
+		effect.Base = cloneBaseEffectPointer(step.Effect.Base)
 		step.Effect = &effect
 	}
 	return step

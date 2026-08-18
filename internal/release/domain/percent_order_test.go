@@ -81,6 +81,61 @@ func TestPercentageRolloutRejectsThirdPartyRuleAndStaleRevision(t *testing.T) {
 	}
 }
 
+func TestPercentagePromotionAndRollbackRestoreBaseAndRanges(t *testing.T) {
+	t.Parallel()
+	order, after := newPercentageOrder(t)
+	now := time.Date(2026, 8, 19, 17, 0, 0, 0, time.UTC)
+	first, err := order.ExecutePercentRollout(release.OverlayAuthority{
+		CollectionRevision: 7, BaseRecords: map[string]*catalog.ConfigurationRecord{after.RecordKey: nil}, Rules: map[string]*overlay.Rule{after.RecordKey: nil},
+	}, 8, "operator", now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := order.Advance(2, "operator", now); err != nil {
+		t.Fatal(err)
+	}
+	second, err := order.ExecutePercentRollout(release.OverlayAuthority{
+		CollectionRevision: 8, BaseRecords: map[string]*catalog.ConfigurationRecord{after.RecordKey: nil}, Rules: map[string]*overlay.Rule{after.RecordKey: first.Changes[0].NewRule},
+	}, 9, "operator", now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := order.Advance(4, "operator", now); err != nil {
+		t.Fatal(err)
+	}
+
+	promoted, err := order.ExecuteBase(release.BaseAuthority{
+		CollectionRevision: 9,
+		Records:            map[string]*catalog.ConfigurationRecord{after.RecordKey: nil},
+		Rules:              map[string]*overlay.Rule{after.RecordKey: second.Changes[0].NewRule},
+	}, 10, "operator", now)
+	if err != nil {
+		t.Fatalf("ExecuteBase promotion: %v", err)
+	}
+	if promoted.AppliedRevision != 10 || promoted.Changes[0].Action != release.ChangeAdd || promoted.OverlayChanges[0].PreviousRule == nil || promoted.OverlayChanges[0].NewRule != nil {
+		t.Fatalf("promotion effect = %+v", promoted)
+	}
+	if order.CurrentStep().Effect == nil || order.CurrentStep().Effect.Base == nil {
+		t.Fatalf("base effect envelope = %+v", order.CurrentStep().Effect)
+	}
+	applied := after
+	applied.ConfigRevision = 10
+	compensation, err := order.RollbackBase(6, release.BaseAuthority{
+		CollectionRevision: 10,
+		Records:            map[string]*catalog.ConfigurationRecord{after.RecordKey: &applied},
+		Rules:              map[string]*overlay.Rule{after.RecordKey: nil},
+	}, 11, "operator", now.Add(time.Minute))
+	if err != nil {
+		t.Fatalf("RollbackBase: %v", err)
+	}
+	if compensation.Changes[0].Action != release.ChangeDelete || compensation.Changes[0].After != nil || compensation.OverlayChanges[0].NewRule == nil || !reflect.DeepEqual(compensation.OverlayChanges[0].NewRule.RolloutRanges, []overlay.BucketRange{{Start: 0, End: 49}}) {
+		t.Fatalf("base compensation = %+v", compensation)
+	}
+	if order.Status() != release.OrderRolledBack || order.CurrentStep().Status != release.StepRolledBack {
+		t.Fatalf("rolled back order = status %s step %+v", order.Status(), order.CurrentStep())
+	}
+}
+
 func newPercentageOrder(t *testing.T) (*release.Order, catalog.ConfigurationRecord) {
 	t.Helper()
 	template, err := release.CompileTemplate([]byte(`{"steps":[

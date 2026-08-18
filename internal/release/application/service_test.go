@@ -445,14 +445,34 @@ func (transaction *fakeTransaction) AllocateConfigRevision(context.Context) (cat
 	return transaction.global, nil
 }
 
-func (transaction *fakeTransaction) ApplyBaseEffect(_ context.Context, orderID string, effect release.BaseEffect, revision catalog.ConfigRevision) error {
-	for _, change := range effect.Changes {
-		record := change.After
-		record.ConfigRevision = revision
-		record.Data = cloneMap(record.Data)
-		transaction.records[effect.Environment][record.RecordKey] = record
+func (transaction *fakeTransaction) ApplyBaseEffect(_ context.Context, orderID string, effect release.BaseEffect) error {
+	if transaction.revisions[effect.Scope.Environment] != effect.PreviousRevision {
+		return release.ErrAborted
 	}
-	transaction.revisions[effect.Environment] = revision
+	for _, change := range effect.Changes {
+		switch change.Action {
+		case release.ChangeAdd, release.ChangeModify:
+			record := *change.After
+			record.ConfigRevision = effect.AppliedRevision
+			record.Data = cloneMap(record.Data)
+			transaction.records[effect.Scope.Environment][record.RecordKey] = record
+		case release.ChangeDelete:
+			delete(transaction.records[effect.Scope.Environment], change.Before.RecordKey)
+		}
+	}
+	stages := transaction.overlays[effect.Scope.Environment]
+	if stages[effect.Scope.Stage] == nil {
+		stages[effect.Scope.Stage] = make(map[string]*overlay.Rule)
+	}
+	for _, change := range effect.OverlayChanges {
+		if change.NewRule == nil {
+			delete(stages[effect.Scope.Stage], change.RecordKey)
+		} else {
+			cloned := cloneOverlayRule(*change.NewRule)
+			stages[effect.Scope.Stage][change.RecordKey] = &cloned
+		}
+	}
+	transaction.revisions[effect.Scope.Environment] = effect.AppliedRevision
 	transaction.outboxEvents++
 	return nil
 }
