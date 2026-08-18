@@ -8,8 +8,8 @@ No repository issue tracker is configured, so these files are the implementation
 | FC-002 | Base-only walking skeleton | FC-001 | done |
 | FC-003 | Concurrency and durability | FC-002 | done |
 | FC-004 | Manual approval workflow | FC-003 | done |
-| FC-005 | Scope Overlay | FC-004 | in-progress |
-| FC-006 | Percentage rollout | FC-005 | blocked |
+| FC-005 | Scope Overlay | FC-004 | done |
+| FC-006 | Percentage rollout | FC-005 | in-progress |
 | FC-007 | Dynamic UI/options/sensitive | FC-006 | blocked |
 | FC-008 | Rollback and compensation | FC-007 | blocked |
 | FC-009 | Metadata/diagnostics/dead-letter | FC-008 | blocked |

@@ -1,6 +1,6 @@
 # FC-006 Percentage rollout
 
-- Status: blocked
+- Status: in-progress
 - Blocked by: FC-005
 - Spec: acceptance scenario 8
 
