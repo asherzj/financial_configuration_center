@@ -10,6 +10,7 @@ import (
 	"time"
 
 	catalog "github.com/asherzj/financial_configuration_center/internal/catalog/domain"
+	overlay "github.com/asherzj/financial_configuration_center/internal/overlay/domain"
 	platformmysql "github.com/asherzj/financial_configuration_center/internal/platform/mysql"
 	"github.com/asherzj/financial_configuration_center/internal/release/application"
 	release "github.com/asherzj/financial_configuration_center/internal/release/domain"
@@ -96,14 +97,14 @@ func (transaction *transaction) LoadCatalog(ctx context.Context, modelCode, rele
 		FROM configuration_models m
 		JOIN configuration_collections c ON c.name = m.collection_name
 		JOIN release_templates t ON t.model_code = m.code AND t.active_slot = 'A'
-		WHERE m.code = ? AND t.release_type_code = ? AND t.final_effect = 'BASE_FINAL'
+		WHERE m.code = ? AND t.release_type_code = ?
 		FOR SHARE
 	`, modelCode, releaseTypeCode).Scan(&loaded)
 	if result.Error != nil {
 		return application.CatalogBundle{}, result.Error
 	}
 	if result.RowsAffected != 1 {
-		return application.CatalogBundle{}, fmt.Errorf("enabled model %q with one active BASE_FINAL template was not found", modelCode)
+		return application.CatalogBundle{}, fmt.Errorf("enabled model %q with one active release template was not found", modelCode)
 	}
 	if loaded.CollectionStatus != "ENABLED" || !loaded.ModelEnabled {
 		return application.CatalogBundle{}, fmt.Errorf("model %q or its collection is disabled", modelCode)
@@ -189,6 +190,68 @@ func (transaction *transaction) LoadBaseAuthority(ctx context.Context, collectio
 		authority.Records[row.RecordKey] = &record
 	}
 	return authority, nil
+}
+
+func (transaction *transaction) LoadOverlayRules(ctx context.Context, collection string, scope release.Scope, recordKeys []string) ([]overlay.Rule, error) {
+	if len(recordKeys) == 0 {
+		return []overlay.Rule{}, nil
+	}
+	type row struct {
+		ID, CollectionName, Region, Environment, Stage, RecordKey, Action, ReleaseOrderID string
+		Content, RolloutRanges                                                            []byte
+		ConfigRevision                                                                    uint64
+		EffectiveFrom, EffectiveUntil, ActivatedAt, ExpiredAt                             *time.Time
+		ActivatedRevision, ExpiredRevision                                                *uint64
+		CreatedAt, UpdatedAt                                                              time.Time
+		CreatedBy, UpdatedBy                                                              string
+	}
+	var rows []row
+	result := transaction.db.WithContext(ctx).Raw(`
+		SELECT id, collection_name, region, environment, stage, record_key, action,
+			content, rollout_ranges, config_revision, release_order_id,
+			effective_from, effective_until, activated_revision, activated_at,
+			expired_revision, expired_at, created_at, created_by, updated_at, updated_by
+		FROM configuration_overlays
+		WHERE collection_name = ? AND environment = ? AND region = ?
+		  AND stage IN ('', ?) AND record_key IN ?
+		ORDER BY stage, record_key
+		FOR UPDATE
+	`, collection, scope.Environment, scope.Region, scope.Stage, recordKeys).Scan(&rows)
+	if result.Error != nil {
+		return nil, result.Error
+	}
+	rules := make([]overlay.Rule, len(rows))
+	for index, loaded := range rows {
+		var content map[string]string
+		if len(loaded.Content) != 0 {
+			if err := json.Unmarshal(loaded.Content, &content); err != nil {
+				return nil, fmt.Errorf("decode overlay %q content: %w", loaded.ID, err)
+			}
+		}
+		var ranges []overlay.BucketRange
+		if err := json.Unmarshal(loaded.RolloutRanges, &ranges); err != nil {
+			return nil, fmt.Errorf("decode overlay %q rollout ranges: %w", loaded.ID, err)
+		}
+		rule := overlay.Rule{
+			ID: loaded.ID, Collection: loaded.CollectionName,
+			Scope:     overlay.Scope{Region: loaded.Region, Environment: loaded.Environment, Stage: loaded.Stage},
+			RecordKey: loaded.RecordKey, Action: overlay.Action(loaded.Action), Content: content, RolloutRanges: ranges,
+			ConfigRevision: catalog.ConfigRevision(loaded.ConfigRevision), ReleaseOrderID: loaded.ReleaseOrderID,
+			EffectiveFrom: loaded.EffectiveFrom, EffectiveUntil: loaded.EffectiveUntil,
+			ActivatedAt: loaded.ActivatedAt, ExpiredAt: loaded.ExpiredAt,
+			CreatedAt: loaded.CreatedAt, CreatedBy: loaded.CreatedBy, UpdatedAt: loaded.UpdatedAt, UpdatedBy: loaded.UpdatedBy,
+		}
+		if loaded.ActivatedRevision != nil {
+			value := catalog.ConfigRevision(*loaded.ActivatedRevision)
+			rule.ActivatedRevision = &value
+		}
+		if loaded.ExpiredRevision != nil {
+			value := catalog.ConfigRevision(*loaded.ExpiredRevision)
+			rule.ExpiredRevision = &value
+		}
+		rules[index] = rule
+	}
+	return rules, nil
 }
 
 func (transaction *transaction) FindCreateResult(ctx context.Context, actor, idempotencyKey string) (application.StoredRequestResult, bool, error) {
@@ -284,6 +347,14 @@ func (transaction *transaction) InsertOrder(ctx context.Context, order *release.
 		return result.Error
 	}
 	for position, item := range state.Items {
+		baseBefore, err := marshalRecordData(item.BaseBefore)
+		if err != nil {
+			return err
+		}
+		effectiveBefore, err := marshalRecordData(item.EffectiveBefore)
+		if err != nil {
+			return err
+		}
 		after, err := marshalRecordData(item.After)
 		if err != nil {
 			return err
@@ -295,9 +366,9 @@ func (transaction *transaction) InsertOrder(ctx context.Context, order *release.
 				expected_record_revision, expected_collection_revision, preserve_sensitive_fields,
 				status, active_conflict_key, entity_revision,
 				created_at, created_by, updated_at, updated_by
-			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?, ?, ?, JSON_ARRAY(), ?, ?, 1, ?, ?, ?, ?)
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, JSON_ARRAY(), ?, ?, 1, ?, ?, ?, ?)
 		`, item.ID, state.ID, position, item.Action, item.Collection, item.RecordKey,
-			item.RecordKey, item.RecordKey, after, item.ExpectedRecordRevision, item.ExpectedCollectionRevision,
+			item.RecordKey, item.RecordKey, baseBefore, effectiveBefore, after, item.ExpectedRecordRevision, item.ExpectedCollectionRevision,
 			item.Status, nullableString(item.ActiveConflictKey), state.CreatedAt, state.CreatedBy, state.UpdatedAt, state.UpdatedBy).Error; err != nil {
 			return err
 		}
@@ -390,12 +461,14 @@ func (transaction *transaction) LoadOrderForUpdate(ctx context.Context, orderID 
 	}
 	type stepRow struct {
 		StepCode, StepType, Status, ExecutedBy string
-		Context, Approval                      []byte
-		ExecutedAt                             *time.Time
+		Context, Approval, Effect              []byte
+		ExecutedAt, RolledBackAt               *time.Time
+		RolledBackBy                           string
 	}
 	var stepRows []stepRow
 	if err := transaction.db.WithContext(ctx).Raw(`
-		SELECT step_code, step_type, status, context, approval, executed_at, COALESCE(executed_by, '') AS executed_by
+		SELECT step_code, step_type, status, context, approval, effect, executed_at,
+			COALESCE(executed_by, '') AS executed_by, rolled_back_at, COALESCE(rolled_back_by, '') AS rolled_back_by
 		FROM release_step_states WHERE release_order_id = ? ORDER BY sequence_no
 	`, orderID).Scan(&stepRows).Error; err != nil {
 		return nil, err
@@ -417,7 +490,22 @@ func (transaction *transaction) LoadOrderForUpdate(ctx context.Context, orderID 
 				return nil, fmt.Errorf("decode step %q approval: %w", row.StepCode, err)
 			}
 		}
-		steps[index] = release.StepState{Code: row.StepCode, Type: release.StepType(row.StepType), Status: release.StepStatus(row.Status), RequiredRoles: contextValue.RequiredRoles, SelfApprovalPolicy: contextValue.SelfApprovalPolicy, Approval: approval, ExecutedAt: row.ExecutedAt, ExecutedBy: row.ExecutedBy}
+		var effect *release.StepEffectEnvelope
+		if len(row.Effect) != 0 {
+			effect = &release.StepEffectEnvelope{}
+			if err := json.Unmarshal(row.Effect, effect); err != nil {
+				return nil, fmt.Errorf("decode step %q effect: %w", row.StepCode, err)
+			}
+			if effect.EffectVersion != 1 || effect.Overlay == nil || effect.Overlay.EffectVersion != 1 {
+				return nil, fmt.Errorf("decode step %q effect: unsupported effect envelope", row.StepCode)
+			}
+		}
+		steps[index] = release.StepState{
+			Code: row.StepCode, Type: release.StepType(row.StepType), Status: release.StepStatus(row.Status),
+			RequiredRoles: contextValue.RequiredRoles, SelfApprovalPolicy: contextValue.SelfApprovalPolicy,
+			Approval: approval, Effect: effect, ExecutedAt: row.ExecutedAt, ExecutedBy: row.ExecutedBy,
+			RolledBackAt: row.RolledBackAt, RolledBackBy: row.RolledBackBy,
+		}
 		if row.StepCode == loaded.CurrentStepCode {
 			currentStep = index
 		}
@@ -558,6 +646,173 @@ func (transaction *transaction) ApplyBaseEffect(ctx context.Context, orderID str
 	return transaction.insertAudit(ctx, effect.ExecutedAt, effect.ExecutedBy, "BASE_APPLY", "RELEASE_ORDER", orderID, release.Scope{Environment: effect.Environment}, orderID)
 }
 
+func (transaction *transaction) ApplyOverlayEffect(ctx context.Context, orderID string, effect release.OverlayEffect) error {
+	if effect.EffectVersion != 1 || effect.AppliedRevision <= effect.PreviousRevision || len(effect.Changes) == 0 {
+		return fmt.Errorf("invalid overlay effect")
+	}
+	for _, change := range effect.Changes {
+		if change.NewRule == nil {
+			if err := transaction.db.WithContext(ctx).Exec(`
+				DELETE FROM configuration_overlays
+				WHERE collection_name = ? AND region = ? AND environment = ? AND stage = ? AND record_key = ?
+			`, effect.Collection, effect.Scope.Region, effect.Scope.Environment, effect.Scope.Stage, change.RecordKey).Error; err != nil {
+				return err
+			}
+		} else if err := transaction.upsertOverlayRule(ctx, *change.NewRule); err != nil {
+			return err
+		}
+		before, err := overlayChangeData(change.PreviousRule)
+		if err != nil {
+			return err
+		}
+		after, err := overlayChangeData(change.NewRule)
+		if err != nil {
+			return err
+		}
+		action := "MODIFY"
+		if change.PreviousRule == nil {
+			action = "ADD"
+		} else if change.NewRule == nil {
+			action = "DELETE"
+		}
+		if err := transaction.db.WithContext(ctx).Exec(`
+			INSERT INTO configuration_change_log (
+				collection_name, kind, region, environment, stage, record_key, action,
+				before_data, after_data, config_revision, release_order_id, created_at
+			) VALUES (?, 'OVERLAY', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		`, effect.Collection, effect.Scope.Region, effect.Scope.Environment, effect.Scope.Stage,
+			change.RecordKey, action, before, after, effect.AppliedRevision, orderID, effect.ExecutedAt).Error; err != nil {
+			return err
+		}
+	}
+
+	rules, err := transaction.loadEnvironmentOverlayRules(ctx, effect.Collection, effect.Scope.Environment)
+	if err != nil {
+		return err
+	}
+	digest, err := overlay.ComputeDigest(rules)
+	if err != nil {
+		return err
+	}
+	result := transaction.db.WithContext(ctx).Exec(`
+		UPDATE configuration_versions
+		SET config_revision = ?, overlay_digest = ?, release_order_id = ?, updated_at = ?
+		WHERE collection_name = ? AND environment = ? AND config_revision = ?
+	`, effect.AppliedRevision, digest.Value, orderID, effect.ExecutedAt,
+		effect.Collection, effect.Scope.Environment, effect.PreviousRevision)
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected != 1 {
+		return fmt.Errorf("%w: collection version changed while applying overlay effect", release.ErrAborted)
+	}
+	payload, _ := json.Marshal(map[string]any{
+		"schemaVersion": 1, "collection": effect.Collection, "scope": effect.Scope,
+		"configRevision": effect.AppliedRevision, "releaseOrderId": orderID,
+	})
+	if err := transaction.db.WithContext(ctx).Exec(`
+		INSERT INTO outbox_events (
+			id, aggregate_type, aggregate_id, event_type, payload_version, payload,
+			idempotency_key, status, lease_revision, attempts, next_attempt_at,
+			created_at, updated_at
+		) VALUES (UUID(), 'RELEASE_ORDER', ?, 'CONFIGURATION_CHANGED', 1, ?, ?, 'PENDING', 1, 0, ?, ?, ?)
+	`, orderID, payload, fmt.Sprintf("configuration-changed:%s:%d", orderID, effect.AppliedRevision),
+		effect.ExecutedAt, effect.ExecutedAt, effect.ExecutedAt).Error; err != nil {
+		return err
+	}
+	return transaction.insertAudit(ctx, effect.ExecutedAt, effect.ExecutedBy, "OVERLAY_APPLY", "RELEASE_ORDER", orderID, effect.Scope, orderID)
+}
+
+func (transaction *transaction) upsertOverlayRule(ctx context.Context, rule overlay.Rule) error {
+	var content any
+	if rule.Content != nil {
+		encoded, err := json.Marshal(rule.Content)
+		if err != nil {
+			return err
+		}
+		content = encoded
+	}
+	ranges := rule.RolloutRanges
+	if ranges == nil {
+		ranges = []overlay.BucketRange{}
+	}
+	encodedRanges, err := json.Marshal(ranges)
+	if err != nil {
+		return err
+	}
+	return transaction.db.WithContext(ctx).Exec(`
+		INSERT INTO configuration_overlays (
+			id, collection_name, region, environment, stage, record_key, action,
+			content, rollout_ranges, config_revision, release_order_id,
+			effective_from, effective_until, activated_revision, activated_at,
+			expired_revision, expired_at, created_at, created_by, updated_at, updated_by
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON DUPLICATE KEY UPDATE
+			id = VALUES(id), action = VALUES(action), content = VALUES(content),
+			rollout_ranges = VALUES(rollout_ranges), config_revision = VALUES(config_revision),
+			release_order_id = VALUES(release_order_id), effective_from = VALUES(effective_from),
+			effective_until = VALUES(effective_until), activated_revision = VALUES(activated_revision),
+			activated_at = VALUES(activated_at), expired_revision = VALUES(expired_revision),
+			expired_at = VALUES(expired_at), created_at = VALUES(created_at), created_by = VALUES(created_by),
+			updated_at = VALUES(updated_at), updated_by = VALUES(updated_by)
+	`, rule.ID, rule.Collection, rule.Scope.Region, rule.Scope.Environment, rule.Scope.Stage,
+		rule.RecordKey, rule.Action, content, encodedRanges, rule.ConfigRevision, rule.ReleaseOrderID,
+		rule.EffectiveFrom, rule.EffectiveUntil, rule.ActivatedRevision, rule.ActivatedAt,
+		rule.ExpiredRevision, rule.ExpiredAt, rule.CreatedAt, rule.CreatedBy, rule.UpdatedAt, rule.UpdatedBy).Error
+}
+
+func (transaction *transaction) loadEnvironmentOverlayRules(ctx context.Context, collection, environment string) ([]overlay.Rule, error) {
+	type row struct {
+		ID, Region, Stage, RecordKey, Action string
+		Content, RolloutRanges               []byte
+		ActivatedRevision, ExpiredRevision   *uint64
+	}
+	var rows []row
+	if err := transaction.db.WithContext(ctx).Raw(`
+		SELECT id, region, stage, record_key, action, content, rollout_ranges,
+			activated_revision, expired_revision
+		FROM configuration_overlays
+		WHERE collection_name = ? AND environment = ?
+		ORDER BY region, stage, record_key
+	`, collection, environment).Scan(&rows).Error; err != nil {
+		return nil, err
+	}
+	rules := make([]overlay.Rule, len(rows))
+	for index, loaded := range rows {
+		var content map[string]string
+		if len(loaded.Content) > 0 {
+			if err := json.Unmarshal(loaded.Content, &content); err != nil {
+				return nil, err
+			}
+		}
+		var ranges []overlay.BucketRange
+		if err := json.Unmarshal(loaded.RolloutRanges, &ranges); err != nil {
+			return nil, err
+		}
+		rule := overlay.Rule{
+			ID: loaded.ID, Collection: collection, Scope: overlay.Scope{Region: loaded.Region, Environment: environment, Stage: loaded.Stage},
+			RecordKey: loaded.RecordKey, Action: overlay.Action(loaded.Action), Content: content, RolloutRanges: ranges,
+		}
+		if loaded.ActivatedRevision != nil {
+			value := catalog.ConfigRevision(*loaded.ActivatedRevision)
+			rule.ActivatedRevision = &value
+		}
+		if loaded.ExpiredRevision != nil {
+			value := catalog.ConfigRevision(*loaded.ExpiredRevision)
+			rule.ExpiredRevision = &value
+		}
+		rules[index] = rule
+	}
+	return rules, nil
+}
+
+func overlayChangeData(rule *overlay.Rule) (any, error) {
+	if rule == nil {
+		return nil, nil
+	}
+	return json.Marshal(rule.Content)
+}
+
 func (transaction *transaction) SaveOrder(ctx context.Context, order *release.Order) error {
 	state := order.State()
 	if state.Revision <= 1 {
@@ -593,12 +848,22 @@ func (transaction *transaction) SaveOrder(ctx context.Context, order *release.Or
 			}
 			approval = encoded
 		}
+		var effect any
+		if step.Effect != nil {
+			encoded, err := json.Marshal(step.Effect)
+			if err != nil {
+				return err
+			}
+			effect = encoded
+		}
 		if err := transaction.db.WithContext(ctx).Exec(`
 			UPDATE release_step_states
-			SET status = ?, approval = ?, executed_at = ?, executed_by = ?, entity_revision = entity_revision + 1,
+			SET status = ?, approval = ?, effect = ?, executed_at = ?, executed_by = ?,
+				rolled_back_at = ?, rolled_back_by = ?, entity_revision = entity_revision + 1,
 				updated_at = ?, updated_by = ?
 			WHERE release_order_id = ? AND step_code = ?
-		`, step.Status, approval, step.ExecutedAt, nullableString(step.ExecutedBy), state.UpdatedAt, state.UpdatedBy, state.ID, persistedStepCode(step)).Error; err != nil {
+		`, step.Status, approval, effect, step.ExecutedAt, nullableString(step.ExecutedBy),
+			step.RolledBackAt, nullableString(step.RolledBackBy), state.UpdatedAt, state.UpdatedBy, state.ID, persistedStepCode(step)).Error; err != nil {
 			return err
 		}
 	}
@@ -665,10 +930,16 @@ func marshalTemplateSnapshot(steps []release.StepState) ([]byte, error) {
 		RequiredRoles      []string                   `json:"requiredRoles,omitempty"`
 		SelfApprovalPolicy release.SelfApprovalPolicy `json:"selfApprovalPolicy,omitempty"`
 	}
+	finalEffect := release.FinalEffectBase
+	for _, step := range steps {
+		if step.Type == release.StepOverlayApply {
+			finalEffect = release.FinalEffectOverlay
+		}
+	}
 	document := struct {
 		FinalEffect release.FinalEffect `json:"finalEffect"`
 		Steps       []definition        `json:"steps"`
-	}{FinalEffect: release.FinalEffectBase, Steps: make([]definition, len(steps))}
+	}{FinalEffect: finalEffect, Steps: make([]definition, len(steps))}
 	for index, step := range steps {
 		document.Steps[index] = definition{Code: persistedStepCode(step), Type: step.Type, RequiredRoles: append([]string(nil), step.RequiredRoles...), SelfApprovalPolicy: step.SelfApprovalPolicy}
 	}

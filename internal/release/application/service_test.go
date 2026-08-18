@@ -2,6 +2,7 @@ package application_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"reflect"
@@ -9,6 +10,7 @@ import (
 	"time"
 
 	catalog "github.com/asherzj/financial_configuration_center/internal/catalog/domain"
+	overlay "github.com/asherzj/financial_configuration_center/internal/overlay/domain"
 	"github.com/asherzj/financial_configuration_center/internal/release/application"
 	release "github.com/asherzj/financial_configuration_center/internal/release/domain"
 )
@@ -75,6 +77,67 @@ func TestBaseFinalApplicationIsTheOnlyRecordWritePath(t *testing.T) {
 	}
 	if completed.Status != release.OrderSucceeded || completed.Revision != 4 {
 		t.Fatalf("completed order = %+v", completed)
+	}
+}
+
+func TestOverlayFinalApplicationAppliesAndRollsBackAtomically(t *testing.T) {
+	t.Parallel()
+	definition, model := compiledCatalog(t)
+	store := newFakeUnitOfWork(definition, model)
+	template, err := release.CompileTemplate([]byte(`{"steps":[
+		{"code":"apply-overlay","type":"OVERLAY_APPLY","params":{}},
+		{"code":"complete","type":"COMPLETE","params":{}}
+	]}`), release.FinalEffectOverlay)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store.template = application.TemplateRef{Code: "overlay-final", Version: 1, ReleaseTypeCode: "scope", Definition: template}
+	base, err := definition.NewRecord("production", map[string]string{"route_code": "visa", "priority": "1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	base.ConfigRevision = 5
+	store.records["production"][base.RecordKey] = base
+	now := time.Date(2026, 8, 19, 10, 0, 0, 0, time.UTC)
+	service := application.NewService(store, &sequenceIDs{values: []string{"order-overlay", "item-overlay"}}, fixedClock{now: now})
+
+	created, err := service.CreateRelease(context.Background(), application.CreateReleaseCommand{
+		IdempotencyKey: "create-overlay", ModelCode: model.Code(), ReleaseTypeCode: "scope",
+		Scope: release.Scope{Region: "cn", Environment: "production", Stage: "blue"}, Actor: "operator",
+		Items: []application.ReleaseDraft{{
+			Action: release.ChangeModify, BaseBefore: base.Data, EffectiveBefore: base.Data,
+			After:                  map[string]string{"route_code": "visa", "priority": "2", "enabled": "false"},
+			ExpectedRecordRevision: 5, ExpectedCollectionRevision: 7,
+		}},
+	})
+	if err != nil {
+		t.Fatalf("CreateRelease: %v", err)
+	}
+	if created.CurrentStep != release.StepOverlayApply || len(store.overlays["production"]) != 0 {
+		t.Fatalf("create changed overlay state: view=%+v overlays=%#v", created, store.overlays)
+	}
+
+	executed, err := service.Act(context.Background(), application.ActCommand{
+		OrderID: created.ID, ActionRequestID: "execute-overlay", ExpectedRevision: 1,
+		ExpectedCurrentStep: "apply-overlay", Action: application.ActionExecute, Actor: "operator",
+	})
+	if err != nil {
+		t.Fatalf("execute overlay: %v", err)
+	}
+	rule := store.overlays["production"]["blue"][base.RecordKey]
+	if rule == nil || rule.Content["priority"] != "2" || store.revisions["production"] != 8 || store.outboxEvents != 1 {
+		t.Fatalf("overlay apply facts: rule=%#v revision=%d outbox=%d", rule, store.revisions["production"], store.outboxEvents)
+	}
+
+	rolledBack, err := service.Act(context.Background(), application.ActCommand{
+		OrderID: created.ID, ActionRequestID: "rollback-overlay", ExpectedRevision: executed.Revision,
+		ExpectedCurrentStep: "apply-overlay", Action: application.ActionRollback, Actor: "operator",
+	})
+	if err != nil {
+		t.Fatalf("rollback overlay: %v", err)
+	}
+	if rolledBack.Status != release.OrderRolledBack || store.overlays["production"]["blue"][base.RecordKey] != nil || store.revisions["production"] != 9 || store.outboxEvents != 2 {
+		t.Fatalf("rollback facts: view=%+v overlays=%#v revision=%d outbox=%d", rolledBack, store.overlays, store.revisions["production"], store.outboxEvents)
 	}
 }
 
@@ -216,6 +279,7 @@ type fakeUnitOfWork struct {
 	model         catalog.CompiledModel
 	revisions     map[string]catalog.ConfigRevision
 	records       map[string]map[string]catalog.ConfigurationRecord
+	overlays      map[string]map[string]map[string]*overlay.Rule
 	orders        map[string]*release.Order
 	createResults map[string]application.StoredRequestResult
 	actionResults map[string]application.StoredRequestResult
@@ -230,6 +294,10 @@ func newFakeUnitOfWork(definition catalog.CollectionDefinition, model catalog.Co
 		model:      model,
 		revisions:  map[string]catalog.ConfigRevision{"production": 7, "staging": 7},
 		records: map[string]map[string]catalog.ConfigurationRecord{
+			"production": {},
+			"staging":    {},
+		},
+		overlays: map[string]map[string]map[string]*overlay.Rule{
 			"production": {},
 			"staging":    {},
 		},
@@ -268,6 +336,26 @@ func (transaction *fakeTransaction) LoadBaseAuthority(_ context.Context, collect
 		}
 	}
 	return authority, nil
+}
+
+func (transaction *fakeTransaction) LoadOverlayRules(_ context.Context, collection string, scope release.Scope, recordKeys []string) ([]overlay.Rule, error) {
+	allowed := make(map[string]struct{}, len(recordKeys))
+	for _, key := range recordKeys {
+		allowed[key] = struct{}{}
+	}
+	rules := make([]overlay.Rule, 0)
+	for _, stage := range []string{"", scope.Stage} {
+		for key, rule := range transaction.overlays[scope.Environment][stage] {
+			if rule == nil || rule.Collection != collection || rule.Scope.Region != scope.Region {
+				continue
+			}
+			if _, exists := allowed[key]; !exists {
+				continue
+			}
+			rules = append(rules, cloneOverlayRule(*rule))
+		}
+	}
+	return rules, nil
 }
 
 func (transaction *fakeTransaction) FindCreateResult(_ context.Context, actor, idempotencyKey string) (application.StoredRequestResult, bool, error) {
@@ -326,6 +414,27 @@ func (transaction *fakeTransaction) ApplyBaseEffect(_ context.Context, orderID s
 	return nil
 }
 
+func (transaction *fakeTransaction) ApplyOverlayEffect(_ context.Context, _ string, effect release.OverlayEffect) error {
+	if transaction.revisions[effect.Scope.Environment] != effect.PreviousRevision {
+		return release.ErrAborted
+	}
+	stages := transaction.overlays[effect.Scope.Environment]
+	if stages[effect.Scope.Stage] == nil {
+		stages[effect.Scope.Stage] = make(map[string]*overlay.Rule)
+	}
+	for _, change := range effect.Changes {
+		if change.NewRule == nil {
+			delete(stages[effect.Scope.Stage], change.RecordKey)
+			continue
+		}
+		cloned := cloneOverlayRule(*change.NewRule)
+		stages[effect.Scope.Stage][change.RecordKey] = &cloned
+	}
+	transaction.revisions[effect.Scope.Environment] = effect.AppliedRevision
+	transaction.outboxEvents++
+	return nil
+}
+
 func (transaction *fakeTransaction) SaveOrder(_ context.Context, order *release.Order) error {
 	transaction.orders[order.ID()] = order.Clone()
 	return nil
@@ -376,4 +485,11 @@ func cloneMap(source map[string]string) map[string]string {
 		clone[key] = value
 	}
 	return clone
+}
+
+func cloneOverlayRule(source overlay.Rule) overlay.Rule {
+	encoded, _ := json.Marshal(source)
+	var cloned overlay.Rule
+	_ = json.Unmarshal(encoded, &cloned)
+	return cloned
 }

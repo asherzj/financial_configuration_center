@@ -412,6 +412,97 @@ func TestRealMySQLManualApprovalJourney(t *testing.T) {
 	assertCount(t, raw, `SELECT COUNT(*) FROM release_step_states WHERE release_order_id = '`+created.ID+`' AND step_code = 'review' AND status = 'APPROVED' AND JSON_UNQUOTE(JSON_EXTRACT(approval, '$.status')) = 'APPROVED'`, 1)
 }
 
+func TestRealMySQLOverlayApplyAndRollbackTransaction(t *testing.T) {
+	dsn := isolatedDatabase(t)
+	ctx := context.Background()
+	database, err := platformmysql.Open(ctx, platformmysql.Config{DSN: dsn, MaxOpenConns: 4, MaxIdleConns: 2, ConnMaxLifetime: time.Minute, ConnMaxIdleTime: time.Minute})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = database.Close() })
+	raw, err := sql.Open("mysql", dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer raw.Close()
+	now := time.Date(2026, 8, 19, 12, 0, 0, 0, time.UTC)
+	if _, err := raw.Exec(`
+		INSERT INTO release_templates (
+			code, version, model_code, release_type_code, active_slot, final_effect,
+			template, created_at, created_by
+		) VALUES (
+			'overlay-final', 1, 'payment-route-admin', 'scope', 'A', 'OVERLAY_FINAL',
+			JSON_OBJECT('steps', JSON_ARRAY(
+				JSON_OBJECT('code', 'apply-overlay', 'type', 'OVERLAY_APPLY', 'params', JSON_OBJECT()),
+				JSON_OBJECT('code', 'done', 'type', 'COMPLETE', 'params', JSON_OBJECT())
+			)), ?, 'seed'
+		)
+	`, now); err != nil {
+		t.Fatal(err)
+	}
+	baseData := map[string]string{"route_code": "visa", "priority": "1", "enabled": "false"}
+	key, err := catalog.EncodeKey([]string{"route_code"}, baseData)
+	if err != nil {
+		t.Fatal(err)
+	}
+	baseJSON, _ := json.Marshal(baseData)
+	if _, err := raw.Exec(`
+		INSERT INTO configuration_records (
+			collection_name, environment, record_key, data, config_revision,
+			created_at, created_by, updated_at, updated_by
+		) VALUES ('payment_routes', 'production', ?, ?, 5, ?, 'seed', ?, 'seed')
+	`, key, baseJSON, now, now); err != nil {
+		t.Fatal(err)
+	}
+
+	store, err := mysqlstore.New(database)
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := application.NewService(store, &numberedIDs{next: 1000, releaseNumber: "REL-20260819-1000"}, fixedClock{now: now})
+	created, err := service.CreateRelease(ctx, application.CreateReleaseCommand{
+		IdempotencyKey: "overlay-create", ModelCode: "payment-route-admin", ReleaseTypeCode: "scope",
+		Scope: release.Scope{Region: "cn", Environment: "production", Stage: "blue"}, Actor: "operator@example.com",
+		Items: []application.ReleaseDraft{{
+			Action: release.ChangeModify, BaseBefore: baseData, EffectiveBefore: baseData,
+			After:                  map[string]string{"route_code": "visa", "priority": "2", "enabled": "false"},
+			ExpectedRecordRevision: 5, ExpectedCollectionRevision: 7,
+		}},
+	})
+	if err != nil {
+		t.Fatalf("CreateRelease: %v", err)
+	}
+	executed, err := service.Act(ctx, application.ActCommand{
+		OrderID: created.ID, ActionRequestID: "40000000-0000-4000-8000-000000000001",
+		ExpectedRevision: 1, ExpectedCurrentStep: "apply-overlay", Action: application.ActionExecute, Actor: "operator@example.com",
+	})
+	if err != nil {
+		t.Fatalf("execute overlay: %v", err)
+	}
+	assertCount(t, raw, `SELECT COUNT(*) FROM configuration_overlays WHERE environment = 'production' AND stage = 'blue' AND JSON_UNQUOTE(JSON_EXTRACT(content, '$.priority')) = '2'`, 1)
+	assertCount(t, raw, `SELECT COUNT(*) FROM configuration_versions WHERE collection_name = 'payment_routes' AND environment = 'production' AND config_revision = 8 AND overlay_digest <> '4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945'`, 1)
+	assertCount(t, raw, `SELECT COUNT(*) FROM release_step_states WHERE release_order_id = '`+created.ID+`' AND JSON_EXTRACT(effect, '$.effectVersion') = 1 AND JSON_EXTRACT(effect, '$.overlay.appliedRevision') = 8`, 1)
+	assertCount(t, raw, `SELECT COUNT(*) FROM configuration_change_log WHERE release_order_id = '`+created.ID+`' AND kind = 'OVERLAY'`, 1)
+	assertCount(t, raw, `SELECT COUNT(*) FROM outbox_events WHERE aggregate_id = '`+created.ID+`'`, 1)
+
+	rolledBack, err := service.Act(ctx, application.ActCommand{
+		OrderID: created.ID, ActionRequestID: "40000000-0000-4000-8000-000000000002",
+		ExpectedRevision: executed.Revision, ExpectedCurrentStep: "apply-overlay", Action: application.ActionRollback, Actor: "operator@example.com",
+	})
+	if err != nil {
+		t.Fatalf("rollback overlay: %v", err)
+	}
+	if rolledBack.Status != release.OrderRolledBack {
+		t.Fatalf("rolled back view = %+v", rolledBack)
+	}
+	assertCount(t, raw, `SELECT COUNT(*) FROM configuration_overlays WHERE environment = 'production' AND stage = 'blue'`, 0)
+	assertCount(t, raw, `SELECT COUNT(*) FROM configuration_versions WHERE collection_name = 'payment_routes' AND environment = 'production' AND config_revision = 9 AND overlay_digest = '4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945'`, 1)
+	assertCount(t, raw, `SELECT COUNT(*) FROM release_orders WHERE id = '`+created.ID+`' AND status = 'ROLLED_BACK'`, 1)
+	assertCount(t, raw, `SELECT COUNT(*) FROM release_step_states WHERE release_order_id = '`+created.ID+`' AND status = 'ROLLED_BACK' AND JSON_EXTRACT(effect, '$.overlay.appliedRevision') = 8`, 1)
+	assertCount(t, raw, `SELECT COUNT(*) FROM configuration_change_log WHERE release_order_id = '`+created.ID+`' AND kind = 'OVERLAY'`, 2)
+	assertCount(t, raw, `SELECT COUNT(*) FROM outbox_events WHERE aggregate_id = '`+created.ID+`'`, 2)
+}
+
 func TestRealMySQLHTTPWalkingSkeleton(t *testing.T) {
 	dsn := isolatedDatabase(t)
 	ctx := context.Background()

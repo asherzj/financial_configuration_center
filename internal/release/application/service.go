@@ -7,11 +7,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"sort"
 	"strings"
 	"time"
 
 	catalog "github.com/asherzj/financial_configuration_center/internal/catalog/domain"
+	overlay "github.com/asherzj/financial_configuration_center/internal/overlay/domain"
 	release "github.com/asherzj/financial_configuration_center/internal/release/domain"
 )
 
@@ -43,12 +45,14 @@ var (
 type Transaction interface {
 	LoadCatalog(context.Context, string, string) (CatalogBundle, error)
 	LoadBaseAuthority(context.Context, string, string, []string) (release.BaseAuthority, error)
+	LoadOverlayRules(context.Context, string, release.Scope, []string) ([]overlay.Rule, error)
 	FindCreateResult(context.Context, string, string) (StoredRequestResult, bool, error)
 	InsertOrder(context.Context, *release.Order) error
 	LoadOrderForUpdate(context.Context, string) (*release.Order, error)
 	FindActionResult(context.Context, string, string) (StoredRequestResult, bool, error)
 	AllocateConfigRevision(context.Context) (catalog.ConfigRevision, error)
 	ApplyBaseEffect(context.Context, string, release.BaseEffect, catalog.ConfigRevision) error
+	ApplyOverlayEffect(context.Context, string, release.OverlayEffect) error
 	SaveOrder(context.Context, *release.Order) error
 	RecordAction(context.Context, ActionRecord) error
 	InsertActionResult(context.Context, string, string, string, OrderView, time.Time) error
@@ -73,6 +77,33 @@ type AddDraft struct {
 	ExpectedCollectionRevision catalog.ConfigRevision
 }
 
+type ReleaseDraft struct {
+	Action                     release.ChangeAction
+	BaseBefore                 map[string]string
+	EffectiveBefore            map[string]string
+	After                      map[string]string
+	ExpectedRecordRevision     catalog.ConfigRevision
+	ExpectedCollectionRevision catalog.ConfigRevision
+}
+
+type CreateReleaseCommand struct {
+	IdempotencyKey  string
+	ModelCode       string
+	ReleaseTypeCode string
+	Scope           release.Scope
+	Actor           string
+	Items           []ReleaseDraft
+}
+
+type canonicalReleaseDraft struct {
+	action                     release.ChangeAction
+	baseBefore                 *catalog.ConfigurationRecord
+	effectiveBefore            *catalog.ConfigurationRecord
+	after                      *catalog.ConfigurationRecord
+	expectedRecordRevision     catalog.ConfigRevision
+	expectedCollectionRevision catalog.ConfigRevision
+}
+
 type CreateBaseFinalCommand struct {
 	IdempotencyKey  string
 	ModelCode       string
@@ -85,10 +116,11 @@ type CreateBaseFinalCommand struct {
 type Action string
 
 const (
-	ActionExecute Action = "EXECUTE"
-	ActionAdvance Action = "ADVANCE"
-	ActionApprove Action = "APPROVE"
-	ActionReject  Action = "REJECT"
+	ActionExecute  Action = "EXECUTE"
+	ActionAdvance  Action = "ADVANCE"
+	ActionApprove  Action = "APPROVE"
+	ActionReject   Action = "REJECT"
+	ActionRollback Action = "ROLLBACK"
 )
 
 type ActCommand struct {
@@ -113,6 +145,7 @@ type OrderView struct {
 	CanAdvance        bool                   `json:"canAdvance"`
 	CanApprove        bool                   `json:"canApprove"`
 	CanReject         bool                   `json:"canReject"`
+	CanRollback       bool                   `json:"canRollback"`
 	Steps             []StepView             `json:"steps"`
 }
 
@@ -259,6 +292,216 @@ func (service *Service) CreateBaseFinal(ctx context.Context, command CreateBaseF
 	return project(created), nil
 }
 
+func (service *Service) CreateRelease(ctx context.Context, command CreateReleaseCommand) (OrderView, error) {
+	if err := service.ready(); err != nil {
+		return OrderView{}, err
+	}
+	if strings.TrimSpace(command.IdempotencyKey) == "" || strings.TrimSpace(command.ModelCode) == "" || strings.TrimSpace(command.ReleaseTypeCode) == "" || strings.TrimSpace(command.Actor) == "" || len(command.Items) == 0 || len(command.Items) > 500 {
+		return OrderView{}, fmt.Errorf("%w: idempotency key, model, release type, actor, and 1..500 items are required", release.ErrInvalid)
+	}
+
+	var created *release.Order
+	var replayed *OrderView
+	err := service.withinIdempotentTransaction(ctx, func(transaction Transaction) error {
+		bundle, err := transaction.LoadCatalog(ctx, command.ModelCode, command.ReleaseTypeCode)
+		if err != nil {
+			return fmt.Errorf("load release catalog: %w", err)
+		}
+		if bundle.Template.Definition.FinalEffect() != release.FinalEffectOverlay {
+			return fmt.Errorf("%w: generic create currently requires an OVERLAY_FINAL release type", release.ErrInvalid)
+		}
+		if strings.TrimSpace(command.Scope.Region) == "" || strings.TrimSpace(command.Scope.Environment) == "" || strings.TrimSpace(command.Scope.Stage) == "" {
+			return fmt.Errorf("%w: OVERLAY_FINAL requires a full scope", release.ErrInvalid)
+		}
+
+		canonical := make([]canonicalReleaseDraft, len(command.Items))
+		keys := make([]string, len(command.Items))
+		for index, draft := range command.Items {
+			baseBefore, err := canonicalOptionalRecord(bundle.Definition, command.Scope.Environment, draft.BaseBefore)
+			if err != nil {
+				return fmt.Errorf("canonicalize item %d base before: %w", index, err)
+			}
+			effectiveBefore, err := canonicalOptionalRecord(bundle.Definition, command.Scope.Environment, draft.EffectiveBefore)
+			if err != nil {
+				return fmt.Errorf("canonicalize item %d effective before: %w", index, err)
+			}
+			after, err := canonicalOptionalRecord(bundle.Definition, command.Scope.Environment, draft.After)
+			if err != nil {
+				return fmt.Errorf("canonicalize item %d after: %w", index, err)
+			}
+			target := after
+			if target == nil {
+				target = effectiveBefore
+			}
+			if target == nil {
+				target = baseBefore
+			}
+			if target == nil {
+				return fmt.Errorf("%w: item %d has no target state", release.ErrInvalid, index)
+			}
+			for _, record := range []*catalog.ConfigurationRecord{baseBefore, effectiveBefore, after} {
+				if record != nil && record.RecordKey != target.RecordKey {
+					return fmt.Errorf("%w: item %d record keys differ", release.ErrInvalid, index)
+				}
+			}
+			keys[index] = target.RecordKey
+			canonical[index] = canonicalReleaseDraft{
+				action: draft.Action, baseBefore: baseBefore, effectiveBefore: effectiveBefore, after: after,
+				expectedRecordRevision: draft.ExpectedRecordRevision, expectedCollectionRevision: draft.ExpectedCollectionRevision,
+			}
+		}
+		requestDigest, err := normalizedReleaseDigest(command, canonical)
+		if err != nil {
+			return err
+		}
+		stored, found, err := transaction.FindCreateResult(ctx, command.Actor, command.IdempotencyKey)
+		if err != nil {
+			return fmt.Errorf("find create request: %w", err)
+		}
+		if found {
+			if stored.RequestDigest != requestDigest {
+				return fmt.Errorf("%w: create request", release.ErrIdempotencyKeyReused)
+			}
+			result := stored.Result
+			replayed = &result
+			return nil
+		}
+
+		authority, err := transaction.LoadBaseAuthority(ctx, bundle.Definition.Name(), command.Scope.Environment, keys)
+		if err != nil {
+			return fmt.Errorf("load base authority: %w", err)
+		}
+		rules, err := transaction.LoadOverlayRules(ctx, bundle.Definition.Name(), command.Scope, keys)
+		if err != nil {
+			return fmt.Errorf("load overlay rules: %w", err)
+		}
+		baseRecords := make([]catalog.ConfigurationRecord, 0, len(authority.Records))
+		for _, record := range authority.Records {
+			if record != nil {
+				baseRecords = append(baseRecords, *record)
+			}
+		}
+		effectiveRecords, err := overlay.Evaluate(overlay.Query{
+			Collection: bundle.Definition.Name(),
+			Scope:      overlay.Scope{Region: command.Scope.Region, Environment: command.Scope.Environment, Stage: command.Scope.Stage},
+		}, baseRecords, rules)
+		if err != nil {
+			return fmt.Errorf("evaluate current scope: %w", err)
+		}
+		effectiveByKey := make(map[string]*catalog.ConfigurationRecord, len(effectiveRecords))
+		for index := range effectiveRecords {
+			record := effectiveRecords[index]
+			effectiveByKey[record.RecordKey] = &record
+		}
+
+		itemSpecs := make([]release.OverlayFinalItemSpec, len(canonical))
+		for index, draft := range canonical {
+			actualBase := authority.Records[keys[index]]
+			actualEffective := effectiveByKey[keys[index]]
+			if authority.CollectionRevision != draft.expectedCollectionRevision || !sameRecordData(actualBase, draft.baseBefore) || !sameRecordData(actualEffective, draft.effectiveBefore) {
+				return fmt.Errorf("%w: item %d page authority is stale", release.ErrAborted, index)
+			}
+			actualRecordRevision := catalog.ConfigRevision(0)
+			if actualBase != nil {
+				actualRecordRevision = actualBase.ConfigRevision
+			}
+			if actualRecordRevision != draft.expectedRecordRevision {
+				return fmt.Errorf("%w: item %d base revision is %d, expected %d", release.ErrAborted, index, actualRecordRevision, draft.expectedRecordRevision)
+			}
+			if !validEffectiveTransition(draft.action, actualBase, actualEffective, draft.after) {
+				return fmt.Errorf("%w: item %d transition is invalid for %s", release.ErrInvalid, index, draft.action)
+			}
+			itemSpecs[index] = release.OverlayFinalItemSpec{
+				ID: service.ids.NewID(), Action: draft.action, BaseBefore: actualBase, EffectiveBefore: actualEffective, After: draft.after,
+				ExpectedRecordRevision: draft.expectedRecordRevision, ExpectedCollectionRevision: draft.expectedCollectionRevision,
+			}
+		}
+		now := service.clock.Now().UTC()
+		order, err := release.NewOverlayFinalOrder(release.OverlayFinalOrderSpec{
+			ID: service.ids.NewID(), ReleaseNumber: service.ids.NewReleaseNumber(now), IdempotencyKey: command.IdempotencyKey,
+			ModelCode: command.ModelCode, TemplateCode: bundle.Template.Code, TemplateVersion: bundle.Template.Version,
+			ReleaseTypeCode: bundle.Template.ReleaseTypeCode, RequestDigest: requestDigest, Scope: command.Scope,
+			CreatedBy: command.Actor, CreatedAt: now, Items: itemSpecs, Template: bundle.Template.Definition,
+		})
+		if err != nil {
+			return err
+		}
+		if err := transaction.InsertOrder(ctx, order); err != nil {
+			return fmt.Errorf("insert release order: %w", err)
+		}
+		created = order
+		return nil
+	})
+	if err != nil {
+		return OrderView{}, err
+	}
+	if replayed != nil {
+		return *replayed, nil
+	}
+	return project(created), nil
+}
+
+func canonicalOptionalRecord(definition catalog.CollectionDefinition, environment string, data map[string]string) (*catalog.ConfigurationRecord, error) {
+	if data == nil {
+		return nil, nil
+	}
+	record, err := definition.NewRecord(environment, data)
+	if err != nil {
+		return nil, err
+	}
+	return &record, nil
+}
+
+func sameRecordData(actual, submitted *catalog.ConfigurationRecord) bool {
+	if actual == nil || submitted == nil {
+		return actual == nil && submitted == nil
+	}
+	return actual.RecordKey == submitted.RecordKey && maps.Equal(actual.Data, submitted.Data)
+}
+
+func validEffectiveTransition(action release.ChangeAction, base, effective, after *catalog.ConfigurationRecord) bool {
+	switch action {
+	case release.ChangeAdd:
+		return base == nil && effective == nil && after != nil
+	case release.ChangeModify:
+		return base != nil && effective != nil && after != nil
+	case release.ChangeDelete:
+		return base != nil && effective != nil && after == nil
+	default:
+		return false
+	}
+}
+
+func normalizedReleaseDigest(command CreateReleaseCommand, drafts []canonicalReleaseDraft) (string, error) {
+	type digestItem struct {
+		Action                     release.ChangeAction         `json:"action"`
+		BaseBefore                 *catalog.ConfigurationRecord `json:"baseBefore"`
+		EffectiveBefore            *catalog.ConfigurationRecord `json:"effectiveBefore"`
+		After                      *catalog.ConfigurationRecord `json:"after"`
+		ExpectedRecordRevision     catalog.ConfigRevision       `json:"expectedRecordRevision"`
+		ExpectedCollectionRevision catalog.ConfigRevision       `json:"expectedCollectionRevision"`
+	}
+	items := make([]digestItem, len(drafts))
+	for index, draft := range drafts {
+		items[index] = digestItem{
+			Action: draft.action, BaseBefore: draft.baseBefore, EffectiveBefore: draft.effectiveBefore, After: draft.after,
+			ExpectedRecordRevision: draft.expectedRecordRevision, ExpectedCollectionRevision: draft.expectedCollectionRevision,
+		}
+	}
+	payload := struct {
+		Model       string        `json:"model"`
+		ReleaseType string        `json:"releaseType"`
+		Scope       release.Scope `json:"scope"`
+		Items       any           `json:"items"`
+	}{Model: command.ModelCode, ReleaseType: command.ReleaseTypeCode, Scope: command.Scope, Items: items}
+	encoded, err := json.Marshal(payload)
+	if err != nil {
+		return "", fmt.Errorf("normalize create release request: %w", err)
+	}
+	sum := sha256.Sum256(encoded)
+	return hex.EncodeToString(sum[:]), nil
+}
+
 func normalizedCreateDigest(command CreateBaseFinalCommand, records []catalog.ConfigurationRecord) (string, error) {
 	type digestItem struct {
 		RecordKey                  string                 `json:"recordKey"`
@@ -352,6 +595,22 @@ func (service *Service) Act(ctx context.Context, command ActCommand) (OrderView,
 				if err := transaction.ApplyBaseEffect(ctx, order.ID(), effect, revision); err != nil {
 					return fmt.Errorf("apply base effect: %w", err)
 				}
+			case release.StepOverlayApply:
+				authority, err := loadOverlayAuthority(ctx, transaction, order)
+				if err != nil {
+					return err
+				}
+				revision, err := transaction.AllocateConfigRevision(ctx)
+				if err != nil {
+					return fmt.Errorf("allocate config revision: %w", err)
+				}
+				effect, err := order.ExecuteOverlay(authority, revision, command.Actor, now)
+				if err != nil {
+					return err
+				}
+				if err := transaction.ApplyOverlayEffect(ctx, order.ID(), effect); err != nil {
+					return fmt.Errorf("apply overlay effect: %w", err)
+				}
 			case release.StepComplete:
 				if err := order.Complete(command.ExpectedRevision, command.Actor, now); err != nil {
 					return err
@@ -366,6 +625,22 @@ func (service *Service) Act(ctx context.Context, command ActCommand) (OrderView,
 		case ActionReject:
 			if err := order.RejectManualReview(command.ExpectedRevision, release.Principal{Subject: command.Actor, Roles: command.Roles}, command.Comment, now); err != nil {
 				return err
+			}
+		case ActionRollback:
+			authority, err := loadOverlayAuthority(ctx, transaction, order)
+			if err != nil {
+				return err
+			}
+			revision, err := transaction.AllocateConfigRevision(ctx)
+			if err != nil {
+				return fmt.Errorf("allocate config revision: %w", err)
+			}
+			effect, err := order.RollbackOverlay(command.ExpectedRevision, authority.CollectionRevision, revision, command.Actor, now)
+			if err != nil {
+				return err
+			}
+			if err := transaction.ApplyOverlayEffect(ctx, order.ID(), effect); err != nil {
+				return fmt.Errorf("apply overlay compensation: %w", err)
 			}
 		default:
 			return fmt.Errorf("%w: unsupported action %q", release.ErrInvalid, command.Action)
@@ -386,6 +661,30 @@ func (service *Service) Act(ctx context.Context, command ActCommand) (OrderView,
 		return OrderView{}, err
 	}
 	return result, nil
+}
+
+func loadOverlayAuthority(ctx context.Context, transaction Transaction, order *release.Order) (release.OverlayAuthority, error) {
+	items := order.Items()
+	keys := make([]string, len(items))
+	for index, item := range items {
+		keys[index] = item.RecordKey
+	}
+	base, err := transaction.LoadBaseAuthority(ctx, items[0].Collection, order.Scope().Environment, keys)
+	if err != nil {
+		return release.OverlayAuthority{}, fmt.Errorf("load base authority: %w", err)
+	}
+	rules, err := transaction.LoadOverlayRules(ctx, items[0].Collection, order.Scope(), keys)
+	if err != nil {
+		return release.OverlayAuthority{}, fmt.Errorf("load overlay rules: %w", err)
+	}
+	exact := make(map[string]*overlay.Rule, len(keys))
+	for index := range rules {
+		rule := rules[index]
+		if rule.Scope.Stage == order.Scope().Stage {
+			exact[rule.RecordKey] = &rule
+		}
+	}
+	return release.OverlayAuthority{CollectionRevision: base.CollectionRevision, BaseRecords: base.Records, Rules: exact}, nil
 }
 
 func normalizedActionDigest(command ActCommand) (string, error) {
@@ -460,7 +759,8 @@ func applyCapabilities(view *OrderView) {
 		view.CanReject = true
 	case view.CurrentStepStatus == release.StepApproved || view.CurrentStepStatus == release.StepExecuted:
 		view.CanAdvance = view.CurrentStep != release.StepComplete
-	case (view.CurrentStep == release.StepBaseApply || view.CurrentStep == release.StepComplete) && view.CurrentStepStatus == release.StepPending:
+		view.CanRollback = view.CurrentStep == release.StepOverlayApply && view.CurrentStepStatus == release.StepExecuted
+	case (view.CurrentStep == release.StepBaseApply || view.CurrentStep == release.StepOverlayApply || view.CurrentStep == release.StepComplete) && view.CurrentStepStatus == release.StepPending:
 		view.CanExecute = true
 	}
 }
