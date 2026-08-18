@@ -82,7 +82,7 @@ func TestRealMySQLPollConvergesWithoutHintOrWatch(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := releaseService.Act(ctx, application.ActCommand{OrderID: created.ID, ActionRequestID: "30000000-0000-4000-8000-000000000001", ExpectedRevision: 1, ExpectedCurrentStep: release.StepBaseApply, Action: application.ActionExecute, Actor: "actor-poll"}); err != nil {
+	if _, err := releaseService.Act(ctx, application.ActCommand{OrderID: created.ID, ActionRequestID: "30000000-0000-4000-8000-000000000001", ExpectedRevision: 1, ExpectedCurrentStep: "base-apply", Action: application.ActionExecute, Actor: "actor-poll"}); err != nil {
 		t.Fatal(err)
 	}
 	definition, _ := manager.Current().Definition("payment_routes")
@@ -239,7 +239,7 @@ func TestRealMySQLReleaseConcurrencyAndIdempotency(t *testing.T) {
 		t.Fatalf("changed create replay = %v", err)
 	}
 
-	action := application.ActCommand{OrderID: created.ID, ActionRequestID: "action-visa", ExpectedRevision: 1, ExpectedCurrentStep: release.StepBaseApply, Action: application.ActionExecute, Actor: "actor"}
+	action := application.ActCommand{OrderID: created.ID, ActionRequestID: "action-visa", ExpectedRevision: 1, ExpectedCurrentStep: "base-apply", Action: application.ActionExecute, Actor: "actor"}
 	type actionResult struct {
 		view application.OrderView
 		err  error
@@ -267,7 +267,7 @@ func TestRealMySQLReleaseConcurrencyAndIdempotency(t *testing.T) {
 			t.Fatalf("action results differ: %+v and %+v", first, result.view)
 		}
 	}
-	if _, err := service.Act(ctx, application.ActCommand{OrderID: created.ID, ActionRequestID: "new-stale-action", ExpectedRevision: 1, ExpectedCurrentStep: release.StepBaseApply, Action: application.ActionExecute, Actor: "actor"}); !errors.Is(err, release.ErrAborted) {
+	if _, err := service.Act(ctx, application.ActCommand{OrderID: created.ID, ActionRequestID: "new-stale-action", ExpectedRevision: 1, ExpectedCurrentStep: "base-apply", Action: application.ActionExecute, Actor: "actor"}); !errors.Is(err, release.ErrAborted) {
 		t.Fatalf("new stale action = %v", err)
 	}
 
@@ -313,6 +313,102 @@ func TestRealMySQLReleaseConcurrencyAndIdempotency(t *testing.T) {
 	if replayResults[0].err != nil || replayResults[1].err != nil || replayResults[0].view.ID != replayResults[1].view.ID {
 		t.Fatalf("concurrent create replay = %+v", replayResults)
 	}
+}
+
+func TestRealMySQLManualApprovalJourney(t *testing.T) {
+	dsn := isolatedDatabase(t)
+	ctx := context.Background()
+	database, err := platformmysql.Open(ctx, platformmysql.Config{DSN: dsn, MaxOpenConns: 4, MaxIdleConns: 2, ConnMaxLifetime: time.Minute, ConnMaxIdleTime: time.Minute})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = database.Close() })
+	raw, err := sql.Open("mysql", dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer raw.Close()
+	if _, err := raw.Exec(`
+		INSERT INTO release_templates (
+			code, version, model_code, release_type_code, active_slot, final_effect,
+			template, created_at, created_by
+		) VALUES (
+			'approval-final', 1, 'payment-route-admin', 'approval', 'A', 'BASE_FINAL',
+			JSON_OBJECT('steps', JSON_ARRAY(
+				JSON_OBJECT('code', 'review', 'type', 'MANUAL_REVIEW', 'requiredRoles', JSON_ARRAY('RELEASE_APPROVER'), 'params', JSON_OBJECT('selfApprovalPolicy', 'DENY_PRODUCTION')),
+				JSON_OBJECT('code', 'apply', 'type', 'BASE_APPLY', 'params', JSON_OBJECT('cleanupScopeOverlay', TRUE)),
+				JSON_OBJECT('code', 'done', 'type', 'COMPLETE', 'params', JSON_OBJECT())
+			)), UTC_TIMESTAMP(6), 'seed'
+		)
+	`); err != nil {
+		t.Fatal(err)
+	}
+
+	clock := fixedClock{now: time.Date(2026, 8, 19, 11, 0, 0, 0, time.UTC)}
+	store, err := mysqlstore.New(database)
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := application.NewService(store, &numberedIDs{next: 900, releaseNumber: "REL-20260819-0900"}, clock)
+	created, err := service.CreateBaseFinal(ctx, application.CreateBaseFinalCommand{
+		IdempotencyKey: "approval-create", ModelCode: "payment-route-admin", ReleaseTypeCode: "approval",
+		Scope: release.Scope{Region: "cn", Environment: "production"}, Actor: "creator@example.com",
+		Items: []application.AddDraft{{Data: map[string]string{"route_code": "approval-route", "priority": "1"}, ExpectedCollectionRevision: 7}},
+	})
+	if err != nil || created.CurrentStep != release.StepManualReview || created.CurrentStepStatus != release.StepPending || !created.CanExecute {
+		t.Fatalf("create = %+v, %v", created, err)
+	}
+
+	submitted, err := service.Act(ctx, application.ActCommand{
+		OrderID: created.ID, ActionRequestID: "approval-submit", ExpectedRevision: 1,
+		ExpectedCurrentStep: "review", Action: application.ActionExecute, Actor: "creator@example.com",
+	})
+	if err != nil || submitted.Revision != 2 || !submitted.CanApprove || !submitted.CanReject {
+		t.Fatalf("submit = %+v, %v", submitted, err)
+	}
+	if _, err := service.Act(ctx, application.ActCommand{
+		OrderID: created.ID, ActionRequestID: "approval-self", ExpectedRevision: 2,
+		ExpectedCurrentStep: "review", Action: application.ActionApprove,
+		Actor: "creator@example.com", Roles: []string{"RELEASE_APPROVER"},
+	}); !errors.Is(err, release.ErrForbidden) {
+		t.Fatalf("self approve = %v", err)
+	}
+	assertCount(t, raw, `SELECT COUNT(*) FROM release_operation_logs WHERE release_order_id = '`+created.ID+`'`, 1)
+
+	approveCommand := application.ActCommand{
+		OrderID: created.ID, ActionRequestID: "approval-approve", ExpectedRevision: 2,
+		ExpectedCurrentStep: "review", Action: application.ActionApprove,
+		Actor: "approver@example.com", Roles: []string{"RELEASE_APPROVER"}, Comment: "reviewed",
+	}
+	approved, err := service.Act(ctx, approveCommand)
+	if err != nil || approved.Revision != 3 || !approved.CanAdvance {
+		t.Fatalf("approve = %+v, %v", approved, err)
+	}
+	if replayed, err := service.Act(ctx, approveCommand); err != nil || replayed != approved {
+		t.Fatalf("approve replay = %+v, %v; want %+v", replayed, err, approved)
+	}
+
+	advanced, err := service.Act(ctx, application.ActCommand{OrderID: created.ID, ActionRequestID: "approval-advance-review", ExpectedRevision: 3, ExpectedCurrentStep: "review", Action: application.ActionAdvance, Actor: "operator@example.com"})
+	if err != nil || advanced.CurrentStep != release.StepBaseApply || advanced.Revision != 4 || !advanced.CanExecute {
+		t.Fatalf("advance review = %+v, %v", advanced, err)
+	}
+	applied, err := service.Act(ctx, application.ActCommand{OrderID: created.ID, ActionRequestID: "approval-apply", ExpectedRevision: 4, ExpectedCurrentStep: "apply", Action: application.ActionExecute, Actor: "operator@example.com"})
+	if err != nil || applied.Revision != 5 || !applied.CanAdvance {
+		t.Fatalf("apply = %+v, %v", applied, err)
+	}
+	advanced, err = service.Act(ctx, application.ActCommand{OrderID: created.ID, ActionRequestID: "approval-advance-apply", ExpectedRevision: 5, ExpectedCurrentStep: "apply", Action: application.ActionAdvance, Actor: "operator@example.com"})
+	if err != nil || advanced.CurrentStep != release.StepComplete || advanced.Revision != 6 || !advanced.CanExecute {
+		t.Fatalf("advance apply = %+v, %v", advanced, err)
+	}
+	completed, err := service.Act(ctx, application.ActCommand{OrderID: created.ID, ActionRequestID: "approval-complete", ExpectedRevision: 6, ExpectedCurrentStep: "done", Action: application.ActionExecute, Actor: "operator@example.com"})
+	if err != nil || completed.Status != release.OrderSucceeded || completed.Revision != 7 || completed.CanExecute || completed.CanAdvance {
+		t.Fatalf("complete = %+v, %v", completed, err)
+	}
+
+	assertCount(t, raw, `SELECT COUNT(*) FROM release_operation_logs WHERE release_order_id = '`+created.ID+`'`, 6)
+	assertCount(t, raw, `SELECT COUNT(*) FROM release_action_requests WHERE release_order_id = '`+created.ID+`'`, 6)
+	assertCount(t, raw, `SELECT COUNT(*) FROM configuration_records WHERE environment = 'production'`, 1)
+	assertCount(t, raw, `SELECT COUNT(*) FROM release_step_states WHERE release_order_id = '`+created.ID+`' AND step_code = 'review' AND status = 'APPROVED' AND JSON_UNQUOTE(JSON_EXTRACT(approval, '$.status')) = 'APPROVED'`, 1)
 }
 
 func TestRealMySQLHTTPWalkingSkeleton(t *testing.T) {
@@ -372,9 +468,9 @@ func TestRealMySQLHTTPWalkingSkeleton(t *testing.T) {
 		id, action, step string
 		revision         uint64
 	}{
-		{"018fb4a7-b751-7690-a20b-6266d78a024a", "EXECUTE", "BASE_APPLY", 1},
-		{"018fb4a7-be8a-706d-b953-967f6f92c14a", "ADVANCE", "BASE_APPLY", 2},
-		{"018fb4a7-c5d0-749e-b977-ac6be1f2bd65", "EXECUTE", "COMPLETE", 3},
+		{"018fb4a7-b751-7690-a20b-6266d78a024a", "EXECUTE", "base-apply", 1},
+		{"018fb4a7-be8a-706d-b953-967f6f92c14a", "ADVANCE", "base-apply", 2},
+		{"018fb4a7-c5d0-749e-b977-ac6be1f2bd65", "EXECUTE", "complete", 3},
 	}
 	for _, action := range actions {
 		response := postJSON(t, handler, "/api/v1/releases/"+detail.Order.ID+"/actions", action.id, map[string]any{"action": action.action, "expectedOrderRevision": action.revision, "expectedCurrentStep": action.step})
@@ -438,14 +534,14 @@ func TestRealMySQLBaseFinalTransaction(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateBaseFinal: %v", err)
 	}
-	if _, err := service.Act(ctx, application.ActCommand{OrderID: created.ID, ActionRequestID: "018fb4a7-7c43-7de2-bad4-5ea3fc262630", ExpectedRevision: 1, ExpectedCurrentStep: release.StepBaseApply, Action: application.ActionExecute, Actor: "operator@example.com"}); err != nil {
+	if _, err := service.Act(ctx, application.ActCommand{OrderID: created.ID, ActionRequestID: "018fb4a7-7c43-7de2-bad4-5ea3fc262630", ExpectedRevision: 1, ExpectedCurrentStep: "base-apply", Action: application.ActionExecute, Actor: "operator@example.com"}); err != nil {
 		t.Fatalf("execute: %v", err)
 	}
-	advanced, err := service.Act(ctx, application.ActCommand{OrderID: created.ID, ActionRequestID: "018fb4a7-83c8-73aa-924d-9b57558d3200", ExpectedRevision: 2, ExpectedCurrentStep: release.StepBaseApply, Action: application.ActionAdvance, Actor: "operator@example.com"})
+	advanced, err := service.Act(ctx, application.ActCommand{OrderID: created.ID, ActionRequestID: "018fb4a7-83c8-73aa-924d-9b57558d3200", ExpectedRevision: 2, ExpectedCurrentStep: "base-apply", Action: application.ActionAdvance, Actor: "operator@example.com"})
 	if err != nil {
 		t.Fatalf("advance: %v", err)
 	}
-	completed, err := service.Act(ctx, application.ActCommand{OrderID: created.ID, ActionRequestID: "018fb4a7-8a7e-786b-a60d-8d285f483a1a", ExpectedRevision: advanced.Revision, ExpectedCurrentStep: release.StepComplete, Action: application.ActionExecute, Actor: "operator@example.com"})
+	completed, err := service.Act(ctx, application.ActCommand{OrderID: created.ID, ActionRequestID: "018fb4a7-8a7e-786b-a60d-8d285f483a1a", ExpectedRevision: advanced.Revision, ExpectedCurrentStep: "complete", Action: application.ActionExecute, Actor: "operator@example.com"})
 	if err != nil {
 		t.Fatalf("complete: %v", err)
 	}
@@ -462,7 +558,8 @@ func TestRealMySQLBaseFinalTransaction(t *testing.T) {
 	assertCount(t, db, `SELECT COUNT(*) FROM configuration_records WHERE environment = 'staging'`, 0)
 	assertCount(t, db, `SELECT COUNT(*) FROM configuration_change_log`, 1)
 	assertCount(t, db, `SELECT COUNT(*) FROM outbox_events WHERE status = 'PENDING'`, 1)
-	assertCount(t, db, `SELECT COUNT(*) FROM audit_records`, 2)
+	assertCount(t, db, `SELECT COUNT(*) FROM audit_records`, 5)
+	assertCount(t, db, `SELECT COUNT(*) FROM release_operation_logs`, 3)
 	var productionRevision, stagingRevision uint64
 	if err := db.QueryRow(`SELECT config_revision FROM configuration_versions WHERE collection_name = 'payment_routes' AND environment = 'production'`).Scan(&productionRevision); err != nil {
 		t.Fatal(err)
@@ -592,7 +689,7 @@ func seedCatalog(t *testing.T, db *sql.DB) {
 	if _, err := db.Exec(`INSERT INTO configuration_models (code, name, collection_name, definition, enabled, config_revision, created_at, created_by, updated_at, updated_by) VALUES ('payment-route-admin', 'Payment routes', 'payment_routes', ?, TRUE, 2, ?, 'seed', ?, 'seed')`, modelJSON, now, now); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.Exec(`INSERT INTO release_templates (code, version, model_code, release_type_code, active_slot, final_effect, template, created_at, created_by) VALUES ('base-final', 1, 'payment-route-admin', 'direct', 'A', 'BASE_FINAL', JSON_OBJECT('steps', JSON_ARRAY('BASE_APPLY', 'COMPLETE')), ?, 'seed')`, now); err != nil {
+	if _, err := db.Exec(`INSERT INTO release_templates (code, version, model_code, release_type_code, active_slot, final_effect, template, created_at, created_by) VALUES ('base-final', 1, 'payment-route-admin', 'direct', 'A', 'BASE_FINAL', JSON_OBJECT('steps', JSON_ARRAY(JSON_OBJECT('code', 'base-apply', 'type', 'BASE_APPLY', 'params', JSON_OBJECT('cleanupScopeOverlay', TRUE)), JSON_OBJECT('code', 'complete', 'type', 'COMPLETE', 'params', JSON_OBJECT()))), ?, 'seed')`, now); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := db.Exec(`INSERT INTO configuration_subscriptions (id, consumer_id, collection_name, index_name, index_fields, cardinality, enabled, config_revision, created_at, created_by, updated_at, updated_by) VALUES ('018fb4a7-91a7-70d7-8cd2-18820702cd67', 'payment-service', 'payment_routes', 'by_route_code', JSON_ARRAY('route_code'), 'ONE_TO_ONE', TRUE, 3, ?, 'seed', ?, 'seed')`, now, now); err != nil {

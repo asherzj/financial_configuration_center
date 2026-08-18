@@ -44,7 +44,7 @@ func TestBaseFinalApplicationIsTheOnlyRecordWritePath(t *testing.T) {
 		OrderID:             created.ID,
 		ActionRequestID:     "execute-request-1",
 		ExpectedRevision:    1,
-		ExpectedCurrentStep: release.StepBaseApply,
+		ExpectedCurrentStep: "base-apply",
 		Action:              application.ActionExecute,
 		Actor:               "operator@example.com",
 	})
@@ -59,14 +59,14 @@ func TestBaseFinalApplicationIsTheOnlyRecordWritePath(t *testing.T) {
 	}
 
 	advanced, err := service.Act(context.Background(), application.ActCommand{
-		OrderID: created.ID, ActionRequestID: "advance-request-1", ExpectedRevision: 2, ExpectedCurrentStep: release.StepBaseApply,
+		OrderID: created.ID, ActionRequestID: "advance-request-1", ExpectedRevision: 2, ExpectedCurrentStep: "base-apply",
 		Action: application.ActionAdvance, Actor: "operator@example.com",
 	})
 	if err != nil {
 		t.Fatalf("advance: %v", err)
 	}
 	completed, err := service.Act(context.Background(), application.ActCommand{
-		OrderID: created.ID, ActionRequestID: "complete-request-1", ExpectedRevision: advanced.Revision, ExpectedCurrentStep: release.StepComplete,
+		OrderID: created.ID, ActionRequestID: "complete-request-1", ExpectedRevision: advanced.Revision, ExpectedCurrentStep: "complete",
 		Action: application.ActionExecute, Actor: "operator@example.com",
 	})
 	if err != nil {
@@ -122,7 +122,7 @@ func TestCreateAndActionRequestsAreReplaySafe(t *testing.T) {
 		t.Fatalf("changed request with reused create key = %v, want ErrIdempotencyKeyReused", err)
 	}
 
-	action := application.ActCommand{OrderID: created.ID, ActionRequestID: "action-request", ExpectedRevision: 1, ExpectedCurrentStep: release.StepBaseApply, Action: application.ActionExecute, Actor: "actor"}
+	action := application.ActCommand{OrderID: created.ID, ActionRequestID: "action-request", ExpectedRevision: 1, ExpectedCurrentStep: "base-apply", Action: application.ActionExecute, Actor: "actor"}
 	executed, err := service.Act(context.Background(), action)
 	if err != nil {
 		t.Fatal(err)
@@ -143,6 +143,53 @@ func TestCreateAndActionRequestsAreReplaySafe(t *testing.T) {
 	action.Action = application.ActionExecute
 	if _, err := service.Act(context.Background(), action); !errors.Is(err, release.ErrAborted) {
 		t.Fatalf("new action with stale authority = %v, want ErrAborted", err)
+	}
+}
+
+func TestManualApprovalApplicationJourney(t *testing.T) {
+	t.Parallel()
+	definition, model := compiledCatalog(t)
+	store := newFakeUnitOfWork(definition, model)
+	compiled, err := release.CompileTemplate([]byte(`{"steps":[
+		{"code":"review","type":"MANUAL_REVIEW","requiredRoles":["RELEASE_APPROVER"],"params":{"selfApprovalPolicy":"DENY_PRODUCTION"}},
+		{"code":"apply","type":"BASE_APPLY","params":{"cleanupScopeOverlay":true}},
+		{"code":"complete","type":"COMPLETE","params":{}}
+	]}`), release.FinalEffectBase)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store.template = application.TemplateRef{Code: "approval", Version: 1, ReleaseTypeCode: "approval", Definition: compiled}
+	service := application.NewService(store, &sequenceIDs{values: []string{"order", "item"}}, fixedClock{now: time.Now().UTC()})
+	created, err := service.CreateBaseFinal(context.Background(), application.CreateBaseFinalCommand{
+		IdempotencyKey: "create", ModelCode: model.Code(), ReleaseTypeCode: "approval", Scope: release.Scope{Region: "cn", Environment: "production"}, Actor: "creator",
+		Items: []application.AddDraft{{Data: map[string]string{"route_code": "visa", "priority": "1"}, ExpectedCollectionRevision: 7}},
+	})
+	if err != nil || created.CurrentStep != release.StepManualReview {
+		t.Fatalf("create = %+v, %v", created, err)
+	}
+	if !created.CanExecute || created.CanApprove || created.CanReject || created.CanAdvance {
+		t.Fatalf("create capabilities = %+v", created)
+	}
+	acted, err := service.Act(context.Background(), application.ActCommand{OrderID: created.ID, ActionRequestID: "submit", ExpectedRevision: 1, ExpectedCurrentStep: "review", Action: application.ActionExecute, Actor: "creator"})
+	if err != nil || acted.Revision != 2 {
+		t.Fatalf("submit = %+v, %v", acted, err)
+	}
+	if acted.CanExecute || !acted.CanApprove || !acted.CanReject || acted.CanAdvance {
+		t.Fatalf("review capabilities = %+v", acted)
+	}
+	if _, err := service.Act(context.Background(), application.ActCommand{OrderID: created.ID, ActionRequestID: "self-approve", ExpectedRevision: 2, ExpectedCurrentStep: "review", Action: application.ActionApprove, Actor: "creator", Roles: []string{"RELEASE_APPROVER"}}); !errors.Is(err, release.ErrForbidden) {
+		t.Fatalf("self approve = %v", err)
+	}
+	approved, err := service.Act(context.Background(), application.ActCommand{OrderID: created.ID, ActionRequestID: "approve", ExpectedRevision: 2, ExpectedCurrentStep: "review", Action: application.ActionApprove, Actor: "approver", Roles: []string{"RELEASE_APPROVER"}, Comment: "approved"})
+	if err != nil || approved.Revision != 3 {
+		t.Fatalf("approve = %+v, %v", approved, err)
+	}
+	if !approved.CanAdvance || approved.CanApprove || approved.CanReject {
+		t.Fatalf("approved capabilities = %+v", approved)
+	}
+	advanced, err := service.Act(context.Background(), application.ActCommand{OrderID: created.ID, ActionRequestID: "advance-review", ExpectedRevision: 3, ExpectedCurrentStep: "review", Action: application.ActionAdvance, Actor: "operator"})
+	if err != nil || advanced.CurrentStep != release.StepBaseApply {
+		t.Fatalf("advance review = %+v, %v", advanced, err)
 	}
 }
 
@@ -171,6 +218,7 @@ type fakeUnitOfWork struct {
 	orders        map[string]*release.Order
 	createResults map[string]application.StoredRequestResult
 	actionResults map[string]application.StoredRequestResult
+	template      application.TemplateRef
 	global        catalog.ConfigRevision
 	outboxEvents  int
 }
@@ -197,11 +245,15 @@ func (store *fakeUnitOfWork) WithinTransaction(ctx context.Context, work func(ap
 
 type fakeTransaction fakeUnitOfWork
 
-func (transaction *fakeTransaction) LoadCatalog(_ context.Context, modelCode string) (application.CatalogBundle, error) {
+func (transaction *fakeTransaction) LoadCatalog(_ context.Context, modelCode, releaseTypeCode string) (application.CatalogBundle, error) {
 	if modelCode != transaction.model.Code() {
 		return application.CatalogBundle{}, fmt.Errorf("model not found")
 	}
-	return application.CatalogBundle{Definition: transaction.definition, Model: transaction.model, Template: application.TemplateRef{Code: "base-final", Version: 1, ReleaseTypeCode: "direct"}}, nil
+	template := transaction.template
+	if template.Code == "" {
+		template = application.TemplateRef{Code: "base-final", Version: 1, ReleaseTypeCode: releaseTypeCode}
+	}
+	return application.CatalogBundle{Definition: transaction.definition, Model: transaction.model, Template: template}, nil
 }
 
 func (transaction *fakeTransaction) LoadBaseAuthority(_ context.Context, collection, environment string, recordKeys []string) (release.BaseAuthority, error) {
@@ -228,7 +280,14 @@ func (transaction *fakeTransaction) InsertOrder(_ context.Context, order *releas
 	}
 	transaction.orders[order.ID()] = order.Clone()
 	state := order.State()
-	transaction.createResults[state.CreatedBy+"\x00"+state.IdempotencyKey] = application.StoredRequestResult{RequestDigest: state.RequestDigest, Result: application.OrderView{ID: state.ID, Status: state.Status, CurrentStep: state.Steps[state.CurrentStep].Type, Revision: state.Revision}}
+	step := state.Steps[state.CurrentStep]
+	transaction.createResults[state.CreatedBy+"\x00"+state.IdempotencyKey] = application.StoredRequestResult{
+		RequestDigest: state.RequestDigest,
+		Result: application.OrderView{
+			ID: state.ID, Status: state.Status, CurrentStepCode: step.Code, CurrentStep: step.Type, CurrentStepStatus: step.Status,
+			Revision: state.Revision, CanExecute: step.Status == release.StepPending,
+		},
+	}
 	return nil
 }
 
@@ -264,6 +323,10 @@ func (transaction *fakeTransaction) ApplyBaseEffect(_ context.Context, orderID s
 
 func (transaction *fakeTransaction) SaveOrder(_ context.Context, order *release.Order) error {
 	transaction.orders[order.ID()] = order.Clone()
+	return nil
+}
+
+func (transaction *fakeTransaction) RecordAction(context.Context, application.ActionRecord) error {
 	return nil
 }
 

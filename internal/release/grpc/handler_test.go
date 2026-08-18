@@ -16,7 +16,7 @@ import (
 func TestReleaseHandlerMapsCreateAndAction(t *testing.T) {
 	t.Parallel()
 
-	commands := &commandStub{create: application.OrderView{ID: "order", Status: release.OrderInProgress, CurrentStep: release.StepBaseApply, Revision: 1}, act: application.OrderView{ID: "order", Status: release.OrderInProgress, CurrentStep: release.StepBaseApply, Revision: 2}}
+	commands := &commandStub{create: application.OrderView{ID: "order", Status: release.OrderInProgress, CurrentStepCode: "base-apply", CurrentStep: release.StepBaseApply, Revision: 1}, act: application.OrderView{ID: "order", Status: release.OrderInProgress, CurrentStepCode: "base-apply", CurrentStep: release.StepBaseApply, Revision: 2}}
 	handler, err := releasegrpc.New(commands, actorResolver{})
 	if err != nil {
 		t.Fatal(err)
@@ -34,13 +34,20 @@ func TestReleaseHandlerMapsCreateAndAction(t *testing.T) {
 	}
 	acted, err := handler.ActOnReleaseOrder(context.Background(), &controlv1.ActOnReleaseOrderRequest{
 		OrderId: "order", ActionRequestId: "action-id", ExpectedOrderRevision: 1,
-		ExpectedCurrentStep: "BASE_APPLY", Action: commonv1.ReleaseAction_RELEASE_ACTION_EXECUTE,
+		ExpectedCurrentStep: "base-apply", Action: commonv1.ReleaseAction_RELEASE_ACTION_EXECUTE,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if acted.Detail.Order.EntityRevision != 2 || commands.lastAct.ExpectedCurrentStep != release.StepBaseApply || commands.lastAct.Action != application.ActionExecute {
+	if acted.Detail.Order.EntityRevision != 2 || commands.lastAct.ExpectedCurrentStep != "base-apply" || commands.lastAct.Action != application.ActionExecute {
 		t.Fatalf("action mapping response=%+v command=%+v", acted, commands.lastAct)
+	}
+	_, err = handler.ActOnReleaseOrder(context.Background(), &controlv1.ActOnReleaseOrderRequest{
+		OrderId: "order", ActionRequestId: "approval-id", ExpectedOrderRevision: 2,
+		ExpectedCurrentStep: "review", Action: commonv1.ReleaseAction_RELEASE_ACTION_APPROVE, Comment: "reviewed",
+	})
+	if err != nil || commands.lastAct.Action != application.ActionApprove || commands.lastAct.Comment != "reviewed" || len(commands.lastAct.Roles) != 1 || commands.lastAct.Roles[0] != "RELEASE_APPROVER" {
+		t.Fatalf("approval command=%+v err=%v", commands.lastAct, err)
 	}
 }
 
@@ -52,7 +59,7 @@ func TestReleaseHandlerMapsIdempotencyConflict(t *testing.T) {
 	}
 	_, err = handler.ActOnReleaseOrder(context.Background(), &controlv1.ActOnReleaseOrderRequest{
 		OrderId: "order", ActionRequestId: "action-id", ExpectedOrderRevision: 1,
-		ExpectedCurrentStep: "BASE_APPLY", Action: commonv1.ReleaseAction_RELEASE_ACTION_EXECUTE,
+		ExpectedCurrentStep: "base-apply", Action: commonv1.ReleaseAction_RELEASE_ACTION_EXECUTE,
 	})
 	if status.Code(err) != codes.AlreadyExists {
 		t.Fatalf("status = %v, want AlreadyExists", err)
@@ -62,6 +69,9 @@ func TestReleaseHandlerMapsIdempotencyConflict(t *testing.T) {
 type actorResolver struct{}
 
 func (actorResolver) Subject(context.Context) (string, error) { return "operator@example.com", nil }
+func (actorResolver) Roles(context.Context) ([]string, error) {
+	return []string{"RELEASE_APPROVER"}, nil
+}
 
 type commandStub struct {
 	create     application.OrderView

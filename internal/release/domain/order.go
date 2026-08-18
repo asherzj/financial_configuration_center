@@ -70,12 +70,12 @@ type Principal struct {
 }
 
 type ApprovalState struct {
-	Status      ApprovalStatus
-	RequestedAt time.Time
-	RequestedBy string
-	DecidedAt   *time.Time
-	DecidedBy   string
-	Comment     string
+	Status      ApprovalStatus `json:"status"`
+	RequestedAt time.Time      `json:"requestedAt"`
+	RequestedBy string         `json:"requestedBy"`
+	DecidedAt   *time.Time     `json:"decidedAt,omitempty"`
+	DecidedBy   string         `json:"decidedBy,omitempty"`
+	Comment     string         `json:"comment,omitempty"`
 }
 
 type ChangeAction string

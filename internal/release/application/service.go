@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -40,7 +41,7 @@ var (
 )
 
 type Transaction interface {
-	LoadCatalog(context.Context, string) (CatalogBundle, error)
+	LoadCatalog(context.Context, string, string) (CatalogBundle, error)
 	LoadBaseAuthority(context.Context, string, string, []string) (release.BaseAuthority, error)
 	FindCreateResult(context.Context, string, string) (StoredRequestResult, bool, error)
 	InsertOrder(context.Context, *release.Order) error
@@ -49,6 +50,7 @@ type Transaction interface {
 	AllocateConfigRevision(context.Context) (catalog.ConfigRevision, error)
 	ApplyBaseEffect(context.Context, string, release.BaseEffect, catalog.ConfigRevision) error
 	SaveOrder(context.Context, *release.Order) error
+	RecordAction(context.Context, ActionRecord) error
 	InsertActionResult(context.Context, string, string, string, OrderView, time.Time) error
 }
 
@@ -62,6 +64,7 @@ type TemplateRef struct {
 	Code            string
 	Version         uint64
 	ReleaseTypeCode string
+	Definition      release.CompiledTemplate
 }
 
 type AddDraft struct {
@@ -71,11 +74,12 @@ type AddDraft struct {
 }
 
 type CreateBaseFinalCommand struct {
-	IdempotencyKey string
-	ModelCode      string
-	Scope          release.Scope
-	Actor          string
-	Items          []AddDraft
+	IdempotencyKey  string
+	ModelCode       string
+	ReleaseTypeCode string
+	Scope           release.Scope
+	Actor           string
+	Items           []AddDraft
 }
 
 type Action string
@@ -83,27 +87,47 @@ type Action string
 const (
 	ActionExecute Action = "EXECUTE"
 	ActionAdvance Action = "ADVANCE"
+	ActionApprove Action = "APPROVE"
+	ActionReject  Action = "REJECT"
 )
 
 type ActCommand struct {
 	OrderID             string
 	ActionRequestID     string
 	ExpectedRevision    release.EntityRevision
-	ExpectedCurrentStep release.StepType
+	ExpectedCurrentStep string
 	Action              Action
 	Actor               string
+	Roles               []string
+	Comment             string
 }
 
 type OrderView struct {
-	ID          string                 `json:"id"`
-	Status      release.OrderStatus    `json:"status"`
-	CurrentStep release.StepType       `json:"currentStep"`
-	Revision    release.EntityRevision `json:"revision"`
+	ID                string                 `json:"id"`
+	Status            release.OrderStatus    `json:"status"`
+	CurrentStepCode   string                 `json:"currentStepCode"`
+	CurrentStep       release.StepType       `json:"currentStep"`
+	CurrentStepStatus release.StepStatus     `json:"currentStepStatus"`
+	Revision          release.EntityRevision `json:"revision"`
+	CanExecute        bool                   `json:"canExecute"`
+	CanAdvance        bool                   `json:"canAdvance"`
+	CanApprove        bool                   `json:"canApprove"`
+	CanReject         bool                   `json:"canReject"`
 }
 
 type StoredRequestResult struct {
 	RequestDigest string
 	Result        OrderView
+}
+
+type ActionRecord struct {
+	OrderID  string
+	StepCode string
+	Action   Action
+	Actor    string
+	Comment  string
+	Scope    release.Scope
+	At       time.Time
 }
 
 // Service is the only application entry point that can cause base
@@ -128,11 +152,14 @@ func (service *Service) CreateBaseFinal(ctx context.Context, command CreateBaseF
 	if len(command.Items) == 0 || len(command.Items) > 500 {
 		return OrderView{}, fmt.Errorf("%w: item count must be 1..500", release.ErrInvalid)
 	}
+	if strings.TrimSpace(command.ReleaseTypeCode) == "" {
+		command.ReleaseTypeCode = "direct"
+	}
 
 	var created *release.Order
 	var replayed *OrderView
 	err := service.withinIdempotentTransaction(ctx, func(transaction Transaction) error {
-		bundle, err := transaction.LoadCatalog(ctx, command.ModelCode)
+		bundle, err := transaction.LoadCatalog(ctx, command.ModelCode, command.ReleaseTypeCode)
 		if err != nil {
 			return fmt.Errorf("load release catalog: %w", err)
 		}
@@ -205,6 +232,7 @@ func (service *Service) CreateBaseFinal(ctx context.Context, command CreateBaseF
 			CreatedBy: command.Actor,
 			CreatedAt: now,
 			Items:     itemSpecs,
+			Template:  bundle.Template.Definition,
 		})
 		if err != nil {
 			return err
@@ -236,10 +264,11 @@ func normalizedCreateDigest(command CreateBaseFinalCommand, records []catalog.Co
 		items[index] = digestItem{RecordKey: record.RecordKey, Data: record.Data, ExpectedRecordRevision: command.Items[index].ExpectedRecordRevision, ExpectedCollectionRevision: command.Items[index].ExpectedCollectionRevision}
 	}
 	payload := struct {
-		Model string        `json:"model"`
-		Scope release.Scope `json:"scope"`
-		Items []digestItem  `json:"items"`
-	}{Model: command.ModelCode, Scope: command.Scope, Items: items}
+		Model       string        `json:"model"`
+		ReleaseType string        `json:"releaseType"`
+		Scope       release.Scope `json:"scope"`
+		Items       []digestItem  `json:"items"`
+	}{Model: command.ModelCode, ReleaseType: command.ReleaseTypeCode, Scope: command.Scope, Items: items}
 	encoded, err := json.Marshal(payload)
 	if err != nil {
 		return "", fmt.Errorf("normalize create release request: %w", err)
@@ -279,9 +308,10 @@ func (service *Service) Act(ctx context.Context, command ActCommand) (OrderView,
 		if order.Revision() != command.ExpectedRevision {
 			return fmt.Errorf("%w: order revision is %d, expected %d", release.ErrAborted, order.Revision(), command.ExpectedRevision)
 		}
-		if order.CurrentStep().Type != command.ExpectedCurrentStep {
-			return fmt.Errorf("%w: current step is %s, expected %s", release.ErrAborted, order.CurrentStep().Type, command.ExpectedCurrentStep)
+		if order.CurrentStep().Code != command.ExpectedCurrentStep {
+			return fmt.Errorf("%w: current step is %s, expected %s", release.ErrAborted, order.CurrentStep().Code, command.ExpectedCurrentStep)
 		}
+		stepBefore := order.CurrentStep()
 		now := service.clock.Now().UTC()
 		switch command.Action {
 		case ActionAdvance:
@@ -290,6 +320,10 @@ func (service *Service) Act(ctx context.Context, command ActCommand) (OrderView,
 			}
 		case ActionExecute:
 			switch order.CurrentStep().Type {
+			case release.StepManualReview:
+				if err := order.ExecuteManualReview(command.ExpectedRevision, command.Actor, now); err != nil {
+					return err
+				}
 			case release.StepBaseApply:
 				items := order.Items()
 				keys := make([]string, len(items))
@@ -318,11 +352,22 @@ func (service *Service) Act(ctx context.Context, command ActCommand) (OrderView,
 			default:
 				return fmt.Errorf("%w: unsupported step %q", release.ErrInvalid, order.CurrentStep().Type)
 			}
+		case ActionApprove:
+			if err := order.ApproveManualReview(command.ExpectedRevision, release.Principal{Subject: command.Actor, Roles: command.Roles}, command.Comment, now); err != nil {
+				return err
+			}
+		case ActionReject:
+			if err := order.RejectManualReview(command.ExpectedRevision, release.Principal{Subject: command.Actor, Roles: command.Roles}, command.Comment, now); err != nil {
+				return err
+			}
 		default:
 			return fmt.Errorf("%w: unsupported action %q", release.ErrInvalid, command.Action)
 		}
 		if err := transaction.SaveOrder(ctx, order); err != nil {
 			return fmt.Errorf("save release order: %w", err)
+		}
+		if err := transaction.RecordAction(ctx, ActionRecord{OrderID: order.ID(), StepCode: stepBefore.Code, Action: command.Action, Actor: command.Actor, Comment: command.Comment, Scope: order.Scope(), At: now}); err != nil {
+			return fmt.Errorf("record release action: %w", err)
 		}
 		result = project(order)
 		if err := transaction.InsertActionResult(ctx, command.OrderID, command.ActionRequestID, requestDigest, result, now); err != nil {
@@ -337,13 +382,17 @@ func (service *Service) Act(ctx context.Context, command ActCommand) (OrderView,
 }
 
 func normalizedActionDigest(command ActCommand) (string, error) {
+	roles := append([]string(nil), command.Roles...)
+	sort.Strings(roles)
 	payload := struct {
 		OrderID             string                 `json:"orderId"`
 		ExpectedRevision    release.EntityRevision `json:"expectedRevision"`
-		ExpectedCurrentStep release.StepType       `json:"expectedCurrentStep"`
+		ExpectedCurrentStep string                 `json:"expectedCurrentStep"`
 		Action              Action                 `json:"action"`
 		Actor               string                 `json:"actor"`
-	}{command.OrderID, command.ExpectedRevision, command.ExpectedCurrentStep, command.Action, command.Actor}
+		Roles               []string               `json:"roles"`
+		Comment             string                 `json:"comment"`
+	}{command.OrderID, command.ExpectedRevision, command.ExpectedCurrentStep, command.Action, command.Actor, roles, command.Comment}
 	encoded, err := json.Marshal(payload)
 	if err != nil {
 		return "", fmt.Errorf("normalize release action request: %w", err)
@@ -381,10 +430,25 @@ func (service *Service) ready() error {
 }
 
 func project(order *release.Order) OrderView {
-	return OrderView{
-		ID:          order.ID(),
-		Status:      order.Status(),
-		CurrentStep: order.CurrentStep().Type,
-		Revision:    order.Revision(),
+	step := order.CurrentStep()
+	view := OrderView{ID: order.ID(), Status: order.Status(), CurrentStepCode: step.Code, CurrentStep: step.Type, CurrentStepStatus: step.Status, Revision: order.Revision()}
+	applyCapabilities(&view)
+	return view
+}
+
+func applyCapabilities(view *OrderView) {
+	if view.Status != release.OrderInProgress {
+		return
+	}
+	switch {
+	case view.CurrentStep == release.StepManualReview && view.CurrentStepStatus == release.StepPending:
+		view.CanExecute = true
+	case view.CurrentStep == release.StepManualReview && view.CurrentStepStatus == release.StepExecuting:
+		view.CanApprove = true
+		view.CanReject = true
+	case view.CurrentStepStatus == release.StepApproved || view.CurrentStepStatus == release.StepExecuted:
+		view.CanAdvance = view.CurrentStep != release.StepComplete
+	case (view.CurrentStep == release.StepBaseApply || view.CurrentStep == release.StepComplete) && view.CurrentStepStatus == release.StepPending:
+		view.CanExecute = true
 	}
 }

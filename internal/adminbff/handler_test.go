@@ -19,8 +19,8 @@ func TestBrowserBaseReleaseJourneyRoutes(t *testing.T) {
 
 	queries := &queryStub{result: pagequery.Result{ModelCode: "model", ModelName: "Model", QueryType: pagequery.TypeAll, PageNumber: 1, PageSize: 20}}
 	releases := &releaseStub{
-		created: application.OrderView{ID: "order-1", Status: release.OrderInProgress, CurrentStep: release.StepBaseApply, Revision: 1},
-		acted:   application.OrderView{ID: "order-1", Status: release.OrderInProgress, CurrentStep: release.StepBaseApply, Revision: 2},
+		created: application.OrderView{ID: "order-1", Status: release.OrderInProgress, CurrentStepCode: "base-apply", CurrentStep: release.StepBaseApply, Revision: 1},
+		acted:   application.OrderView{ID: "order-1", Status: release.OrderInProgress, CurrentStepCode: "base-apply", CurrentStep: release.StepBaseApply, Revision: 2},
 	}
 	handler, err := adminbff.New(queries, releases, authenticator{})
 	if err != nil {
@@ -44,7 +44,7 @@ func TestBrowserBaseReleaseJourneyRoutes(t *testing.T) {
 	}
 
 	actionResponse := serveJSON(t, handler, http.MethodPost, "/api/v1/releases/order-1/actions", "action-id", map[string]any{
-		"action": "EXECUTE", "expectedOrderRevision": 1, "expectedCurrentStep": "BASE_APPLY",
+		"action": "EXECUTE", "expectedOrderRevision": 1, "expectedCurrentStep": "base-apply",
 	})
 	if actionResponse.Code != http.StatusOK || releases.lastAct.OrderID != "order-1" || releases.lastAct.ActionRequestID != "action-id" || releases.lastAct.Action != application.ActionExecute {
 		t.Fatalf("action response=%d command=%+v body=%s", actionResponse.Code, releases.lastAct, actionResponse.Body.String())
@@ -85,20 +85,44 @@ func TestBFFReturnsStableIdempotencyError(t *testing.T) {
 		t.Fatal(err)
 	}
 	response := serveJSON(t, handler, http.MethodPost, "/api/v1/releases/order/actions", "same-id", map[string]any{
-		"action": "EXECUTE", "expectedOrderRevision": 1, "expectedCurrentStep": "BASE_APPLY",
+		"action": "EXECUTE", "expectedOrderRevision": 1, "expectedCurrentStep": "base-apply",
 	})
 	if response.Code != http.StatusConflict || !bytes.Contains(response.Body.Bytes(), []byte(`"code":"IDEMPOTENCY_KEY_REUSED"`)) {
 		t.Fatalf("response = %d %s", response.Code, response.Body.String())
 	}
 }
 
-type authenticator struct{ reject bool }
+func TestBFFMapsManualApprovalRolesAndServerCapabilities(t *testing.T) {
+	t.Parallel()
+	releases := &releaseStub{acted: application.OrderView{
+		ID: "order", Status: release.OrderInProgress, CurrentStepCode: "review", CurrentStep: release.StepManualReview,
+		CurrentStepStatus: release.StepExecuting, Revision: 2, CanApprove: true, CanReject: true,
+	}}
+	handler, err := adminbff.New(&queryStub{}, releases, authenticator{roles: []string{"RELEASE_APPROVER"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	response := serveJSON(t, handler, http.MethodPost, "/api/v1/releases/order/actions", "approval-id", map[string]any{
+		"action": "APPROVE", "expectedOrderRevision": 2, "expectedCurrentStep": "review", "comment": "reviewed",
+	})
+	if response.Code != http.StatusOK || releases.lastAct.Action != application.ActionApprove || releases.lastAct.Comment != "reviewed" || len(releases.lastAct.Roles) != 1 || releases.lastAct.Roles[0] != "RELEASE_APPROVER" {
+		t.Fatalf("response=%d command=%+v body=%s", response.Code, releases.lastAct, response.Body.String())
+	}
+	if !bytes.Contains(response.Body.Bytes(), []byte(`"allowedActions":["APPROVE","REJECT"]`)) || !bytes.Contains(response.Body.Bytes(), []byte(`"currentStep":"review"`)) {
+		t.Fatalf("manual detail = %s", response.Body.String())
+	}
+}
+
+type authenticator struct {
+	reject bool
+	roles  []string
+}
 
 func (authenticator authenticator) Authenticate(*http.Request) (adminbff.Principal, error) {
 	if authenticator.reject {
 		return adminbff.Principal{}, adminbff.ErrUnauthenticated
 	}
-	return adminbff.Principal{Subject: "operator@example.com"}, nil
+	return adminbff.Principal{Subject: "operator@example.com", Roles: append([]string(nil), authenticator.roles...)}, nil
 }
 
 type queryStub struct {

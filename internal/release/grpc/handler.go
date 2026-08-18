@@ -23,6 +23,10 @@ type ActorResolver interface {
 	Subject(context.Context) (string, error)
 }
 
+type RoleResolver interface {
+	Roles(context.Context) ([]string, error)
+}
+
 type Handler struct {
 	commands Commands
 	actors   ActorResolver
@@ -36,8 +40,8 @@ func New(commands Commands, actors ActorResolver) (*Handler, error) {
 }
 
 func (handler *Handler) CreateReleaseOrder(ctx context.Context, request *controlv1.CreateReleaseOrderRequest) (*controlv1.CreateReleaseOrderResponse, error) {
-	if request == nil || request.Scope == nil || request.ReleaseTypeCode != "direct" || len(request.Items) == 0 || request.EffectiveFrom != nil || request.EffectiveUntil != nil {
-		return nil, status.Error(codes.InvalidArgument, "base-only create requires scope, direct release type, and ADD items without a schedule")
+	if request == nil || request.Scope == nil || strings.TrimSpace(request.ReleaseTypeCode) == "" || len(request.Items) == 0 || request.EffectiveFrom != nil || request.EffectiveUntil != nil {
+		return nil, status.Error(codes.InvalidArgument, "base-only create requires scope, release type, and ADD items without a schedule")
 	}
 	actor, err := handler.actors.Subject(ctx)
 	if err != nil || strings.TrimSpace(actor) == "" {
@@ -54,7 +58,7 @@ func (handler *Handler) CreateReleaseOrder(ctx context.Context, request *control
 		}
 	}
 	view, err := handler.commands.CreateBaseFinal(ctx, application.CreateBaseFinalCommand{
-		IdempotencyKey: request.IdempotencyKey, ModelCode: request.ModelCode,
+		IdempotencyKey: request.IdempotencyKey, ModelCode: request.ModelCode, ReleaseTypeCode: request.ReleaseTypeCode,
 		Scope: release.Scope{Region: request.Scope.Region, Environment: request.Scope.Environment, Stage: request.Scope.Stage},
 		Actor: actor, Items: items,
 	})
@@ -78,13 +82,24 @@ func (handler *Handler) ActOnReleaseOrder(ctx context.Context, request *controlv
 		action = application.ActionExecute
 	case commonv1.ReleaseAction_RELEASE_ACTION_ADVANCE:
 		action = application.ActionAdvance
+	case commonv1.ReleaseAction_RELEASE_ACTION_APPROVE:
+		action = application.ActionApprove
+	case commonv1.ReleaseAction_RELEASE_ACTION_REJECT:
+		action = application.ActionReject
 	default:
-		return nil, status.Error(codes.Unimplemented, "only EXECUTE and ADVANCE are implemented in the base-only slice")
+		return nil, status.Error(codes.Unimplemented, "release action is not implemented")
+	}
+	var roles []string
+	if resolver, ok := handler.actors.(RoleResolver); ok {
+		roles, err = resolver.Roles(ctx)
+		if err != nil {
+			return nil, status.Error(codes.PermissionDenied, "actor roles could not be resolved")
+		}
 	}
 	view, err := handler.commands.Act(ctx, application.ActCommand{
 		OrderID: request.OrderId, ActionRequestID: request.ActionRequestId,
 		ExpectedRevision:    release.EntityRevision(request.ExpectedOrderRevision),
-		ExpectedCurrentStep: release.StepType(request.ExpectedCurrentStep), Action: action, Actor: actor,
+		ExpectedCurrentStep: request.ExpectedCurrentStep, Action: action, Actor: actor, Roles: roles, Comment: request.Comment,
 	})
 	if err != nil {
 		return nil, mapError(err)
@@ -105,19 +120,24 @@ func (handler *Handler) CreateCompensatingRelease(context.Context, *controlv1.Cr
 }
 
 func project(view application.OrderView) *controlv1.ReleaseOrderDetail {
-	allowed := make([]commonv1.ReleaseAction, 0, 1)
-	if view.Status == release.OrderInProgress {
-		if view.CurrentStep == release.StepBaseApply && view.Revision > 1 {
-			allowed = append(allowed, commonv1.ReleaseAction_RELEASE_ACTION_ADVANCE)
-		} else {
-			allowed = append(allowed, commonv1.ReleaseAction_RELEASE_ACTION_EXECUTE)
-		}
+	allowed := make([]commonv1.ReleaseAction, 0, 4)
+	if view.CanExecute {
+		allowed = append(allowed, commonv1.ReleaseAction_RELEASE_ACTION_EXECUTE)
+	}
+	if view.CanApprove {
+		allowed = append(allowed, commonv1.ReleaseAction_RELEASE_ACTION_APPROVE)
+	}
+	if view.CanReject {
+		allowed = append(allowed, commonv1.ReleaseAction_RELEASE_ACTION_REJECT)
+	}
+	if view.CanAdvance {
+		allowed = append(allowed, commonv1.ReleaseAction_RELEASE_ACTION_ADVANCE)
 	}
 	return &controlv1.ReleaseOrderDetail{
 		Order: &controlv1.ReleaseOrder{
-			Id: view.ID, Status: toReleaseStatus(view.Status), CurrentStepCode: string(view.CurrentStep), EntityRevision: int64(view.Revision),
+			Id: view.ID, Status: toReleaseStatus(view.Status), CurrentStepCode: view.CurrentStepCode, EntityRevision: int64(view.Revision),
 		},
-		Items: []*controlv1.ReleaseItem{}, Steps: []*controlv1.ReleaseStepState{{StepCode: string(view.CurrentStep), StepType: string(view.CurrentStep)}},
+		Items: []*controlv1.ReleaseItem{}, Steps: []*controlv1.ReleaseStepState{{StepCode: view.CurrentStepCode, StepType: string(view.CurrentStep), Status: string(view.CurrentStepStatus), EntityRevision: int64(view.Revision)}},
 		AllowedActions: allowed,
 	}
 }
@@ -125,6 +145,9 @@ func project(view application.OrderView) *controlv1.ReleaseOrderDetail {
 func toReleaseStatus(value release.OrderStatus) commonv1.ReleaseStatus {
 	if value == release.OrderSucceeded {
 		return commonv1.ReleaseStatus_RELEASE_STATUS_SUCCEEDED
+	}
+	if value == release.OrderRejected {
+		return commonv1.ReleaseStatus_RELEASE_STATUS_REJECTED
 	}
 	return commonv1.ReleaseStatus_RELEASE_STATUS_IN_PROGRESS
 }
@@ -135,6 +158,8 @@ func mapError(err error) error {
 		return status.Error(codes.AlreadyExists, err.Error())
 	case errors.Is(err, release.ErrAborted):
 		return status.Error(codes.Aborted, err.Error())
+	case errors.Is(err, release.ErrForbidden):
+		return status.Error(codes.PermissionDenied, err.Error())
 	case errors.Is(err, release.ErrInvalid):
 		return status.Error(codes.InvalidArgument, err.Error())
 	default:

@@ -16,7 +16,10 @@ import (
 
 var ErrUnauthenticated = errors.New("unauthenticated")
 
-type Principal struct{ Subject string }
+type Principal struct {
+	Subject string
+	Roles   []string
+}
 
 type Authenticator interface {
 	Authenticate(*http.Request) (Principal, error)
@@ -125,8 +128,8 @@ func (handler *Handler) createRelease(writer http.ResponseWriter, request *http.
 	if !decodeJSON(writer, request, &body) {
 		return
 	}
-	if body.ReleaseTypeCode != "direct" || strings.TrimSpace(body.Description) == "" || len(body.Items) == 0 {
-		writeError(writer, http.StatusBadRequest, "INVALID_ARGUMENT", "direct release type, description, and items are required")
+	if strings.TrimSpace(body.ReleaseTypeCode) == "" || strings.TrimSpace(body.Description) == "" || len(body.Items) == 0 {
+		writeError(writer, http.StatusBadRequest, "INVALID_ARGUMENT", "release type, description, and items are required")
 		return
 	}
 	drafts := make([]application.AddDraft, len(body.Items))
@@ -138,7 +141,7 @@ func (handler *Handler) createRelease(writer http.ResponseWriter, request *http.
 		drafts[index] = application.AddDraft{Data: item.After, ExpectedRecordRevision: item.ExpectedRecordRevision, ExpectedCollectionRevision: item.ExpectedCollectionRevision}
 	}
 	result, err := handler.releases.CreateBaseFinal(request.Context(), application.CreateBaseFinalCommand{
-		IdempotencyKey: idempotency, ModelCode: body.ModelCode,
+		IdempotencyKey: idempotency, ModelCode: body.ModelCode, ReleaseTypeCode: body.ReleaseTypeCode,
 		Scope: release.Scope{Region: body.Scope.Region, Environment: body.Scope.Environment, Stage: body.Scope.Stage},
 		Actor: principal.Subject, Items: drafts,
 	})
@@ -176,13 +179,17 @@ func (handler *Handler) actOnRelease(writer http.ResponseWriter, request *http.R
 		action = application.ActionExecute
 	case "ADVANCE":
 		action = application.ActionAdvance
+	case "APPROVE":
+		action = application.ActionApprove
+	case "REJECT":
+		action = application.ActionReject
 	default:
-		writeError(writer, http.StatusNotImplemented, "NOT_IMPLEMENTED", "only EXECUTE and ADVANCE are implemented in the base-only slice")
+		writeError(writer, http.StatusNotImplemented, "NOT_IMPLEMENTED", "release action is not implemented")
 		return
 	}
 	result, err := handler.releases.Act(request.Context(), application.ActCommand{
 		OrderID: request.PathValue("id"), ActionRequestID: actionID,
-		ExpectedRevision: body.ExpectedOrderRevision, ExpectedCurrentStep: release.StepType(body.ExpectedCurrentStep), Action: action, Actor: principal.Subject,
+		ExpectedRevision: body.ExpectedOrderRevision, ExpectedCurrentStep: body.ExpectedCurrentStep, Action: action, Actor: principal.Subject, Roles: append([]string(nil), principal.Roles...), Comment: body.Comment,
 	})
 	if err != nil {
 		writeDomainError(writer, err)
@@ -225,6 +232,8 @@ func writeDomainError(writer http.ResponseWriter, err error) {
 		writeError(writer, http.StatusConflict, "IDEMPOTENCY_KEY_REUSED", err.Error())
 	case errors.Is(err, release.ErrActiveConflict):
 		writeError(writer, http.StatusConflict, "ACTIVE_RELEASE_CONFLICT", err.Error())
+	case errors.Is(err, release.ErrForbidden):
+		writeError(writer, http.StatusForbidden, "PERMISSION_DENIED", err.Error())
 	case errors.Is(err, release.ErrAborted):
 		writeError(writer, http.StatusConflict, "ABORTED", err.Error())
 	case errors.Is(err, release.ErrInvalid):
@@ -247,17 +256,21 @@ func writeJSON(writer http.ResponseWriter, statusCode int, value any) {
 
 func releaseDetail(view application.OrderView) map[string]any {
 	allowed := []string{}
-	if view.Status == release.OrderInProgress {
-		if view.CurrentStep == release.StepBaseApply || view.CurrentStep == release.StepComplete {
-			allowed = append(allowed, "EXECUTE")
-		}
-		if view.CurrentStep == release.StepBaseApply && view.Revision > 1 {
-			allowed = []string{"ADVANCE"}
-		}
+	if view.CanExecute {
+		allowed = append(allowed, "EXECUTE")
+	}
+	if view.CanApprove {
+		allowed = append(allowed, "APPROVE")
+	}
+	if view.CanReject {
+		allowed = append(allowed, "REJECT")
+	}
+	if view.CanAdvance {
+		allowed = append(allowed, "ADVANCE")
 	}
 	return map[string]any{
-		"order": map[string]any{"id": view.ID, "status": view.Status, "currentStep": view.CurrentStep, "entityRevision": view.Revision},
-		"items": []any{}, "steps": []any{map[string]any{"type": view.CurrentStep}}, "allowedActions": allowed,
+		"order": map[string]any{"id": view.ID, "status": view.Status, "currentStep": view.CurrentStepCode, "currentStepType": view.CurrentStep, "currentStepStatus": view.CurrentStepStatus, "entityRevision": view.Revision},
+		"items": []any{}, "steps": []any{map[string]any{"code": view.CurrentStepCode, "type": view.CurrentStep, "status": view.CurrentStepStatus}}, "allowedActions": allowed,
 	}
 }
 

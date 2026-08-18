@@ -63,7 +63,7 @@ func classifyTransactionError(err error) error {
 
 type transaction struct{ db *gorm.DB }
 
-func (transaction *transaction) LoadCatalog(ctx context.Context, modelCode string) (application.CatalogBundle, error) {
+func (transaction *transaction) LoadCatalog(ctx context.Context, modelCode, releaseTypeCode string) (application.CatalogBundle, error) {
 	type row struct {
 		CollectionName        string
 		CollectionDescription string
@@ -81,6 +81,7 @@ func (transaction *transaction) LoadCatalog(ctx context.Context, modelCode strin
 		TemplateVersion       uint64
 		ReleaseTypeCode       string
 		FinalEffect           string
+		TemplateDocument      []byte
 	}
 	var loaded row
 	result := transaction.db.WithContext(ctx).Raw(`
@@ -91,13 +92,13 @@ func (transaction *transaction) LoadCatalog(ctx context.Context, modelCode strin
 			m.code AS model_code, m.name AS model_name, m.definition AS model_definition,
 			m.enabled AS model_enabled, m.config_revision AS model_revision,
 			t.code AS template_code, t.version AS template_version,
-			t.release_type_code, t.final_effect
+			t.release_type_code, t.final_effect, t.template AS template_document
 		FROM configuration_models m
 		JOIN configuration_collections c ON c.name = m.collection_name
 		JOIN release_templates t ON t.model_code = m.code AND t.active_slot = 'A'
-		WHERE m.code = ? AND t.final_effect = 'BASE_FINAL'
+		WHERE m.code = ? AND t.release_type_code = ? AND t.final_effect = 'BASE_FINAL'
 		FOR SHARE
-	`, modelCode).Scan(&loaded)
+	`, modelCode, releaseTypeCode).Scan(&loaded)
 	if result.Error != nil {
 		return application.CatalogBundle{}, result.Error
 	}
@@ -134,11 +135,15 @@ func (transaction *transaction) LoadCatalog(ctx context.Context, modelCode strin
 	if err != nil {
 		return application.CatalogBundle{}, fmt.Errorf("compile persisted model: %w", err)
 	}
+	template, err := release.CompileTemplate(loaded.TemplateDocument, release.FinalEffect(loaded.FinalEffect))
+	if err != nil {
+		return application.CatalogBundle{}, fmt.Errorf("compile persisted release template: %w", err)
+	}
 	return application.CatalogBundle{
 		Definition: definition,
 		Model:      model,
 		Template: application.TemplateRef{
-			Code: loaded.TemplateCode, Version: loaded.TemplateVersion, ReleaseTypeCode: loaded.ReleaseTypeCode,
+			Code: loaded.TemplateCode, Version: loaded.TemplateVersion, ReleaseTypeCode: loaded.ReleaseTypeCode, Definition: template,
 		},
 	}, nil
 }
@@ -188,14 +193,17 @@ func (transaction *transaction) LoadBaseAuthority(ctx context.Context, collectio
 
 func (transaction *transaction) FindCreateResult(ctx context.Context, actor, idempotencyKey string) (application.StoredRequestResult, bool, error) {
 	type row struct {
-		ID, RequestDigest, Status, CurrentStepCode string
-		EntityRevision                             uint64
+		ID, RequestDigest, Status, CurrentStepCode, CurrentStepType, CurrentStepStatus string
+		EntityRevision                                                                 uint64
 	}
 	var loaded row
 	result := transaction.db.WithContext(ctx).Raw(`
-		SELECT id, request_digest, status, current_step_code, entity_revision
-		FROM release_orders
-		WHERE created_by = ? AND idempotency_key = ?
+		SELECT o.id, o.request_digest, o.status, o.current_step_code, s.step_type AS current_step_type,
+			s.status AS current_step_status, o.entity_revision
+		FROM release_orders o
+		JOIN release_step_states s
+		  ON s.release_order_id = o.id AND s.step_code = o.current_step_code
+		WHERE o.created_by = ? AND o.idempotency_key = ?
 		FOR UPDATE
 	`, actor, idempotencyKey).Scan(&loaded)
 	if result.Error != nil {
@@ -204,17 +212,39 @@ func (transaction *transaction) FindCreateResult(ctx context.Context, actor, ide
 	if result.RowsAffected == 0 {
 		return application.StoredRequestResult{}, false, nil
 	}
+	view := application.OrderView{
+		ID: loaded.ID, Status: release.OrderStatus(loaded.Status), CurrentStepCode: loaded.CurrentStepCode, CurrentStep: release.StepType(loaded.CurrentStepType),
+		CurrentStepStatus: release.StepStatus(loaded.CurrentStepStatus), Revision: release.EntityRevision(loaded.EntityRevision),
+	}
+	setCapabilities(&view)
 	return application.StoredRequestResult{
 		RequestDigest: loaded.RequestDigest,
-		Result: application.OrderView{
-			ID: loaded.ID, Status: release.OrderStatus(loaded.Status), CurrentStep: parseStepCode(loaded.CurrentStepCode), Revision: release.EntityRevision(loaded.EntityRevision),
-		},
+		Result:        view,
 	}, true, nil
+}
+
+func setCapabilities(view *application.OrderView) {
+	if view.Status != release.OrderInProgress {
+		return
+	}
+	switch {
+	case view.CurrentStep == release.StepManualReview && view.CurrentStepStatus == release.StepPending:
+		view.CanExecute = true
+	case view.CurrentStep == release.StepManualReview && view.CurrentStepStatus == release.StepExecuting:
+		view.CanApprove, view.CanReject = true, true
+	case view.CurrentStepStatus == release.StepApproved || view.CurrentStepStatus == release.StepExecuted:
+		view.CanAdvance = view.CurrentStep != release.StepComplete
+	case (view.CurrentStep == release.StepBaseApply || view.CurrentStep == release.StepComplete) && view.CurrentStepStatus == release.StepPending:
+		view.CanExecute = true
+	}
 }
 
 func (transaction *transaction) InsertOrder(ctx context.Context, order *release.Order) error {
 	state := order.State()
-	templateSnapshot := []byte(`{"finalEffect":"BASE_FINAL","steps":["BASE_APPLY","COMPLETE"]}`)
+	templateSnapshot, err := marshalTemplateSnapshot(state.Steps)
+	if err != nil {
+		return err
+	}
 	batchType := "SINGLE"
 	if len(state.Items) > 1 {
 		batchType = "BATCH"
@@ -230,7 +260,7 @@ func (transaction *transaction) InsertOrder(ctx context.Context, order *release.
 	`, state.ID, state.ReleaseNumber, state.IdempotencyKey, state.RequestDigest, state.ModelCode,
 		state.TemplateCode, state.TemplateVersion, state.ReleaseTypeCode,
 		state.Scope.Region, state.Scope.Environment, state.Scope.Stage,
-		state.Status, stepCode(state.Steps[state.CurrentStep].Type), templateSnapshot, batchType, state.Revision,
+		state.Status, persistedStepCode(state.Steps[state.CurrentStep]), templateSnapshot, batchType, state.Revision,
 		state.CreatedAt, state.CreatedBy, state.UpdatedAt, state.UpdatedBy)
 	if result.Error != nil {
 		return result.Error
@@ -255,14 +285,18 @@ func (transaction *transaction) InsertOrder(ctx context.Context, order *release.
 		}
 	}
 	for sequence, step := range state.Steps {
+		stepContext, err := json.Marshal(map[string]any{"requiredRoles": step.RequiredRoles, "selfApprovalPolicy": step.SelfApprovalPolicy})
+		if err != nil {
+			return err
+		}
 		if err := transaction.db.WithContext(ctx).Exec(`
 			INSERT INTO release_step_states (
 				release_order_id, step_code, step_type, sequence_no, status, context,
 				approval, effect, compare_result, execute_count, executed_at, executed_by,
 				rolled_back_at, rolled_back_by, error_code, error_message, entity_revision,
 				created_at, created_by, updated_at, updated_by
-			) VALUES (?, ?, ?, ?, ?, JSON_OBJECT(), NULL, NULL, NULL, 0, NULL, NULL, NULL, NULL, NULL, NULL, 1, ?, ?, ?, ?)
-		`, state.ID, stepCode(step.Type), step.Type, sequence, step.Status,
+			) VALUES (?, ?, ?, ?, ?, ?, NULL, NULL, NULL, 0, NULL, NULL, NULL, NULL, NULL, NULL, 1, ?, ?, ?, ?)
+		`, state.ID, persistedStepCode(step), step.Type, sequence, step.Status, stepContext,
 			state.CreatedAt, state.CreatedBy, state.UpdatedAt, state.UpdatedBy).Error; err != nil {
 			return err
 		}
@@ -338,11 +372,12 @@ func (transaction *transaction) LoadOrderForUpdate(ctx context.Context, orderID 
 	}
 	type stepRow struct {
 		StepCode, StepType, Status, ExecutedBy string
+		Context, Approval                      []byte
 		ExecutedAt                             *time.Time
 	}
 	var stepRows []stepRow
 	if err := transaction.db.WithContext(ctx).Raw(`
-		SELECT step_code, step_type, status, executed_at, COALESCE(executed_by, '') AS executed_by
+		SELECT step_code, step_type, status, context, approval, executed_at, COALESCE(executed_by, '') AS executed_by
 		FROM release_step_states WHERE release_order_id = ? ORDER BY sequence_no
 	`, orderID).Scan(&stepRows).Error; err != nil {
 		return nil, err
@@ -350,7 +385,21 @@ func (transaction *transaction) LoadOrderForUpdate(ctx context.Context, orderID 
 	steps := make([]release.StepState, len(stepRows))
 	currentStep := -1
 	for index, row := range stepRows {
-		steps[index] = release.StepState{Type: release.StepType(row.StepType), Status: release.StepStatus(row.Status), ExecutedAt: row.ExecutedAt, ExecutedBy: row.ExecutedBy}
+		var contextValue struct {
+			RequiredRoles      []string                   `json:"requiredRoles"`
+			SelfApprovalPolicy release.SelfApprovalPolicy `json:"selfApprovalPolicy"`
+		}
+		if err := json.Unmarshal(row.Context, &contextValue); err != nil {
+			return nil, fmt.Errorf("decode step %q context: %w", row.StepCode, err)
+		}
+		var approval *release.ApprovalState
+		if len(row.Approval) != 0 {
+			approval = &release.ApprovalState{}
+			if err := json.Unmarshal(row.Approval, approval); err != nil {
+				return nil, fmt.Errorf("decode step %q approval: %w", row.StepCode, err)
+			}
+		}
+		steps[index] = release.StepState{Code: row.StepCode, Type: release.StepType(row.StepType), Status: release.StepStatus(row.Status), RequiredRoles: contextValue.RequiredRoles, SelfApprovalPolicy: contextValue.SelfApprovalPolicy, Approval: approval, ExecutedAt: row.ExecutedAt, ExecutedBy: row.ExecutedBy}
 		if row.StepCode == loaded.CurrentStepCode {
 			currentStep = index
 		}
@@ -488,14 +537,6 @@ func (transaction *transaction) ApplyBaseEffect(ctx context.Context, orderID str
 	`, orderID, payload, fmt.Sprintf("configuration-changed:%s:%d", orderID, revision), effect.ExecutedAt, effect.ExecutedAt, effect.ExecutedAt).Error; err != nil {
 		return err
 	}
-	if err := transaction.db.WithContext(ctx).Exec(`
-		INSERT INTO release_operation_logs (
-			id, release_order_id, release_item_id, step_code, action, result,
-			actor_subject, actor_name, message, error_code, error_detail, trace_id, created_at
-		) VALUES (UUID(), ?, NULL, 'base-apply', 'EXECUTE', 'SUCCEEDED', ?, ?, 'BASE_APPLY executed', NULL, NULL, '', ?)
-	`, orderID, effect.ExecutedBy, effect.ExecutedBy, effect.ExecutedAt).Error; err != nil {
-		return err
-	}
 	return transaction.insertAudit(ctx, effect.ExecutedAt, effect.ExecutedBy, "BASE_APPLY", "RELEASE_ORDER", orderID, release.Scope{Environment: effect.Environment}, orderID)
 }
 
@@ -508,7 +549,7 @@ func (transaction *transaction) SaveOrder(ctx context.Context, order *release.Or
 		UPDATE release_orders
 		SET status = ?, current_step_code = ?, entity_revision = ?, updated_at = ?, updated_by = ?, completed_at = ?
 		WHERE id = ? AND entity_revision = ?
-	`, state.Status, stepCode(state.Steps[state.CurrentStep].Type), state.Revision, state.UpdatedAt, state.UpdatedBy, state.CompletedAt, state.ID, state.Revision-1)
+	`, state.Status, persistedStepCode(state.Steps[state.CurrentStep]), state.Revision, state.UpdatedAt, state.UpdatedBy, state.CompletedAt, state.ID, state.Revision-1)
 	if result.Error != nil {
 		return result.Error
 	}
@@ -526,12 +567,20 @@ func (transaction *transaction) SaveOrder(ctx context.Context, order *release.Or
 		}
 	}
 	for _, step := range state.Steps {
+		var approval any
+		if step.Approval != nil {
+			encoded, err := json.Marshal(step.Approval)
+			if err != nil {
+				return err
+			}
+			approval = encoded
+		}
 		if err := transaction.db.WithContext(ctx).Exec(`
 			UPDATE release_step_states
-			SET status = ?, executed_at = ?, executed_by = ?, entity_revision = entity_revision + 1,
+			SET status = ?, approval = ?, executed_at = ?, executed_by = ?, entity_revision = entity_revision + 1,
 				updated_at = ?, updated_by = ?
 			WHERE release_order_id = ? AND step_code = ?
-		`, step.Status, step.ExecutedAt, nullableString(step.ExecutedBy), state.UpdatedAt, state.UpdatedBy, state.ID, stepCode(step.Type)).Error; err != nil {
+		`, step.Status, approval, step.ExecutedAt, nullableString(step.ExecutedBy), state.UpdatedAt, state.UpdatedBy, state.ID, persistedStepCode(step)).Error; err != nil {
 			return err
 		}
 	}
@@ -548,6 +597,19 @@ func (transaction *transaction) InsertActionResult(ctx context.Context, orderID,
 			release_order_id, action_request_id, request_digest, result_projection, created_at
 		) VALUES (?, ?, ?, ?, ?)
 	`, orderID, actionRequestID, requestDigest, encoded, createdAt).Error
+}
+
+func (transaction *transaction) RecordAction(ctx context.Context, record application.ActionRecord) error {
+	message := fmt.Sprintf("%s succeeded", record.Action)
+	if err := transaction.db.WithContext(ctx).Exec(`
+		INSERT INTO release_operation_logs (
+			id, release_order_id, release_item_id, step_code, action, result,
+			actor_subject, actor_name, message, error_code, error_detail, trace_id, created_at
+		) VALUES (UUID(), ?, NULL, ?, ?, 'SUCCEEDED', ?, ?, ?, NULL, NULL, '', ?)
+	`, record.OrderID, nullableString(record.StepCode), record.Action, record.Actor, record.Actor, message, record.At).Error; err != nil {
+		return err
+	}
+	return transaction.insertAudit(ctx, record.At, record.Actor, string(record.Action), "RELEASE_ORDER", record.OrderID, record.Scope, record.OrderID)
 }
 
 func (transaction *transaction) insertAudit(ctx context.Context, at time.Time, actor, action, resourceType, resourceID string, scope release.Scope, requestID string) error {
@@ -571,15 +633,28 @@ func stepCode(stepType release.StepType) string {
 	}
 }
 
-func parseStepCode(code string) release.StepType {
-	switch code {
-	case "base-apply":
-		return release.StepBaseApply
-	case "complete":
-		return release.StepComplete
-	default:
-		return release.StepType(code)
+func persistedStepCode(step release.StepState) string {
+	if step.Code != "" {
+		return step.Code
 	}
+	return stepCode(step.Type)
+}
+
+func marshalTemplateSnapshot(steps []release.StepState) ([]byte, error) {
+	type definition struct {
+		Code               string                     `json:"code"`
+		Type               release.StepType           `json:"type"`
+		RequiredRoles      []string                   `json:"requiredRoles,omitempty"`
+		SelfApprovalPolicy release.SelfApprovalPolicy `json:"selfApprovalPolicy,omitempty"`
+	}
+	document := struct {
+		FinalEffect release.FinalEffect `json:"finalEffect"`
+		Steps       []definition        `json:"steps"`
+	}{FinalEffect: release.FinalEffectBase, Steps: make([]definition, len(steps))}
+	for index, step := range steps {
+		document.Steps[index] = definition{Code: persistedStepCode(step), Type: step.Type, RequiredRoles: append([]string(nil), step.RequiredRoles...), SelfApprovalPolicy: step.SelfApprovalPolicy}
+	}
+	return json.Marshal(document)
 }
 
 func marshalRecordData(record *catalog.ConfigurationRecord) ([]byte, error) {
