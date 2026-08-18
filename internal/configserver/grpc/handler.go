@@ -56,8 +56,8 @@ func NewWithWatch(application Application, watcher Watcher, authorizer WatchAuth
 }
 
 func (handler *Handler) GetSnapshot(ctx context.Context, request *configv1.GetSnapshotRequest) (*configv1.GetSnapshotResponse, error) {
-	if request == nil || request.Scope == nil || strings.TrimSpace(request.ConsumerId) == "" || strings.TrimSpace(request.ClientId) == "" || strings.TrimSpace(request.Scope.Environment) == "" {
-		return nil, status.Error(codes.InvalidArgument, "consumer_id, client_id, and scope.environment are required")
+	if request == nil || request.Scope == nil || strings.TrimSpace(request.ConsumerId) == "" || strings.TrimSpace(request.ClientId) == "" || strings.TrimSpace(request.Scope.Region) == "" || strings.TrimSpace(request.Scope.Environment) == "" {
+		return nil, status.Error(codes.InvalidArgument, "consumer_id, client_id, scope.region, and scope.environment are required")
 	}
 	known := make([]configserver.Version, len(request.KnownVersions))
 	for index, version := range request.KnownVersions {
@@ -68,14 +68,14 @@ func (handler *Handler) GetSnapshot(ctx context.Context, request *configv1.GetSn
 	}
 	response, err := handler.application.GetSnapshot(ctx, configserver.GetSnapshotRequest{
 		ConsumerID: request.ConsumerId, ClientID: request.ClientId,
-		Environment: request.Scope.Environment, KnownVersions: known,
+		Region: request.Scope.Region, Environment: request.Scope.Environment, Stage: request.Scope.Stage, KnownVersions: known,
 	})
 	if err != nil {
 		return nil, status.Error(codes.Internal, "get snapshot failed")
 	}
 	converted := &configv1.GetSnapshotResponse{
 		Snapshot:           mapIdentity(response.Identity),
-		Scope:              &commonv1.Scope{Region: request.Scope.Region, Environment: response.Environment, Stage: request.Scope.Stage},
+		Scope:              &commonv1.Scope{Region: response.Region, Environment: response.Environment, Stage: response.Stage},
 		DeletedCollections: append([]string(nil), response.DeletedCollections...),
 		Collections:        make([]*configv1.CollectionPayload, len(response.Collections)),
 	}

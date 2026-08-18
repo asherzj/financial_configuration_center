@@ -65,7 +65,7 @@ func TestRealMySQLPollConvergesWithoutHintOrWatch(t *testing.T) {
 	go func() { _ = poller.Run(pollContext) }()
 
 	configService := configserver.New(manager, source)
-	sdkClient, err := finconfig.New(finconfig.Config{ConsumerID: "payment-service", ClientID: "pod-poll", Environment: "production", Transport: configTransport{service: configService}, PollInterval: 5 * time.Millisecond})
+	sdkClient, err := finconfig.New(finconfig.Config{ConsumerID: "payment-service", ClientID: "pod-poll", Region: "cn", Environment: "production", Transport: configTransport{service: configService}, PollInterval: 5 * time.Millisecond})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -574,6 +574,46 @@ func TestRealMySQLPercentageRolloutTransaction(t *testing.T) {
 	assertCount(t, raw, `SELECT COUNT(*) FROM configuration_versions WHERE collection_name = 'payment_routes' AND environment = 'production' AND config_revision = 8`, 1)
 	assertCount(t, raw, `SELECT COUNT(*) FROM release_step_states WHERE release_order_id = '`+created.ID+`' AND JSON_EXTRACT(effect, '$.percent.appliedRevision') = 8`, 1)
 	assertCount(t, raw, `SELECT COUNT(*) FROM audit_records WHERE resource_id = '`+created.ID+`' AND action = 'PERCENT_ROLLOUT'`, 1)
+	distributionSource, err := mysqlsource.New(database)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager, err := snapshot.NewManager(distributionSource, snapshot.IdentitySeed{ServerEpoch: "percent-epoch", ServerInstanceID: "percent-server", SnapshotInstance: "percent-snapshot"}, fixedClock{now: now})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manager.Refresh(ctx, "production"); err != nil {
+		t.Fatal(err)
+	}
+	configService := configserver.New(manager, distributionSource)
+	selectedClient, err := finconfig.New(finconfig.Config{
+		ConsumerID: "payment-service", ClientID: "pod-10", Region: "cn", Environment: "production", Stage: "blue",
+		Transport: configTransport{service: configService},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	unselectedClient, err := finconfig.New(finconfig.Config{
+		ConsumerID: "payment-service", ClientID: "pod-8", Region: "cn", Environment: "production", Stage: "blue",
+		Transport: configTransport{service: configService},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := selectedClient.Refresh(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := unselectedClient.Refresh(ctx); err != nil {
+		t.Fatal(err)
+	}
+	definition, _ := manager.Current().Definition("payment_routes")
+	rolloutRecord, _ := definition.NewRecord("production", map[string]string{"route_code": "visa", "priority": "9"})
+	if record, ok := selectedClient.GetByKey("payment_routes", rolloutRecord.RecordKey); !ok || record.Values["priority"] != "9" {
+		t.Fatalf("selected SDK record = %+v, %t", record, ok)
+	}
+	if _, ok := unselectedClient.GetByKey("payment_routes", rolloutRecord.RecordKey); ok {
+		t.Fatal("unselected SDK observed percentage ADD")
+	}
 	advanced, err := service.Act(ctx, application.ActCommand{
 		OrderID: created.ID, ActionRequestID: "50000000-0000-4000-8000-000000000002",
 		ExpectedRevision: executed.Revision, ExpectedCurrentStep: "percent-10", Action: application.ActionAdvance, Actor: "operator@example.com",
@@ -666,7 +706,7 @@ func TestRealMySQLHTTPWalkingSkeleton(t *testing.T) {
 		t.Fatalf("published query = %d %s", queried.Code, queried.Body.String())
 	}
 	configService := configserver.New(manager, distributionSource)
-	sdkClient, err := finconfig.New(finconfig.Config{ConsumerID: "payment-service", ClientID: "pod-http", Environment: "production", Transport: configTransport{service: configService}})
+	sdkClient, err := finconfig.New(finconfig.Config{ConsumerID: "payment-service", ClientID: "pod-http", Region: "cn", Environment: "production", Transport: configTransport{service: configService}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -765,7 +805,7 @@ func TestRealMySQLBaseFinalTransaction(t *testing.T) {
 	}
 	configService := configserver.New(productionSnapshots, distributionSource)
 	sdkClient, err := finconfig.New(finconfig.Config{
-		ConsumerID: "payment-service", ClientID: "pod-1", Environment: "production",
+		ConsumerID: "payment-service", ClientID: "pod-1", Region: "cn", Environment: "production",
 		Transport: configTransport{service: configService},
 	})
 	if err != nil {
@@ -1014,7 +1054,8 @@ func (transport configTransport) GetSnapshot(ctx context.Context, request fincon
 		known[index] = configserver.Version{Collection: version.Collection, Revision: version.Revision, Digest: version.Digest}
 	}
 	response, err := transport.service.GetSnapshot(ctx, configserver.GetSnapshotRequest{
-		ConsumerID: request.ConsumerID, ClientID: request.ClientID, Environment: request.Environment, KnownVersions: known,
+		ConsumerID: request.ConsumerID, ClientID: request.ClientID, Region: request.Region,
+		Environment: request.Environment, Stage: request.Stage, KnownVersions: known,
 	})
 	if err != nil {
 		return finconfig.SnapshotResponse{}, err

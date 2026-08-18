@@ -13,6 +13,7 @@ import (
 	"time"
 
 	catalog "github.com/asherzj/financial_configuration_center/internal/catalog/domain"
+	overlay "github.com/asherzj/financial_configuration_center/internal/overlay/domain"
 )
 
 type SnapshotIdentity struct {
@@ -31,7 +32,9 @@ type Version struct {
 type SnapshotRequest struct {
 	ConsumerID    string
 	ClientID      string
+	Region        string
 	Environment   string
+	Stage         string
 	KnownVersions []Version
 }
 
@@ -62,7 +65,9 @@ type Transport interface {
 type WatchRequest struct {
 	ConsumerID  string
 	ClientID    string
+	Region      string
 	Environment string
+	Stage       string
 }
 
 type WatchEvent struct {
@@ -77,7 +82,9 @@ type WatchTransport interface {
 type Config struct {
 	ConsumerID       string
 	ClientID         string
+	Region           string
 	Environment      string
+	Stage            string
 	Transport        Transport
 	PollInterval     time.Duration
 	WatchEnabled     bool
@@ -120,7 +127,10 @@ type clientSnapshot struct {
 type Client struct {
 	consumerID       string
 	clientID         string
+	region           string
 	environment      string
+	stage            string
+	bucket           int32
 	transport        Transport
 	refreshMu        sync.Mutex
 	callbackMu       sync.RWMutex
@@ -138,9 +148,15 @@ type Client struct {
 func New(config Config) (*Client, error) {
 	config.ConsumerID = strings.TrimSpace(config.ConsumerID)
 	config.ClientID = strings.TrimSpace(config.ClientID)
+	config.Region = strings.TrimSpace(config.Region)
 	config.Environment = strings.TrimSpace(config.Environment)
-	if config.ConsumerID == "" || config.ClientID == "" || config.Environment == "" || config.Transport == nil {
-		return nil, errors.New("new FinConfig client: consumer, client, environment, and transport are required")
+	config.Stage = strings.TrimSpace(config.Stage)
+	if config.ConsumerID == "" || config.ClientID == "" || config.Region == "" || config.Environment == "" || config.Transport == nil {
+		return nil, errors.New("new FinConfig client: consumer, client, region, environment, and transport are required")
+	}
+	bucket, err := overlay.ClientBucket(config.ConsumerID, config.ClientID)
+	if err != nil {
+		return nil, fmt.Errorf("new FinConfig client: %w", err)
 	}
 	if config.PollInterval < 0 {
 		return nil, errors.New("new FinConfig client: poll interval cannot be negative")
@@ -160,8 +176,9 @@ func New(config Config) (*Client, error) {
 		}
 	}
 	client := &Client{
-		consumerID: config.ConsumerID, clientID: config.ClientID,
-		environment: config.Environment, transport: config.Transport, pollInterval: config.PollInterval,
+		consumerID: config.ConsumerID, clientID: config.ClientID, region: config.Region,
+		environment: config.Environment, stage: config.Stage, bucket: bucket,
+		transport: config.Transport, pollInterval: config.PollInterval,
 		watchEnabled: config.WatchEnabled, reconnectBackoff: config.ReconnectBackoff, closed: make(chan struct{}),
 	}
 	client.current.Store(&clientSnapshot{environment: config.Environment, collections: map[string]collectionSnapshot{}})
@@ -269,7 +286,7 @@ func (client *Client) poll(ctx context.Context) {
 
 func (client *Client) watch(ctx context.Context) {
 	transport := client.transport.(WatchTransport)
-	request := WatchRequest{ConsumerID: client.consumerID, ClientID: client.clientID, Environment: client.environment}
+	request := WatchRequest{ConsumerID: client.consumerID, ClientID: client.clientID, Region: client.region, Environment: client.environment, Stage: client.stage}
 	for {
 		events, err := transport.Watch(ctx, request)
 		if err != nil {
@@ -327,7 +344,7 @@ func (client *Client) Refresh(ctx context.Context) error {
 
 	before := client.current.Load()
 	request := SnapshotRequest{
-		ConsumerID: client.consumerID, ClientID: client.clientID, Environment: client.environment,
+		ConsumerID: client.consumerID, ClientID: client.clientID, Region: client.region, Environment: client.environment, Stage: client.stage,
 		KnownVersions: knownVersions(before),
 	}
 	response, err := client.transport.GetSnapshot(ctx, request)
@@ -357,6 +374,9 @@ func (client *Client) Refresh(ctx context.Context) error {
 	client.current.Store(candidate)
 	return nil
 }
+
+// Bucket returns the stable 0..99 rollout assignment for diagnostics.
+func (client *Client) Bucket() int32 { return client.bucket }
 
 func invokeBeforePublish(callback func(ChangeSet) error, changes ChangeSet) (err error) {
 	defer func() {

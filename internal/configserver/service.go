@@ -9,6 +9,7 @@ import (
 
 	catalog "github.com/asherzj/financial_configuration_center/internal/catalog/domain"
 	"github.com/asherzj/financial_configuration_center/internal/distribution/snapshot"
+	overlay "github.com/asherzj/financial_configuration_center/internal/overlay/domain"
 )
 
 type SnapshotProvider interface {
@@ -28,7 +29,9 @@ type Version struct {
 type GetSnapshotRequest struct {
 	ConsumerID    string
 	ClientID      string
+	Region        string
 	Environment   string
+	Stage         string
 	KnownVersions []Version
 }
 
@@ -47,7 +50,10 @@ type CollectionPayload struct {
 
 type GetSnapshotResponse struct {
 	Identity           snapshot.Identity
+	Region             string
 	Environment        string
+	Stage              string
+	Bucket             int32
 	Collections        []CollectionPayload
 	DeletedCollections []string
 }
@@ -67,9 +73,15 @@ func (service *Service) GetSnapshot(ctx context.Context, request GetSnapshotRequ
 	}
 	request.ConsumerID = strings.TrimSpace(request.ConsumerID)
 	request.ClientID = strings.TrimSpace(request.ClientID)
+	request.Region = strings.TrimSpace(request.Region)
 	request.Environment = strings.TrimSpace(request.Environment)
-	if request.ConsumerID == "" || request.ClientID == "" || request.Environment == "" {
-		return GetSnapshotResponse{}, errors.New("get snapshot: consumer, client, and environment are required")
+	request.Stage = strings.TrimSpace(request.Stage)
+	if request.ConsumerID == "" || request.ClientID == "" || request.Region == "" || request.Environment == "" {
+		return GetSnapshotResponse{}, errors.New("get snapshot: consumer, client, region, and environment are required")
+	}
+	bucket, err := overlay.ClientBucket(request.ConsumerID, request.ClientID)
+	if err != nil {
+		return GetSnapshotResponse{}, fmt.Errorf("get snapshot: %w", err)
 	}
 	current := service.snapshots.Current()
 	if current == nil || current.Environment() != request.Environment {
@@ -97,7 +109,9 @@ func (service *Service) GetSnapshot(ctx context.Context, request GetSnapshotRequ
 		known[version.Collection] = version
 	}
 
-	response := GetSnapshotResponse{Identity: current.Identity(), Environment: current.Environment()}
+	response := GetSnapshotResponse{
+		Identity: current.Identity(), Region: request.Region, Environment: current.Environment(), Stage: request.Stage, Bucket: bucket,
+	}
 	for _, name := range current.CollectionNames() {
 		if _, allowed := authorizedSet[name]; !allowed {
 			continue
@@ -107,12 +121,20 @@ func (service *Service) GetSnapshot(ctx context.Context, request GetSnapshotRequ
 			continue
 		}
 		revision, _ := current.CollectionVersion(name)
-		digest, _ := current.CollectionDigest(name)
+		records, err := overlay.Evaluate(overlay.Query{
+			Collection: name, Scope: overlay.Scope{Region: request.Region, Environment: request.Environment, Stage: request.Stage}, PreviewBucket: &bucket,
+		}, current.Records(name), current.OverlayRules(name))
+		if err != nil {
+			return GetSnapshotResponse{}, fmt.Errorf("get snapshot: evaluate %q: %w", name, err)
+		}
+		digest, err := catalog.ComputeBaseDigest(records)
+		if err != nil {
+			return GetSnapshotResponse{}, fmt.Errorf("get snapshot: digest %q: %w", name, err)
+		}
 		if previous, exists := known[name]; exists && previous.Revision == revision && previous.Digest == digest.Value {
 			delete(known, name)
 			continue
 		}
-		records := current.Records(name)
 		payload := CollectionPayload{Name: name, Revision: revision, Digest: digest.Value, Records: make([]Record, len(records))}
 		for index, record := range records {
 			payload.Records[index] = Record{RecordKey: record.RecordKey, RecordRevision: record.ConfigRevision, Data: cloneMap(record.Data)}

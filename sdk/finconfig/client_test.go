@@ -18,7 +18,7 @@ func TestVersionPollConvergesWithoutHintOrWatch(t *testing.T) {
 		Identity: finconfig.SnapshotIdentity{ServerEpoch: "epoch", ServerInstanceID: "server", SnapshotInstance: "instance", Generation: 1}, Environment: "production",
 		Collections: []finconfig.CollectionPayload{{Name: "routes", Revision: 7, Digest: digestFor(t, record), Records: []finconfig.Record{record}}},
 	}}
-	client, err := finconfig.New(finconfig.Config{ConsumerID: "consumer", ClientID: "client", Environment: "production", Transport: transport, PollInterval: 5 * time.Millisecond})
+	client, err := finconfig.New(finconfig.Config{ConsumerID: "consumer", ClientID: "client", Region: "cn", Environment: "production", Transport: transport, PollInterval: 5 * time.Millisecond})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -53,7 +53,7 @@ func TestWatchAcceleratesRefreshWithoutReplacingPoll(t *testing.T) {
 		Collections: []finconfig.CollectionPayload{{Name: "routes", Revision: 7, Digest: digestFor(t, record), Records: []finconfig.Record{record}}},
 	}}, events: make(chan finconfig.WatchEvent, 1)}
 	client, err := finconfig.New(finconfig.Config{
-		ConsumerID: "consumer", ClientID: "client", Environment: "production", Transport: transport,
+		ConsumerID: "consumer", ClientID: "client", Region: "cn", Environment: "production", Transport: transport,
 		PollInterval: time.Hour, WatchEnabled: true, ReconnectBackoff: time.Millisecond,
 	})
 	if err != nil {
@@ -88,7 +88,7 @@ func TestClientRefreshPublishesImmutableSnapshotAndRetainsLastKnownGood(t *testi
 		Environment: "production",
 		Collections: []finconfig.CollectionPayload{{Name: "payment_routes", Revision: 8, Digest: digest, Records: []finconfig.Record{record}}},
 	}}
-	client, err := finconfig.New(finconfig.Config{ConsumerID: "payment-service", ClientID: "pod-1", Environment: "production", Transport: transport})
+	client, err := finconfig.New(finconfig.Config{ConsumerID: "payment-service", ClientID: "pod-1", Region: "cn", Environment: "production", Transport: transport})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -107,6 +107,9 @@ func TestClientRefreshPublishesImmutableSnapshotAndRetainsLastKnownGood(t *testi
 	if len(transport.lastRequest.KnownVersions) != 0 {
 		t.Fatalf("first refresh sent known versions: %+v", transport.lastRequest)
 	}
+	if transport.lastRequest.Region != "cn" || client.Bucket() < 0 || client.Bucket() > 99 {
+		t.Fatalf("scope or diagnostic bucket = request %+v bucket %d", transport.lastRequest, client.Bucket())
+	}
 
 	transport.err = errors.New("config server unavailable")
 	if err := client.Refresh(context.Background()); err == nil {
@@ -115,6 +118,22 @@ func TestClientRefreshPublishesImmutableSnapshotAndRetainsLastKnownGood(t *testi
 	again, ok = client.GetByKey("payment_routes", record.Key)
 	if !ok || again.Values["priority"] != "7" || client.Identity().Generation != 1 {
 		t.Fatalf("transport failure discarded last-known-good: %+v %+v", again, client.Identity())
+	}
+}
+
+func TestClientExposesStableProtocolBucket(t *testing.T) {
+	t.Parallel()
+	client, err := finconfig.New(finconfig.Config{
+		ConsumerID: "consumer", ClientID: "client", Region: "cn", Environment: "production", Transport: &stubTransport{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if client.Bucket() != 71 {
+		t.Fatalf("Bucket = %d, want fixed protocol vector 71", client.Bucket())
+	}
+	if _, err := finconfig.New(finconfig.Config{ConsumerID: "consumer", ClientID: "client", Environment: "production", Transport: &stubTransport{}}); err == nil {
+		t.Fatal("client without region succeeded")
 	}
 }
 
@@ -127,7 +146,7 @@ func TestClientRejectsInvalidCandidateAndCallbackFailureBeforeSwap(t *testing.T)
 		Environment: "production",
 		Collections: []finconfig.CollectionPayload{{Name: "routes", Revision: 1, Digest: digestFor(t, record), Records: []finconfig.Record{record}}},
 	}}
-	client, err := finconfig.New(finconfig.Config{ConsumerID: "consumer", ClientID: "client", Environment: "production", Transport: transport})
+	client, err := finconfig.New(finconfig.Config{ConsumerID: "consumer", ClientID: "client", Region: "cn", Environment: "production", Transport: transport})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -180,7 +199,7 @@ func TestClientMergesIncrementalCollectionsAndDeletesRevokedOnes(t *testing.T) {
 			{Name: "banks", Revision: 1, Digest: digestFor(t, bank), Records: []finconfig.Record{bank}},
 		},
 	}}
-	client, err := finconfig.New(finconfig.Config{ConsumerID: "consumer", ClientID: "client", Environment: "production", Transport: transport})
+	client, err := finconfig.New(finconfig.Config{ConsumerID: "consumer", ClientID: "client", Region: "cn", Environment: "production", Transport: transport})
 	if err != nil {
 		t.Fatal(err)
 	}

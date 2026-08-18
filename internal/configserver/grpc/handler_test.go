@@ -44,8 +44,8 @@ func TestGetSnapshotMapsDeterministicCollectionPayload(t *testing.T) {
 	t.Parallel()
 
 	application := stubApplication{response: configserver.GetSnapshotResponse{
-		Identity:    snapshot.Identity{ServerEpoch: "epoch", ServerInstanceID: "server", SnapshotInstance: "instance", Generation: 3, PublishedAt: time.Date(2026, 8, 19, 8, 0, 0, 0, time.UTC)},
-		Environment: "production",
+		Identity: snapshot.Identity{ServerEpoch: "epoch", ServerInstanceID: "server", SnapshotInstance: "instance", Generation: 3, PublishedAt: time.Date(2026, 8, 19, 8, 0, 0, 0, time.UTC)},
+		Region:   "cn", Environment: "production",
 		Collections: []configserver.CollectionPayload{{
 			Name: "payment_routes", Revision: 8, Digest: "digest",
 			Records: []configserver.Record{{RecordKey: "key", RecordRevision: 8, Data: map[string]string{"priority": "7", "route_code": "visa-cn"}}},
@@ -103,7 +103,9 @@ func (application stubApplication) GetSnapshot(context.Context, configserver.Get
 	return application.response, nil
 }
 
-func scope(environment string) *commonv1.Scope { return &commonv1.Scope{Environment: environment} }
+func scope(environment string) *commonv1.Scope {
+	return &commonv1.Scope{Region: "cn", Environment: environment}
+}
 
 type watchAuthorizer struct{}
 
