@@ -729,6 +729,7 @@ func TestRealMySQLHTTPWalkingSkeleton(t *testing.T) {
 
 	initial := postJSON(t, handler, "/api/v1/query-page", "", map[string]any{"modelCode": "payment-route-admin", "scope": map[string]string{"region": "cn", "environment": "production"}, "queryType": "ALL"})
 	if initial.Code != http.StatusOK || !bytes.Contains(initial.Body.Bytes(), []byte(`"rows":[]`)) ||
+		!bytes.Contains(initial.Body.Bytes(), []byte(`"options":[{"code":"1","disabled":false,"label":"Low"},{"code":"7","disabled":false,"label":"High"},{"code":"9","disabled":true,"label":"Legacy"}]`)) ||
 		!bytes.Contains(initial.Body.Bytes(), []byte(`{"available":true,"code":"direct","name":"Direct","templateCode":"base-final"}`)) ||
 		!bytes.Contains(initial.Body.Bytes(), []byte(`{"available":false,"code":"approval","name":"Approval","templateCode":"approval-final","unavailableReasonCode":"ACTIVE_TEMPLATE_NOT_FOUND"}`)) {
 		t.Fatalf("initial query = %d %s", initial.Code, initial.Body.String())
@@ -959,7 +960,7 @@ func seedCatalog(t *testing.T, db *sql.DB) {
 	model := catalog.ModelSpec{
 		Fields: []catalog.ModelField{
 			{Name: "route_code", Type: catalog.FieldTypeString, Required: true, Editable: true, Queryable: true, UIControl: catalog.UIControlInput, AllowedFilterOperators: []catalog.FilterOperator{catalog.FilterExact}},
-			{Name: "priority", Type: catalog.FieldTypeInt64, Required: true, Editable: true, Queryable: true, UIControl: catalog.UIControlNumber, AllowedFilterOperators: []catalog.FilterOperator{catalog.FilterExact}},
+			{Name: "priority", Type: catalog.FieldTypeInt64, Required: true, Editable: true, Queryable: true, UIControl: catalog.UIControlSelect, AllowedFilterOperators: []catalog.FilterOperator{catalog.FilterExact}, OptionSource: &catalog.OptionSourceDefinition{Kind: catalog.OptionSourceStatic, StaticOptions: []catalog.SelectOptionDefinition{{Code: "1", Label: "Low"}, {Code: "7", Label: "High"}, {Code: "9", Label: "Legacy", Disabled: true}}}},
 			{Name: "enabled", Type: catalog.FieldTypeBool, Required: true, Editable: true, Queryable: true, DefaultValue: &defaultEnabled, UIControl: catalog.UIControlBoolean, AllowedFilterOperators: []catalog.FilterOperator{catalog.FilterExact}},
 		},
 		ProjectionFields: []string{"route_code", "priority", "enabled"}, KeyFields: []string{"route_code"}, DefaultPageSize: 20, MaxPageSize: 100,

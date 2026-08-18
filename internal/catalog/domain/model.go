@@ -30,6 +30,34 @@ const (
 	FilterNotIn       FilterOperator = "NOT_IN"
 )
 
+type OptionSourceKind string
+
+const (
+	OptionSourceStatic     OptionSourceKind = "STATIC"
+	OptionSourceCollection OptionSourceKind = "COLLECTION"
+)
+
+type SelectOptionDefinition struct {
+	Code     string `json:"code"`
+	Label    string `json:"label"`
+	Disabled bool   `json:"disabled"`
+}
+
+type OptionFixedFilter struct {
+	Field string `json:"field"`
+	Value string `json:"value"`
+}
+
+type OptionSourceDefinition struct {
+	Kind          OptionSourceKind         `json:"kind"`
+	StaticOptions []SelectOptionDefinition `json:"staticOptions,omitempty"`
+	Collection    string                   `json:"collection,omitempty"`
+	ValueField    string                   `json:"valueField,omitempty"`
+	LabelField    string                   `json:"labelField,omitempty"`
+	FixedFilters  []OptionFixedFilter      `json:"fixedFilters,omitempty"`
+	Limit         int32                    `json:"limit,omitempty"`
+}
+
 // ModelField adds interaction behavior to a Collection field while repeating
 // its data semantics for transport compatibility.
 type ModelField struct {
@@ -42,6 +70,7 @@ type ModelField struct {
 	DefaultValue           *string
 	UIControl              UIControlType
 	AllowedFilterOperators []FilterOperator
+	OptionSource           *OptionSourceDefinition
 }
 
 type ReleaseTypeDefinition struct {
@@ -128,6 +157,21 @@ func CompileModel(collection CollectionDefinition, spec ModelSpec) (CompiledMode
 		if !field.Queryable && len(field.AllowedFilterOperators) != 0 {
 			return CompiledModel{}, fmt.Errorf("compile model: non-queryable field %q has filter operators", field.Name)
 		}
+		if field.Sensitive && field.Queryable {
+			return CompiledModel{}, fmt.Errorf("compile model: sensitive field %q cannot be queryable", field.Name)
+		}
+		if field.UIControl == UIControlSelect {
+			if field.OptionSource == nil {
+				return CompiledModel{}, fmt.Errorf("compile model: SELECT field %q requires an option source", field.Name)
+			}
+			compiledSource, err := compileOptionSource(*field.OptionSource)
+			if err != nil {
+				return CompiledModel{}, fmt.Errorf("compile model: field %q: %w", field.Name, err)
+			}
+			field.OptionSource = &compiledSource
+		} else if field.OptionSource != nil {
+			return CompiledModel{}, fmt.Errorf("compile model: non-SELECT field %q has an option source", field.Name)
+		}
 		operators := make(map[FilterOperator]struct{}, len(field.AllowedFilterOperators))
 		for _, operator := range field.AllowedFilterOperators {
 			if !validFilterOperator(field.Type, operator) {
@@ -152,15 +196,12 @@ func CompileModel(collection CollectionDefinition, spec ModelSpec) (CompiledMode
 	projection := slices.Clone(spec.ProjectionFields)
 	projectionSeen := make(map[string]struct{}, len(projection))
 	for _, name := range projection {
-		definition, exists := collectionFields[name]
+		_, exists := collectionFields[name]
 		if !exists {
 			return CompiledModel{}, fmt.Errorf("compile model: projection field %q does not exist", name)
 		}
 		if _, exposed := seen[name]; !exposed {
 			return CompiledModel{}, fmt.Errorf("compile model: projection field %q has no model field", name)
-		}
-		if definition.Sensitive {
-			return CompiledModel{}, fmt.Errorf("compile model: sensitive field %q cannot be projected", name)
 		}
 		if _, duplicate := projectionSeen[name]; duplicate {
 			return CompiledModel{}, fmt.Errorf("compile model: duplicate projection field %q", name)
@@ -202,9 +243,67 @@ func (model CompiledModel) Fields() []ModelField {
 			field.DefaultValue = stringPointer(*field.DefaultValue)
 		}
 		field.AllowedFilterOperators = slices.Clone(field.AllowedFilterOperators)
+		field.OptionSource = cloneOptionSource(field.OptionSource)
 		fields[index] = field
 	}
 	return fields
+}
+
+func compileOptionSource(source OptionSourceDefinition) (OptionSourceDefinition, error) {
+	switch source.Kind {
+	case OptionSourceStatic:
+		if len(source.StaticOptions) == 0 || source.Collection != "" || source.ValueField != "" || source.LabelField != "" || len(source.FixedFilters) != 0 {
+			return OptionSourceDefinition{}, errors.New("STATIC option source requires only static options")
+		}
+		options := slices.Clone(source.StaticOptions)
+		seen := make(map[string]struct{}, len(options))
+		for index := range options {
+			options[index].Code = strings.TrimSpace(options[index].Code)
+			options[index].Label = strings.TrimSpace(options[index].Label)
+			if options[index].Code == "" || options[index].Label == "" {
+				return OptionSourceDefinition{}, errors.New("STATIC option code and label are required")
+			}
+			if _, duplicate := seen[options[index].Code]; duplicate {
+				return OptionSourceDefinition{}, fmt.Errorf("STATIC option code %q is duplicated", options[index].Code)
+			}
+			seen[options[index].Code] = struct{}{}
+		}
+		slices.SortFunc(options, func(left, right SelectOptionDefinition) int { return strings.Compare(left.Code, right.Code) })
+		source.StaticOptions = options
+		source.Limit = int32(len(options))
+	case OptionSourceCollection:
+		source.Collection = strings.TrimSpace(source.Collection)
+		source.ValueField = strings.TrimSpace(source.ValueField)
+		source.LabelField = strings.TrimSpace(source.LabelField)
+		if !identifierPattern.MatchString(source.Collection) || !identifierPattern.MatchString(source.ValueField) || !identifierPattern.MatchString(source.LabelField) || len(source.StaticOptions) != 0 {
+			return OptionSourceDefinition{}, errors.New("COLLECTION option source identity is invalid")
+		}
+		if source.Limit <= 0 || source.Limit > 1000 {
+			return OptionSourceDefinition{}, errors.New("COLLECTION option limit must be 1..1000")
+		}
+		filters := make([]OptionFixedFilter, len(source.FixedFilters))
+		for index, filter := range source.FixedFilters {
+			filter.Field = strings.TrimSpace(filter.Field)
+			if !identifierPattern.MatchString(filter.Field) {
+				return OptionSourceDefinition{}, errors.New("COLLECTION option fixed filter field is invalid")
+			}
+			filters[index] = filter
+		}
+		source.FixedFilters = filters
+	default:
+		return OptionSourceDefinition{}, fmt.Errorf("option source kind %q is invalid", source.Kind)
+	}
+	return source, nil
+}
+
+func cloneOptionSource(source *OptionSourceDefinition) *OptionSourceDefinition {
+	if source == nil {
+		return nil
+	}
+	cloned := *source
+	cloned.StaticOptions = slices.Clone(source.StaticOptions)
+	cloned.FixedFilters = slices.Clone(source.FixedFilters)
+	return &cloned
 }
 
 func (model CompiledModel) ProjectionFields() []string { return slices.Clone(model.projectionFields) }

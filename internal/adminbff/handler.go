@@ -308,13 +308,17 @@ func queryPageResponse(result pagequery.Result) map[string]any {
 	}
 	fields := make([]map[string]any, len(result.InteractionFields))
 	for index, field := range result.InteractionFields {
+		options := make([]map[string]any, len(field.Options))
+		for optionIndex, option := range field.Options {
+			options[optionIndex] = map[string]any{"code": option.Code, "label": option.Label, "disabled": option.Disabled}
+		}
 		fields[index] = map[string]any{
 			"name": field.Name, "displayName": field.DisplayName, "description": field.Description,
 			"type": field.Type, "uiControl": field.UIControl, "queryable": field.Queryable,
 			"editable": field.Editable, "required": field.Required, "sensitive": field.Sensitive,
 			"projected": field.Projected, "keyField": field.KeyField,
 			"allowedFilterOperators": field.AllowedFilterOperators, "defaultFilterOperator": field.DefaultFilterOperator,
-			"defaultValue": field.DefaultValue, "displayOrder": field.DisplayOrder, "validationRules": []any{}, "options": []any{},
+			"defaultValue": field.DefaultValue, "displayOrder": field.DisplayOrder, "validationRules": []any{}, "options": options,
 		}
 	}
 	releaseTypes := make([]map[string]any, len(result.ReleaseTypes))

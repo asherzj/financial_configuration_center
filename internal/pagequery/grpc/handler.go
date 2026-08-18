@@ -82,13 +82,17 @@ func (handler *Handler) QueryPage(_ context.Context, request *configv1.QueryPage
 		for operatorIndex, operator := range field.AllowedFilterOperators {
 			operators[operatorIndex] = toFilterOperator(operator)
 		}
+		options := make([]*configv1.SelectOption, len(field.Options))
+		for optionIndex, option := range field.Options {
+			options[optionIndex] = &configv1.SelectOption{Code: option.Code, Label: option.Label, Disabled: option.Disabled}
+		}
 		response.InteractionFields[index] = &configv1.PageInteractionField{
 			Name: field.Name, DisplayName: field.DisplayName, Description: field.Description,
 			Type: toFieldType(field.Type), UiControl: toUIControl(field.UIControl),
 			Queryable: field.Queryable, Editable: field.Editable, IsRequired: field.Required,
 			Sensitive: field.Sensitive, Projected: field.Projected, KeyField: field.KeyField,
 			AllowedFilterOperators: operators, DefaultFilterOperator: toFilterOperator(field.DefaultFilterOperator),
-			DefaultValue: cloneStringPointer(field.DefaultValue), DisplayOrder: field.DisplayOrder,
+			DefaultValue: cloneStringPointer(field.DefaultValue), DisplayOrder: field.DisplayOrder, Options: options,
 		}
 	}
 	for index, releaseType := range result.ReleaseTypes {

@@ -2,6 +2,7 @@ package pagequery_test
 
 import (
 	"context"
+	"reflect"
 	"testing"
 	"time"
 
@@ -111,6 +112,67 @@ func TestQueryPageReturnsScopeEffectiveValuesAndBaseDiff(t *testing.T) {
 	}
 	if !blue.Rows[0].BasePresent || blue.Rows[0].BaseValues["priority"] != "1" || len(blue.Rows[0].ChangedFields) != 1 || blue.Rows[0].ChangedFields[0] != "priority" {
 		t.Fatalf("blue base diff = %+v", blue.Rows[0])
+	}
+}
+
+func TestAllResolvesCollectionOptionsAndMasksSensitiveProjection(t *testing.T) {
+	t.Parallel()
+	providerDefinition, err := catalog.CompileCollection(catalog.CollectionSpec{
+		Name: "providers", KeyFields: []string{"code"}, SchemaVersion: 1,
+		Fields: []catalog.FieldDefinition{
+			{Name: "code", DisplayName: "Code", Type: catalog.FieldTypeString, Required: true, DisplayOrder: 0},
+			{Name: "label", DisplayName: "Label", Type: catalog.FieldTypeString, Required: true, DisplayOrder: 1},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	credentialDefinition, err := catalog.CompileCollection(catalog.CollectionSpec{
+		Name: "credentials", KeyFields: []string{"name"}, SchemaVersion: 1,
+		Fields: []catalog.FieldDefinition{
+			{Name: "name", DisplayName: "Name", Type: catalog.FieldTypeString, Required: true, DisplayOrder: 0},
+			{Name: "provider", DisplayName: "Provider", Type: catalog.FieldTypeString, Required: true, DisplayOrder: 1},
+			{Name: "secret", DisplayName: "Secret", Type: catalog.FieldTypeString, Required: true, Sensitive: true, DisplayOrder: 2},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	model, err := catalog.CompileModel(credentialDefinition, catalog.ModelSpec{
+		Code: "credential-admin", Name: "Credentials", Collection: credentialDefinition.Name(),
+		Fields: []catalog.ModelField{
+			{Name: "name", Type: catalog.FieldTypeString, Required: true, Editable: true, Queryable: true, UIControl: catalog.UIControlInput, AllowedFilterOperators: []catalog.FilterOperator{catalog.FilterExact}},
+			{Name: "provider", Type: catalog.FieldTypeString, Required: true, Editable: true, Queryable: true, UIControl: catalog.UIControlSelect, AllowedFilterOperators: []catalog.FilterOperator{catalog.FilterExact}, OptionSource: &catalog.OptionSourceDefinition{Kind: catalog.OptionSourceCollection, Collection: "providers", ValueField: "code", LabelField: "label", Limit: 100}},
+			{Name: "secret", Type: catalog.FieldTypeString, Required: true, Sensitive: true, Editable: true, UIControl: catalog.UIControlInput},
+		},
+		ProjectionFields: []string{"name", "provider", "secret"}, KeyFields: []string{"name"}, DefaultPageSize: 20, MaxPageSize: 100, ConfigRevision: 3,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	providerA := mustRecord(t, providerDefinition, "production", map[string]string{"code": "stripe", "label": "Stripe"}, 2)
+	providerB := mustRecord(t, providerDefinition, "production", map[string]string{"code": "adyen", "label": "Adyen"}, 2)
+	credential := mustRecord(t, credentialDefinition, "production", map[string]string{"name": "primary", "provider": "stripe", "secret": "plaintext"}, 3)
+	manager, err := snapshot.NewManager(source{input: []snapshot.CollectionInput{
+		{Definition: providerDefinition, Version: 2, Records: []catalog.ConfigurationRecord{providerA, providerB}},
+		{Definition: credentialDefinition, Models: []catalog.CompiledModel{model}, Version: 3, Records: []catalog.ConfigurationRecord{credential}},
+	}}, snapshot.IdentitySeed{ServerEpoch: "epoch", ServerInstanceID: "server", SnapshotInstance: "options"}, clock{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manager.Refresh(context.Background(), "production"); err != nil {
+		t.Fatal(err)
+	}
+	result, err := pagequery.New(manager).Query(pagequery.Request{ModelCode: model.Code(), Region: "cn", Environment: "production", Type: pagequery.TypeAll})
+	if err != nil {
+		t.Fatalf("Query ALL: %v", err)
+	}
+	providerField := result.InteractionFields[1]
+	if len(providerField.Options) != 2 || providerField.Options[0].Code != "adyen" || providerField.Options[1].Label != "Stripe" {
+		t.Fatalf("resolved collection options = %+v", providerField.Options)
+	}
+	if _, leaked := result.Rows[0].Values["secret"]; leaked || !reflect.DeepEqual(result.Rows[0].MaskedFields, []string{"secret"}) {
+		t.Fatalf("sensitive row leaked = %+v", result.Rows[0])
 	}
 }
 

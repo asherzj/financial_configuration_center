@@ -54,6 +54,7 @@ type InteractionField struct {
 	DefaultFilterOperator  catalog.FilterOperator
 	DefaultValue           *string
 	DisplayOrder           int32
+	Options                []catalog.SelectOptionDefinition
 }
 
 type Row struct {
@@ -153,12 +154,26 @@ func (querier *Querier) Query(request Request) (Result, error) {
 	}
 	rows := make([]Row, len(records))
 	modelFields := model.Fields()
+	sensitiveFields := make(map[string]struct{})
+	for _, field := range modelFields {
+		if field.Sensitive {
+			sensitiveFields[field.Name] = struct{}{}
+		}
+	}
 	for index, record := range records {
 		values := make(map[string]string, len(projection))
 		baseValues := make(map[string]string, len(projection))
 		base, basePresent := baseByKey[record.RecordKey]
 		changedFields := make([]string, 0, len(projection))
 		for _, field := range projection {
+			if _, sensitive := sensitiveFields[field]; sensitive {
+				_, effectivePresent := record.Data[field]
+				_, baseValuePresent := base.Data[field]
+				if effectivePresent != (basePresent && baseValuePresent) || (effectivePresent && basePresent && record.Data[field] != base.Data[field]) {
+					changedFields = append(changedFields, field)
+				}
+				continue
+			}
 			if value, present := record.Data[field]; present {
 				values[field] = value
 			}
@@ -206,7 +221,10 @@ func (querier *Querier) Query(request Request) (Result, error) {
 	}
 	if request.Type == TypeAll {
 		result.ProjectionFields = slices.Clone(projection)
-		result.InteractionFields = interactionFields(definition, model, projectionSet)
+		result.InteractionFields, err = interactionFields(current, request, definition, model, projectionSet)
+		if err != nil {
+			return Result{}, err
+		}
 		definitions := model.ReleaseTypes()
 		result.ReleaseTypes = make([]ReleaseType, len(definitions))
 		for index, definition := range definitions {
@@ -240,7 +258,7 @@ func normalizePage(page PageSpec, defaultSize, maxSize int32) (int32, int32, err
 	return number, size, nil
 }
 
-func interactionFields(definition catalog.CollectionDefinition, model catalog.CompiledModel, projection map[string]struct{}) []InteractionField {
+func interactionFields(current *snapshot.Snapshot, request Request, definition catalog.CollectionDefinition, model catalog.CompiledModel, projection map[string]struct{}) ([]InteractionField, error) {
 	keySet := make(map[string]struct{}, len(model.KeyFields()))
 	for _, field := range model.KeyFields() {
 		keySet[field] = struct{}{}
@@ -262,9 +280,78 @@ func interactionFields(definition catalog.CollectionDefinition, model catalog.Co
 			Projected: projected, KeyField: key, AllowedFilterOperators: slices.Clone(modelField.AllowedFilterOperators),
 			DefaultFilterOperator: defaultOperator, DefaultValue: cloneStringPointer(modelField.DefaultValue), DisplayOrder: definitionField.DisplayOrder,
 		}
+		options, err := resolveOptions(current, request, modelField.OptionSource)
+		if err != nil {
+			return nil, fmt.Errorf("page query: resolve field %q options: %w", modelField.Name, err)
+		}
+		fields[index].Options = options
 	}
 	sort.SliceStable(fields, func(left, right int) bool { return fields[left].DisplayOrder < fields[right].DisplayOrder })
-	return fields
+	return fields, nil
+}
+
+func resolveOptions(current *snapshot.Snapshot, request Request, source *catalog.OptionSourceDefinition) ([]catalog.SelectOptionDefinition, error) {
+	if source == nil {
+		return nil, nil
+	}
+	if source.Kind == catalog.OptionSourceStatic {
+		return append([]catalog.SelectOptionDefinition(nil), source.StaticOptions...), nil
+	}
+	if source.Kind != catalog.OptionSourceCollection {
+		return nil, fmt.Errorf("unsupported source kind %q", source.Kind)
+	}
+	definition, exists := current.Definition(source.Collection)
+	if !exists {
+		return nil, fmt.Errorf("option collection %q is unavailable", source.Collection)
+	}
+	records, err := overlay.Evaluate(overlay.Query{
+		Collection: source.Collection,
+		Scope:      overlay.Scope{Region: request.Region, Environment: request.Environment, Stage: request.Stage},
+	}, current.Records(source.Collection), current.OverlayRules(source.Collection))
+	if err != nil {
+		return nil, fmt.Errorf("evaluate option collection: %w", err)
+	}
+	canonicalFilters := make([]catalog.OptionFixedFilter, len(source.FixedFilters))
+	for index, filter := range source.FixedFilters {
+		field, _ := definition.Field(filter.Field)
+		value, err := catalog.CanonicalizeScalar(field.Type, filter.Value)
+		if err != nil {
+			return nil, err
+		}
+		canonicalFilters[index] = catalog.OptionFixedFilter{Field: filter.Field, Value: value}
+	}
+	options := make([]catalog.SelectOptionDefinition, 0, len(records))
+	labels := make(map[string]string)
+	for _, record := range records {
+		matches := true
+		for _, filter := range canonicalFilters {
+			if record.Data[filter.Field] != filter.Value {
+				matches = false
+				break
+			}
+		}
+		if !matches {
+			continue
+		}
+		code, codePresent := record.Data[source.ValueField]
+		label, labelPresent := record.Data[source.LabelField]
+		if !codePresent || !labelPresent {
+			return nil, fmt.Errorf("record %q lacks option value or label", record.RecordKey)
+		}
+		if previous, duplicate := labels[code]; duplicate {
+			if previous != label {
+				return nil, fmt.Errorf("option code %q has conflicting labels", code)
+			}
+			continue
+		}
+		labels[code] = label
+		options = append(options, catalog.SelectOptionDefinition{Code: code, Label: label})
+	}
+	if len(options) > int(source.Limit) || len(options) > 1000 {
+		return nil, fmt.Errorf("option count %d exceeds limit %d", len(options), source.Limit)
+	}
+	sort.Slice(options, func(left, right int) bool { return options[left].Code < options[right].Code })
+	return options, nil
 }
 
 func cloneStringPointer(value *string) *string {

@@ -184,4 +184,49 @@ func TestCompileModelRejectsInvalidReleaseTypes(t *testing.T) {
 	}
 }
 
+func TestCompileModelRequiresTypedOptionsAndProtectsSensitiveFields(t *testing.T) {
+	t.Parallel()
+	definition := sensitiveOptionCollection(t)
+	base := domain.ModelSpec{
+		Code: "credential-admin", Name: "Credentials", Collection: definition.Name(),
+		Fields: []domain.ModelField{
+			{Name: "name", Type: domain.FieldTypeString, Required: true, Editable: true, Queryable: true, UIControl: domain.UIControlSelect, AllowedFilterOperators: []domain.FilterOperator{domain.FilterExact}},
+			{Name: "secret", Type: domain.FieldTypeString, Required: true, Sensitive: true, Editable: true, UIControl: domain.UIControlInput},
+		},
+		ProjectionFields: []string{"name", "secret"}, KeyFields: []string{"name"}, DefaultPageSize: 20, MaxPageSize: 100, ConfigRevision: 3,
+	}
+	if _, err := domain.CompileModel(definition, base); err == nil {
+		t.Fatal("SELECT without option source compiled")
+	}
+	base.Fields[0].OptionSource = &domain.OptionSourceDefinition{Kind: domain.OptionSourceStatic, StaticOptions: []domain.SelectOptionDefinition{{Code: "visa", Label: "Visa"}, {Code: "disabled", Label: "Legacy", Disabled: true}}}
+	model, err := domain.CompileModel(definition, base)
+	if err != nil {
+		t.Fatalf("CompileModel: %v", err)
+	}
+	options := model.Fields()[0].OptionSource.StaticOptions
+	if len(options) != 2 || options[1].Code != "visa" {
+		t.Fatalf("compiled static options = %+v", options)
+	}
+	base.Fields[1].Queryable = true
+	base.Fields[1].AllowedFilterOperators = []domain.FilterOperator{domain.FilterExact}
+	if _, err := domain.CompileModel(definition, base); err == nil {
+		t.Fatal("sensitive queryable field compiled")
+	}
+}
+
+func sensitiveOptionCollection(t *testing.T) domain.CollectionDefinition {
+	t.Helper()
+	definition, err := domain.CompileCollection(domain.CollectionSpec{
+		Name: "credentials", KeyFields: []string{"name"}, SchemaVersion: 1,
+		Fields: []domain.FieldDefinition{
+			{Name: "name", DisplayName: "Name", Type: domain.FieldTypeString, Required: true, DisplayOrder: 0},
+			{Name: "secret", DisplayName: "Secret", Type: domain.FieldTypeString, Required: true, Sensitive: true, DisplayOrder: 1},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return definition
+}
+
 func ptr(value string) *string { return &value }

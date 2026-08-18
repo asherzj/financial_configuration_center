@@ -282,7 +282,41 @@ func buildSnapshot(seed IdentitySeed, generation uint64, publishedAt time.Time, 
 			candidate.models[model.Code()] = model
 		}
 	}
+	if err := validateOptionDependencies(candidate); err != nil {
+		return nil, err
+	}
 	return candidate, nil
+}
+
+func validateOptionDependencies(candidate *Snapshot) error {
+	for _, model := range candidate.models {
+		for _, field := range model.Fields() {
+			source := field.OptionSource
+			if source == nil || source.Kind != catalog.OptionSourceCollection {
+				continue
+			}
+			view, exists := candidate.collections[source.Collection]
+			if !exists {
+				return fmt.Errorf("build snapshot: model %q option collection %q is missing", model.Code(), source.Collection)
+			}
+			for _, name := range []string{source.ValueField, source.LabelField} {
+				definition, exists := view.definition.Field(name)
+				if !exists || definition.Sensitive {
+					return fmt.Errorf("build snapshot: model %q option field %q is missing or sensitive", model.Code(), name)
+				}
+			}
+			for _, filter := range source.FixedFilters {
+				definition, exists := view.definition.Field(filter.Field)
+				if !exists || definition.Sensitive {
+					return fmt.Errorf("build snapshot: model %q option filter %q is missing or sensitive", model.Code(), filter.Field)
+				}
+				if _, err := catalog.CanonicalizeScalar(definition.Type, filter.Value); err != nil {
+					return fmt.Errorf("build snapshot: model %q option filter %q: %w", model.Code(), filter.Field, err)
+				}
+			}
+		}
+	}
+	return nil
 }
 
 func cloneRecord(record catalog.ConfigurationRecord) catalog.ConfigurationRecord {
