@@ -1,6 +1,6 @@
 # FC-004 Manual approval workflow
 
-- Status: blocked
+- Status: in-progress
 - Blocked by: FC-003
 - Spec: acceptance scenario 6
 

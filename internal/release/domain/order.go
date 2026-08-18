@@ -38,8 +38,10 @@ const (
 type StepType string
 
 const (
-	StepBaseApply StepType = "BASE_APPLY"
-	StepComplete  StepType = "COMPLETE"
+	StepManualReview StepType = "MANUAL_REVIEW"
+	StepBaseApply    StepType = "BASE_APPLY"
+	StepCompare      StepType = "COMPARE"
+	StepComplete     StepType = "COMPLETE"
 )
 
 type StepStatus string
