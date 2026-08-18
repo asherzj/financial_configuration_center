@@ -1,0 +1,16 @@
+{
+  "name": "finconfig-workspace",
+  "private": true,
+  "packageManager": "pnpm@11.4.0",
+  "engines": {
+    "node": ">=24 <26",
+    "pnpm": "11.4.0"
+  },
+  "scripts": {
+    "build": "pnpm --recursive --if-present build",
+    "generate:api": "pnpm --filter @finconfig/admin-console generate:api",
+    "lint": "pnpm --recursive --if-present lint",
+    "test": "pnpm --recursive --if-present test",
+    "typecheck": "pnpm --recursive --if-present typecheck"
+  }
+}

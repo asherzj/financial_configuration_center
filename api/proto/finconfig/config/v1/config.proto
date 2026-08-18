@@ -1,0 +1,230 @@
+syntax = "proto3";
+
+package finconfig.config.v1;
+
+import "finconfig/common/v1/common.proto";
+import "google/protobuf/timestamp.proto";
+
+option go_package = "github.com/asherzj/financial_configuration_center/gen/go/finconfig/config/v1;configv1";
+
+service ConfigService {
+  rpc GetSnapshot(GetSnapshotRequest) returns (GetSnapshotResponse);
+  rpc DiffVersions(DiffVersionsRequest) returns (DiffVersionsResponse);
+  rpc GetCollections(GetCollectionsRequest) returns (GetCollectionsResponse);
+  rpc Watch(WatchRequest) returns (stream WatchResponse);
+}
+
+service PageQueryService {
+  rpc QueryPage(QueryPageRequest) returns (QueryPageResponse);
+}
+
+service RefreshService {
+  rpc Notify(NotifyRequest) returns (NotifyResponse);
+}
+
+service DiagnosticsService {
+  rpc GetSnapshotStatus(GetSnapshotStatusRequest) returns (GetSnapshotStatusResponse);
+  rpc GetCollectionStatus(GetCollectionStatusRequest) returns (GetCollectionStatusResponse);
+}
+
+message VersionView {
+  string collection = 1;
+  int64 config_revision = 2;
+  finconfig.common.v1.Digest base_digest = 3;
+  finconfig.common.v1.Digest overlay_digest = 4;
+  finconfig.common.v1.Digest effective_digest = 5;
+}
+
+message GetSnapshotRequest {
+  string consumer_id = 1;
+  string client_id = 2;
+  finconfig.common.v1.Scope scope = 3;
+  repeated VersionView known_versions = 4;
+}
+
+message CollectionPayload {
+  string collection = 1;
+  string codec = 2;
+  int32 format_version = 3;
+  bytes data = 4;
+  VersionView version = 5;
+  int64 change_cursor = 6;
+}
+
+message GetSnapshotResponse {
+  finconfig.common.v1.SnapshotIdentity snapshot = 1;
+  finconfig.common.v1.Scope scope = 2;
+  repeated CollectionPayload collections = 3;
+  repeated string deleted_collections = 4;
+}
+
+message DiffVersionsRequest {
+  string consumer_id = 1;
+  string client_id = 2;
+  finconfig.common.v1.Scope scope = 3;
+  repeated VersionView known_versions = 4;
+}
+
+message DiffVersionsResponse {
+  finconfig.common.v1.SnapshotIdentity snapshot = 1;
+  repeated string added = 2;
+  repeated string modified = 3;
+  repeated string deleted = 4;
+}
+
+message GetCollectionsRequest {
+  string consumer_id = 1;
+  string client_id = 2;
+  finconfig.common.v1.Scope scope = 3;
+  repeated string collections = 4;
+  optional int64 min_config_revision = 5;
+}
+
+message GetCollectionsResponse {
+  finconfig.common.v1.SnapshotIdentity snapshot = 1;
+  repeated CollectionPayload collections = 2;
+}
+
+message WatchRequest {
+  string consumer_id = 1;
+  string client_id = 2;
+  finconfig.common.v1.Scope scope = 3;
+}
+
+message WatchResponse {
+  string event_id = 1;
+  finconfig.common.v1.SnapshotIdentity snapshot = 2;
+  repeated VersionView versions = 3;
+  bool resync_required = 4;
+  google.protobuf.Timestamp occurred_at = 5;
+}
+
+message ScalarValue {
+  finconfig.common.v1.FieldType type = 1;
+  string canonical = 2;
+}
+
+message FilterCondition {
+  string field = 1;
+  finconfig.common.v1.FilterOperator operator = 2;
+  optional ScalarValue value = 3;
+  optional ScalarValue lower = 4;
+  optional ScalarValue upper = 5;
+  repeated ScalarValue set = 6;
+}
+
+message QueryPageRequest {
+  string model_code = 1;
+  finconfig.common.v1.Scope scope = 2;
+  finconfig.common.v1.QueryPageType query_type = 3;
+  repeated FilterCondition conditions = 4;
+  finconfig.common.v1.PageRequest page = 5;
+  optional int32 preview_bucket = 6;
+}
+
+message SelectOption {
+  string code = 1;
+  string label = 2;
+  bool disabled = 3;
+}
+
+message ValidationRule {
+  string kind = 1;
+  map<string, string> params = 2;
+  string message = 3;
+}
+
+message AutoFillRule {
+  string source = 1;
+  string value = 2;
+}
+
+message PageInteractionField {
+  string name = 1;
+  string display_name = 2;
+  string description = 3;
+  finconfig.common.v1.FieldType type = 4;
+  finconfig.common.v1.UiControlType ui_control = 5;
+  bool queryable = 6;
+  bool editable = 7;
+  bool is_required = 8;
+  bool sensitive = 9;
+  bool projected = 10;
+  bool key_field = 11;
+  optional AutoFillRule auto_fill = 12;
+  repeated finconfig.common.v1.FilterOperator allowed_filter_operators = 13;
+  finconfig.common.v1.FilterOperator default_filter_operator = 14;
+  repeated ValidationRule validation_rules = 15;
+  optional string default_value = 16;
+  int32 display_order = 17;
+  repeated SelectOption options = 18;
+}
+
+message PageRow {
+  string record_key = 1;
+  int64 record_revision = 2;
+  map<string, string> values = 3;
+  repeated string masked_fields = 4;
+}
+
+message ReleaseType {
+  string code = 1;
+  string name = 2;
+  string template_code = 3;
+  bool available = 4;
+  optional string unavailable_reason_code = 5;
+}
+
+message QueryPageResponse {
+  string model_code = 1;
+  string model_name = 2;
+  finconfig.common.v1.QueryPageType query_type = 3;
+  repeated PageRow rows = 4;
+  repeated string projection_fields = 5;
+  repeated PageInteractionField interaction_fields = 6;
+  repeated ReleaseType release_types = 7;
+  finconfig.common.v1.PageResponse page = 8;
+  finconfig.common.v1.SnapshotIdentity snapshot = 9;
+  int64 model_revision = 10;
+  int64 collection_revision = 11;
+}
+
+message RefreshTarget {
+  string collection = 1;
+  int64 min_config_revision = 2;
+  int64 target_cursor = 3;
+}
+
+message NotifyRequest {
+  string event_id = 1;
+  repeated RefreshTarget targets = 2;
+  finconfig.common.v1.Scope scope = 3;
+  string release_order_id = 4;
+  string trace_id = 5;
+}
+
+message NotifyResponse {
+  bool accepted = 1;
+  finconfig.common.v1.SnapshotIdentity snapshot = 2;
+}
+
+message GetSnapshotStatusRequest {}
+
+message GetSnapshotStatusResponse {
+  finconfig.common.v1.SnapshotIdentity snapshot = 1;
+  int64 collection_count = 2;
+  repeated string failed_dependency_groups = 3;
+}
+
+message GetCollectionStatusRequest {
+  string collection = 1;
+  string environment = 2;
+}
+
+message GetCollectionStatusResponse {
+  string collection = 1;
+  string environment = 2;
+  VersionView version = 3;
+  int64 change_cursor = 4;
+  optional string last_error_code = 5;
+}

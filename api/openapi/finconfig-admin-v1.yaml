@@ -1,0 +1,385 @@
+openapi: 3.1.0
+info:
+  title: FinConfig Admin API
+  version: 1.0.0
+  description: Browser-facing Admin BFF contract. Configuration records have no direct mutation route.
+servers:
+  - url: /api/v1
+security:
+  - sessionCookie: []
+paths:
+  /session:
+    get:
+      operationId: getSession
+      responses:
+        '200':
+          description: Authenticated session
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Session'}
+  /query-page:
+    post:
+      operationId: queryPage
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/QueryPageRequest'}
+      responses:
+        '200':
+          description: Page data and optional interaction metadata
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/QueryPageResponse'}
+        default: {$ref: '#/components/responses/Error'}
+  /collections:
+    get:
+      operationId: listCollections
+      responses:
+        '200':
+          description: Collections
+          content:
+            application/json:
+              schema:
+                type: array
+                items: {$ref: '#/components/schemas/Collection'}
+    post:
+      operationId: createCollection
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/Collection'}
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Collection'}
+        default: {$ref: '#/components/responses/Error'}
+  /collections/{name}:
+    parameters:
+      - {$ref: '#/components/parameters/CollectionName'}
+    get:
+      operationId: getCollection
+      responses:
+        '200':
+          description: Collection
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Collection'}
+        default: {$ref: '#/components/responses/Error'}
+    put:
+      operationId: updateCollection
+      parameters:
+        - {$ref: '#/components/parameters/ExpectedRevision'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/Collection'}
+      responses:
+        '200':
+          description: Updated
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Collection'}
+        default: {$ref: '#/components/responses/Error'}
+  /subscriptions:
+    get:
+      operationId: listSubscriptions
+      responses:
+        '200': {description: Subscriptions}
+    post:
+      operationId: createSubscription
+      responses:
+        '201': {description: Created}
+  /models:
+    get:
+      operationId: listModels
+      responses:
+        '200': {description: Models}
+    post:
+      operationId: createModel
+      responses:
+        '201': {description: Created}
+  /templates:
+    get:
+      operationId: listReleaseTemplates
+      responses:
+        '200': {description: Template versions}
+    post:
+      operationId: createReleaseTemplate
+      responses:
+        '201': {description: Immutable template version created}
+  /releases:
+    get:
+      operationId: listReleaseOrders
+      responses:
+        '200': {description: Release orders}
+    post:
+      operationId: createReleaseOrder
+      parameters:
+        - {$ref: '#/components/parameters/IdempotencyKey'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/CreateReleaseOrder'}
+      responses:
+        '201':
+          description: Release order
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ReleaseOrderDetail'}
+        default: {$ref: '#/components/responses/Error'}
+  /releases/{id}:
+    parameters:
+      - {$ref: '#/components/parameters/ReleaseID'}
+    get:
+      operationId: getReleaseOrder
+      responses:
+        '200':
+          description: Release detail
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ReleaseOrderDetail'}
+        default: {$ref: '#/components/responses/Error'}
+  /releases/{id}/actions:
+    parameters:
+      - {$ref: '#/components/parameters/ReleaseID'}
+      - {$ref: '#/components/parameters/IdempotencyKey'}
+    post:
+      operationId: actOnReleaseOrder
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/ReleaseActionRequest'}
+      responses:
+        '200':
+          description: Updated release detail
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ReleaseOrderDetail'}
+        default: {$ref: '#/components/responses/Error'}
+  /releases/{id}/compensations:
+    parameters:
+      - {$ref: '#/components/parameters/ReleaseID'}
+      - {$ref: '#/components/parameters/IdempotencyKey'}
+    post:
+      operationId: createCompensatingRelease
+      responses:
+        '201': {description: Compensation release created}
+  /sensitive-fields/reveal:
+    post:
+      operationId: revealSensitiveField
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/RevealFieldRequest'}
+      responses:
+        '200':
+          description: Ephemeral value; response is never cacheable
+          headers:
+            Cache-Control:
+              schema: {type: string, const: no-store}
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [value, expiresAt]
+                properties:
+                  value: {type: string}
+                  expiresAt: {type: string, format: date-time}
+        default: {$ref: '#/components/responses/Error'}
+  /diagnostics/snapshot:
+    get:
+      operationId: getSnapshotDiagnostics
+      responses:
+        '200': {description: Snapshot metadata without configuration values}
+  /audit-records:
+    get:
+      operationId: listAuditRecords
+      responses:
+        '200': {description: Masked audit records}
+  /outbox-events:
+    get:
+      operationId: listOutboxEvents
+      responses:
+        '200': {description: Outbox metadata}
+  /outbox-events/{id}/replay:
+    post:
+      operationId: replayOutboxEvent
+      parameters:
+        - {name: id, in: path, required: true, schema: {type: string, format: uuid}}
+        - {$ref: '#/components/parameters/ExpectedRevision'}
+      responses:
+        '200': {description: Replay scheduled}
+        default: {$ref: '#/components/responses/Error'}
+components:
+  securitySchemes:
+    sessionCookie:
+      type: apiKey
+      in: cookie
+      name: finconfig_session
+  parameters:
+    CollectionName:
+      name: name
+      in: path
+      required: true
+      schema: {type: string, pattern: '^[A-Za-z][A-Za-z0-9._-]{0,190}$'}
+    ReleaseID:
+      name: id
+      in: path
+      required: true
+      schema: {type: string, format: uuid}
+    ExpectedRevision:
+      name: If-Match
+      in: header
+      required: true
+      schema: {type: integer, format: int64, minimum: 1}
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      schema: {type: string, format: uuid}
+  responses:
+    Error:
+      description: Stable error envelope
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/ErrorEnvelope'}
+  schemas:
+    Scope:
+      type: object
+      additionalProperties: false
+      required: [region, environment]
+      properties:
+        region: {type: string, minLength: 1}
+        environment: {type: string, minLength: 1}
+        stage: {type: string}
+    SnapshotIdentity:
+      type: object
+      additionalProperties: false
+      required: [serverEpoch, serverInstanceId, snapshotInstance, snapshotGeneration]
+      properties:
+        serverEpoch: {type: string, format: uuid}
+        serverInstanceId: {type: string, format: uuid}
+        snapshotInstance: {type: string, format: uuid}
+        snapshotGeneration: {type: integer, format: int64, minimum: 1}
+    Session:
+      type: object
+      required: [subject, displayName, roles, scopes, expiresAt]
+      properties:
+        subject: {type: string}
+        displayName: {type: string}
+        roles: {type: array, items: {type: string}}
+        scopes: {type: array, items: {$ref: '#/components/schemas/Scope'}}
+        expiresAt: {type: string, format: date-time}
+    Collection:
+      type: object
+      additionalProperties: false
+      required: [name, fields, keyFields, sdkDeliveryEnabled, schemaVersion, status, configRevision]
+      properties:
+        name: {type: string}
+        description: {type: string}
+        fields: {type: array, minItems: 1, items: {type: object}}
+        keyFields: {type: array, minItems: 1, items: {type: string}}
+        sdkDeliveryEnabled: {type: boolean}
+        schemaVersion: {type: integer, format: int64, minimum: 1}
+        status: {type: string, enum: [ENABLED, DISABLED]}
+        configRevision: {type: integer, format: int64, minimum: 1}
+    QueryPageRequest:
+      type: object
+      additionalProperties: false
+      required: [modelCode, scope, queryType]
+      properties:
+        modelCode: {type: string}
+        scope: {$ref: '#/components/schemas/Scope'}
+        queryType: {type: string, enum: [ALL, ONLY_DATA]}
+        conditions: {type: array, maxItems: 20, items: {type: object}}
+        pageNumber: {type: integer, minimum: 1}
+        pageSize: {type: integer, minimum: 1, maximum: 200}
+        previewBucket: {type: integer, minimum: 0, maximum: 99}
+    QueryPageResponse:
+      type: object
+      required: [modelCode, rows, projectionFields, interactionFields, releaseTypes, snapshot]
+      properties:
+        modelCode: {type: string}
+        rows: {type: array, items: {type: object}}
+        projectionFields: {type: array, items: {type: string}}
+        interactionFields: {type: array, items: {type: object}}
+        releaseTypes: {type: array, items: {type: object}}
+        snapshot: {$ref: '#/components/schemas/SnapshotIdentity'}
+    ReleaseItemInput:
+      type: object
+      additionalProperties: false
+      required: [action, baseBefore, effectiveBefore, after, expectedRecordRevision, expectedCollectionRevision]
+      properties:
+        action: {type: string, enum: [ADD, MODIFY, DELETE]}
+        baseBefore: {type: object, additionalProperties: {type: string}}
+        effectiveBefore: {type: object, additionalProperties: {type: string}}
+        after: {type: object, additionalProperties: {type: string}}
+        expectedRecordRevision: {type: integer, format: int64, minimum: 0}
+        expectedCollectionRevision: {type: integer, format: int64, minimum: 1}
+        preserveSensitiveFields: {type: array, items: {type: string}}
+    CreateReleaseOrder:
+      type: object
+      additionalProperties: false
+      required: [modelCode, releaseTypeCode, scope, description, items]
+      properties:
+        modelCode: {type: string}
+        releaseTypeCode: {type: string}
+        scope: {$ref: '#/components/schemas/Scope'}
+        description: {type: string, minLength: 1}
+        items: {type: array, minItems: 1, maxItems: 500, items: {$ref: '#/components/schemas/ReleaseItemInput'}}
+        effectiveFrom: {type: string, format: date-time}
+        effectiveUntil: {type: string, format: date-time}
+    ReleaseActionRequest:
+      type: object
+      additionalProperties: false
+      required: [action, expectedOrderRevision, expectedCurrentStep]
+      properties:
+        action: {type: string, enum: [EXECUTE, ADVANCE, ROLLBACK, APPROVE, REJECT]}
+        expectedOrderRevision: {type: integer, format: int64, minimum: 1}
+        expectedCurrentStep: {type: string}
+        comment: {type: string}
+    ReleaseOrderDetail:
+      type: object
+      required: [order, items, steps, allowedActions]
+      properties:
+        order: {type: object}
+        items: {type: array, items: {type: object}}
+        steps: {type: array, items: {type: object}}
+        allowedActions: {type: array, items: {type: string}}
+    RevealFieldRequest:
+      type: object
+      additionalProperties: false
+      required: [modelCode, scope, recordKey, fieldName, expectedRecordRevision, expectedCollectionRevision, expectedModelRevision, expectedServerEpoch, expectedSnapshotInstance, expectedSnapshotGeneration, reason]
+      properties:
+        modelCode: {type: string}
+        scope: {$ref: '#/components/schemas/Scope'}
+        recordKey: {type: string}
+        fieldName: {type: string}
+        expectedRecordRevision: {type: integer, format: int64, minimum: 1}
+        expectedCollectionRevision: {type: integer, format: int64, minimum: 1}
+        expectedModelRevision: {type: integer, format: int64, minimum: 1}
+        expectedServerEpoch: {type: string, format: uuid}
+        expectedSnapshotInstance: {type: string, format: uuid}
+        expectedSnapshotGeneration: {type: integer, format: int64, minimum: 1}
+        reason: {type: string, minLength: 1}
+        previewBucket: {type: integer, minimum: 0, maximum: 99}
+    ErrorEnvelope:
+      type: object
+      additionalProperties: false
+      required: [code, message, traceId]
+      properties:
+        code: {type: string}
+        message: {type: string}
+        field: {type: string}
+        resourceType: {type: string}
+        resourceId: {type: string}
+        currentRevision: {type: integer, format: int64}
+        traceId: {type: string}
