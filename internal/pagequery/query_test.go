@@ -76,6 +76,37 @@ func TestOnlyDataOmitsInteractionMetadataAndRejectsInvalidPage(t *testing.T) {
 	}
 }
 
+func TestOnlyDataCompilesTypedConditionsBeforePagination(t *testing.T) {
+	t.Parallel()
+	manager, model, keys := querySnapshot(t)
+	querier := pagequery.New(manager)
+	pageNumber := int32(99)
+	result, err := querier.Query(pagequery.Request{
+		ModelCode: model.Code(), Region: "cn", Environment: "production", Type: pagequery.TypeOnlyData,
+		Page: pagequery.PageSpec{Number: &pageNumber},
+		Conditions: []pagequery.FilterCondition{
+			{Field: "route_code", Operator: catalog.FilterContains, Value: &pagequery.ScalarValue{Type: catalog.FieldTypeString, Canonical: "b"}},
+			{Field: "priority", Operator: catalog.FilterClosedRange, Lower: &pagequery.ScalarValue{Canonical: "+2"}, Upper: &pagequery.ScalarValue{Canonical: "2"}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Query conditions: %v", err)
+	}
+	if len(result.Rows) != 1 || result.Rows[0].RecordKey != keys[1] || result.PageNumber != 1 || result.TotalNumber != 1 {
+		t.Fatalf("filtered page = %+v", result)
+	}
+	_, err = querier.Query(pagequery.Request{
+		ModelCode: model.Code(), Region: "cn", Environment: "production", Type: pagequery.TypeOnlyData,
+		Conditions: []pagequery.FilterCondition{{
+			Field: "priority", Operator: catalog.FilterExact, Value: &pagequery.ScalarValue{Canonical: "1"},
+			Set: []pagequery.ScalarValue{{Canonical: "2"}},
+		}},
+	})
+	if err == nil {
+		t.Fatal("malformed EXACT condition succeeded")
+	}
+}
+
 func TestQueryPageReturnsScopeEffectiveValuesAndBaseDiff(t *testing.T) {
 	t.Parallel()
 
@@ -173,6 +204,12 @@ func TestAllResolvesCollectionOptionsAndMasksSensitiveProjection(t *testing.T) {
 	}
 	if _, leaked := result.Rows[0].Values["secret"]; leaked || !reflect.DeepEqual(result.Rows[0].MaskedFields, []string{"secret"}) {
 		t.Fatalf("sensitive row leaked = %+v", result.Rows[0])
+	}
+	if _, err := pagequery.New(manager).Query(pagequery.Request{
+		ModelCode: model.Code(), Region: "cn", Environment: "production", Type: pagequery.TypeOnlyData,
+		Conditions: []pagequery.FilterCondition{{Field: "provider", Operator: catalog.FilterExact, Value: &pagequery.ScalarValue{Canonical: "missing"}}},
+	}); err == nil {
+		t.Fatal("missing collection option query selection succeeded")
 	}
 }
 

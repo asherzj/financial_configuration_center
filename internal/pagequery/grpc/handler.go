@@ -3,6 +3,7 @@ package grpc
 import (
 	"context"
 	"errors"
+	"fmt"
 	"math"
 
 	catalog "github.com/asherzj/financial_configuration_center/internal/catalog/domain"
@@ -32,9 +33,6 @@ func (handler *Handler) QueryPage(_ context.Context, request *configv1.QueryPage
 	if request == nil || request.Scope == nil {
 		return nil, status.Error(codes.InvalidArgument, "model_code and scope are required")
 	}
-	if len(request.Conditions) != 0 {
-		return nil, status.Error(codes.Unimplemented, "filters are not implemented")
-	}
 	queryType, err := fromQueryType(request.QueryType)
 	if err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())
@@ -43,9 +41,17 @@ func (handler *Handler) QueryPage(_ context.Context, request *configv1.QueryPage
 	if request.Page != nil {
 		page.Number, page.Size = request.Page.Number, request.Page.Size
 	}
+	conditions := make([]pagequery.FilterCondition, len(request.Conditions))
+	for index, condition := range request.Conditions {
+		mapped, err := fromFilterCondition(condition)
+		if err != nil {
+			return nil, status.Error(codes.InvalidArgument, fmt.Sprintf("condition %d: %v", index, err))
+		}
+		conditions[index] = mapped
+	}
 	result, err := handler.application.Query(pagequery.Request{
 		ModelCode: request.ModelCode, Region: request.Scope.Region, Environment: request.Scope.Environment,
-		Stage: request.Scope.Stage, PreviewBucket: request.PreviewBucket, Type: queryType, Page: page,
+		Stage: request.Scope.Stage, PreviewBucket: request.PreviewBucket, Type: queryType, Page: page, Conditions: conditions,
 	})
 	if err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())
@@ -111,6 +117,95 @@ func (handler *Handler) QueryPage(_ context.Context, request *configv1.QueryPage
 		}
 	}
 	return response, nil
+}
+
+func fromFilterCondition(source *configv1.FilterCondition) (pagequery.FilterCondition, error) {
+	if source == nil {
+		return pagequery.FilterCondition{}, errors.New("condition is required")
+	}
+	operator, err := fromFilterOperator(source.Operator)
+	if err != nil {
+		return pagequery.FilterCondition{}, err
+	}
+	result := pagequery.FilterCondition{Field: source.Field, Operator: operator, Set: make([]pagequery.ScalarValue, len(source.Set))}
+	if source.Value != nil {
+		value, err := fromScalar(source.Value)
+		if err != nil {
+			return pagequery.FilterCondition{}, fmt.Errorf("value: %w", err)
+		}
+		result.Value = &value
+	}
+	if source.Lower != nil {
+		value, err := fromScalar(source.Lower)
+		if err != nil {
+			return pagequery.FilterCondition{}, fmt.Errorf("lower: %w", err)
+		}
+		result.Lower = &value
+	}
+	if source.Upper != nil {
+		value, err := fromScalar(source.Upper)
+		if err != nil {
+			return pagequery.FilterCondition{}, fmt.Errorf("upper: %w", err)
+		}
+		result.Upper = &value
+	}
+	for index, scalar := range source.Set {
+		value, err := fromScalar(scalar)
+		if err != nil {
+			return pagequery.FilterCondition{}, fmt.Errorf("set value %d: %w", index, err)
+		}
+		result.Set[index] = value
+	}
+	return result, nil
+}
+
+func fromScalar(source *configv1.ScalarValue) (pagequery.ScalarValue, error) {
+	if source == nil {
+		return pagequery.ScalarValue{}, errors.New("scalar is required")
+	}
+	fieldType, err := fromFieldType(source.Type)
+	if err != nil {
+		return pagequery.ScalarValue{}, err
+	}
+	return pagequery.ScalarValue{Type: fieldType, Canonical: source.Canonical}, nil
+}
+
+func fromFieldType(value commonv1.FieldType) (catalog.FieldType, error) {
+	switch value {
+	case commonv1.FieldType_FIELD_TYPE_STRING:
+		return catalog.FieldTypeString, nil
+	case commonv1.FieldType_FIELD_TYPE_INT64:
+		return catalog.FieldTypeInt64, nil
+	case commonv1.FieldType_FIELD_TYPE_FLOAT64:
+		return catalog.FieldTypeFloat64, nil
+	case commonv1.FieldType_FIELD_TYPE_BOOL:
+		return catalog.FieldTypeBool, nil
+	case commonv1.FieldType_FIELD_TYPE_TIMESTAMP:
+		return catalog.FieldTypeTimestamp, nil
+	case commonv1.FieldType_FIELD_TYPE_JSON:
+		return catalog.FieldTypeJSON, nil
+	default:
+		return "", fmt.Errorf("field type %q is invalid", value)
+	}
+}
+
+func fromFilterOperator(value commonv1.FilterOperator) (catalog.FilterOperator, error) {
+	switch value {
+	case commonv1.FilterOperator_FILTER_OPERATOR_EXACT:
+		return catalog.FilterExact, nil
+	case commonv1.FilterOperator_FILTER_OPERATOR_CONTAINS:
+		return catalog.FilterContains, nil
+	case commonv1.FilterOperator_FILTER_OPERATOR_CLOSED_RANGE:
+		return catalog.FilterClosedRange, nil
+	case commonv1.FilterOperator_FILTER_OPERATOR_OPEN_RANGE:
+		return catalog.FilterOpenRange, nil
+	case commonv1.FilterOperator_FILTER_OPERATOR_IN:
+		return catalog.FilterIn, nil
+	case commonv1.FilterOperator_FILTER_OPERATOR_NOT_IN:
+		return catalog.FilterNotIn, nil
+	default:
+		return "", fmt.Errorf("filter operator %q is invalid", value)
+	}
 }
 
 func optionalString(value string) *string {

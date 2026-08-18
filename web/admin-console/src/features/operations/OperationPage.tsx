@@ -26,10 +26,12 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { operationApi } from "./api";
 import type {
   CreateReleaseRequest,
+	FilterOperator,
   InteractionField,
   OperationApi,
   PageResult,
   PageRow,
+	QueryCondition,
   ReleaseAction,
   ReleaseDetail,
   Scope,
@@ -46,6 +48,13 @@ interface DraftRow {
   after: Record<string, string>;
   expectedRecordRevision: number;
   preserveSensitiveFields?: string[];
+}
+
+interface FilterDraft {
+	operator: FilterOperator;
+	value?: string;
+	lower?: string;
+	upper?: string;
 }
 
 export function OperationPage({ api = operationApi }: { api?: OperationApi }) {
@@ -66,6 +75,8 @@ export function OperationPage({ api = operationApi }: { api?: OperationApi }) {
   const [description, setDescription] = useState("");
   const [comment, setComment] = useState("");
   const [replaceSensitive, setReplaceSensitive] = useState<Record<string, boolean>>({});
+	const [filterDrafts, setFilterDrafts] = useState<Record<string, FilterDraft>>({});
+	const [activeConditions, setActiveConditions] = useState<QueryCondition[]>([]);
   const [error, setError] = useState<string>();
 
   const load = useCallback(async () => {
@@ -197,9 +208,58 @@ export function OperationPage({ api = operationApi }: { api?: OperationApi }) {
     setDrafts([]);
     setRelease(undefined);
     setReviewOpen(false);
+	setFilterDrafts({});
+	setActiveConditions([]);
     setActiveScope({ region, environment, ...(stage ? { stage } : {}) });
     setActivePreviewBucket(previewBucketDraft);
   };
+
+	const queryData = async (conditions: QueryCondition[], pageNumber = 1, pageSize = page?.page.size ?? 20) => {
+		if (!page) return false;
+		setLoading(true);
+		setError(undefined);
+		try {
+			const loaded = await api.queryPage({
+				modelCode,
+				scope: activeScope,
+				queryType: "ONLY_DATA",
+				conditions,
+				pageNumber,
+				pageSize,
+				...(activePreviewBucket === undefined ? {} : { previewBucket: activePreviewBucket }),
+			});
+			if (!sameSnapshot(page, loaded)) {
+				setFilterDrafts({});
+				setActiveConditions([]);
+				message.info("配置已更新，已回到第一页");
+				await load();
+				return false;
+			}
+			setPage({
+				...loaded,
+				projectionFields: page.projectionFields,
+				interactionFields: page.interactionFields,
+				releaseTypes: page.releaseTypes,
+			});
+			return true;
+		} catch (cause) {
+			setError(cause instanceof Error ? cause.message : "查询失败");
+			return false;
+		} finally {
+			setLoading(false);
+		}
+	};
+
+	const submitQuery = async () => {
+		if (!page) return;
+		const conditions = buildConditions(page.interactionFields, filterDrafts);
+		if (await queryData(conditions, 1)) setActiveConditions(conditions);
+	};
+
+	const resetQuery = async () => {
+		setFilterDrafts({});
+		if (await queryData([], 1)) setActiveConditions([]);
+	};
 
   const createRelease = async () => {
     if (!page || drafts.length === 0 || !selectedReleaseType?.available) return;
@@ -317,6 +377,27 @@ export function OperationPage({ api = operationApi }: { api?: OperationApi }) {
           <Typography.Text type="secondary">预览桶只影响诊断视图，不改变真实客户端分桶。</Typography.Text>
         </Flex>
       </Card>
+	  <Card size="small" title="查询条件">
+		<Flex gap={12} wrap align="end">
+		  {page?.interactionFields.filter((field) => field.queryable && !field.sensitive).map((field) => {
+			const draft = filterDrafts[field.name] ?? { operator: field.defaultFilterOperator };
+			const update = (change: Partial<FilterDraft>) => setFilterDrafts((current) => ({ ...current, [field.name]: { ...draft, ...change } }));
+			return (
+			  <div key={field.name} className="operation-filter-field">
+				<Typography.Text>{field.displayName}</Typography.Text>
+				<Space.Compact block>
+				  {field.allowedFilterOperators.length > 1 ? (
+					<Select aria-label={`${field.displayName} 操作符`} value={draft.operator} options={field.allowedFilterOperators.map((operator) => ({ value: operator, label: filterOperatorLabel(operator) }))} onChange={(operator) => update({ operator, value: undefined, lower: undefined, upper: undefined })} />
+				  ) : null}
+				  {filterEditor(field, draft, update)}
+				</Space.Compact>
+			  </div>
+			);
+		  })}
+		  <Button type="primary" onClick={() => void submitQuery()} disabled={loading}>查询</Button>
+		  <Button onClick={() => void resetQuery()} disabled={loading}>重置</Button>
+		</Flex>
+	  </Card>
       <Card
         title={page?.modelName ?? "配置"}
         extra={
@@ -330,7 +411,8 @@ export function OperationPage({ api = operationApi }: { api?: OperationApi }) {
           rowKey="recordKey"
           dataSource={page?.rows ?? []}
           columns={columns}
-          pagination={{ pageSize: page?.page.size ?? 20, total: page?.page.totalNumber ?? 0 }}
+		  loading={loading}
+		  pagination={{ current: page?.page.number ?? 1, pageSize: page?.page.size ?? 20, total: page?.page.totalNumber ?? 0, onChange: (number, size) => void queryData(activeConditions, number, size) }}
           locale={{ emptyText: "当前 Environment 尚无配置" }}
         />
       </Card>
@@ -536,6 +618,82 @@ function editor(field: InteractionField, disabled = false) {
     default:
       return <Input disabled={disabled} />;
   }
+}
+
+function filterEditor(field: InteractionField, draft: FilterDraft, update: (change: Partial<FilterDraft>) => void) {
+	if (draft.operator === "CLOSED_RANGE" || draft.operator === "OPEN_RANGE") {
+		return (
+		  <>
+			<Input aria-label={`${field.displayName} 下界`} placeholder="下界" value={draft.lower ?? ""} onChange={(event) => update({ lower: event.target.value })} />
+			<Input aria-label={`${field.displayName} 上界`} placeholder="上界" value={draft.upper ?? ""} onChange={(event) => update({ upper: event.target.value })} />
+		  </>
+		);
+	}
+	if (draft.operator === "IN" || draft.operator === "NOT_IN") {
+		return <Input aria-label={`筛选 ${field.displayName}`} placeholder="多个值用逗号分隔" value={draft.value ?? ""} onChange={(event) => update({ value: event.target.value })} />;
+	}
+	if (field.uiControl === "SELECT") {
+		return <Select allowClear aria-label={`筛选 ${field.displayName}`} value={draft.value} options={field.options.map((option) => ({ value: option.code, label: option.label, disabled: option.disabled }))} onChange={(value) => update({ value })} />;
+	}
+	if (field.uiControl === "BOOLEAN") {
+		return <Select allowClear aria-label={`筛选 ${field.displayName}`} value={draft.value} options={[{ value: "true", label: "是" }, { value: "false", label: "否" }]} onChange={(value) => update({ value })} />;
+	}
+	if (field.uiControl === "NUMBER") {
+		return <InputNumber stringMode aria-label={`筛选 ${field.displayName}`} value={draft.value} onChange={(value) => update({ value: value === null ? undefined : String(value) })} />;
+	}
+	if (field.uiControl === "TIME") {
+		return <Input type="datetime-local" aria-label={`筛选 ${field.displayName}`} value={draft.value ?? ""} onChange={(event) => update({ value: event.target.value })} />;
+	}
+	return <Input aria-label={`筛选 ${field.displayName}`} value={draft.value ?? ""} onChange={(event) => update({ value: event.target.value })} />;
+}
+
+function buildConditions(fields: InteractionField[], drafts: Record<string, FilterDraft>): QueryCondition[] {
+	const conditions: QueryCondition[] = [];
+	for (const field of fields) {
+		if (!field.queryable || field.sensitive) continue;
+		const draft = drafts[field.name];
+		if (!draft) continue;
+		if (draft.operator === "CLOSED_RANGE" || draft.operator === "OPEN_RANGE") {
+			const lower = canonicalFilterValue(field, draft.lower);
+			const upper = canonicalFilterValue(field, draft.upper);
+			if (lower === undefined && upper === undefined) continue;
+			conditions.push({ field: field.name, operator: draft.operator, ...(lower === undefined ? {} : { lower }), ...(upper === undefined ? {} : { upper }) });
+			continue;
+		}
+		if (draft.operator === "IN" || draft.operator === "NOT_IN") {
+			const values = (draft.value ?? "").split(",").map((value) => canonicalFilterValue(field, value)).filter((value): value is string => value !== undefined);
+			if (values.length === 0) continue;
+			conditions.push({ field: field.name, operator: draft.operator, set: [...new Set(values)] });
+			continue;
+		}
+		const value = canonicalFilterValue(field, draft.value);
+		if (value !== undefined) conditions.push({ field: field.name, operator: draft.operator, value });
+	}
+	return conditions;
+}
+
+function canonicalFilterValue(field: InteractionField, source?: string) {
+	const value = source?.trim();
+	if (!value) return undefined;
+	return toCanonicalInput(field, value);
+}
+
+function filterOperatorLabel(operator: FilterOperator) {
+	switch (operator) {
+		case "EXACT": return "等于";
+		case "CONTAINS": return "包含";
+		case "CLOSED_RANGE": return "闭区间";
+		case "OPEN_RANGE": return "开区间";
+		case "IN": return "属于";
+		case "NOT_IN": return "不属于";
+	}
+}
+
+function sameSnapshot(left: PageResult, right: PageResult) {
+	return left.snapshot.serverEpoch === right.snapshot.serverEpoch
+		&& left.snapshot.serverInstanceId === right.snapshot.serverInstanceId
+		&& left.snapshot.snapshotInstance === right.snapshot.snapshotInstance
+		&& left.snapshot.snapshotGeneration === right.snapshot.snapshotGeneration;
 }
 
 function renderValue(field: InteractionField, value?: string, masked = false) {

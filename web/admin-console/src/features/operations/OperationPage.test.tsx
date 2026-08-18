@@ -191,6 +191,42 @@ describe("OperationPage", () => {
 	expect(await screen.findByText("草稿 1")).toBeInTheDocument();
   });
 
+  it("queries ONLY_DATA from dynamic filters while retaining ALL metadata", async () => {
+	const onlyData: PageResult = {
+		...page,
+		queryType: "ONLY_DATA",
+		projectionFields: [],
+		interactionFields: [],
+		releaseTypes: [],
+		page: { ...page.page, totalNumber: 1 },
+	};
+	const queryPage = vi.fn()
+		.mockResolvedValueOnce(page)
+		.mockResolvedValueOnce(onlyData)
+		.mockResolvedValueOnce(onlyData);
+	const api: OperationApi = {
+		queryPage,
+		createRelease: vi.fn().mockResolvedValue(created),
+		actOnRelease: vi.fn().mockResolvedValue(created),
+	};
+	render(<OperationPage api={api} />);
+
+	await screen.findByText("visa-cn");
+	fireEvent.change(screen.getByLabelText("筛选 Route code"), { target: { value: "visa-cn" } });
+	fireEvent.click(screen.getByRole("button", { name: /查\s*询/ }));
+	await waitFor(() => expect(queryPage).toHaveBeenCalledTimes(2));
+	expect(queryPage.mock.calls[1]?.[0]).toMatchObject({
+		queryType: "ONLY_DATA",
+		pageNumber: 1,
+		conditions: [{ field: "route_code", operator: "EXACT", value: "visa-cn" }],
+	});
+	expect(screen.getByRole("columnheader", { name: "Route code" })).toBeInTheDocument();
+
+	fireEvent.click(screen.getByRole("button", { name: /重\s*置/ }));
+	await waitFor(() => expect(queryPage).toHaveBeenCalledTimes(3));
+	expect(queryPage.mock.calls[2]?.[0].conditions).toEqual([]);
+  });
+
   it("selects an approval release type and drives manual review from server actions", async () => {
     const approvalPage: PageResult = {
       ...page,

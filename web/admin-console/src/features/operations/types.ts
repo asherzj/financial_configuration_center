@@ -39,6 +39,15 @@ export interface Scope {
   stage?: string;
 }
 
+export interface QueryCondition {
+  field: string;
+  operator: FilterOperator;
+  value?: string;
+  lower?: string;
+  upper?: string;
+  set?: string[];
+}
+
 export interface PageResult {
   modelCode: string;
   modelName: string;
@@ -114,6 +123,9 @@ export interface OperationApi {
     scope: Scope;
     queryType: "ALL" | "ONLY_DATA";
     previewBucket?: number;
+	conditions?: QueryCondition[];
+	pageNumber?: number;
+	pageSize?: number;
   }): Promise<PageResult>;
   createRelease(request: CreateReleaseRequest, idempotencyKey: string): Promise<ReleaseDetail>;
   actOnRelease(

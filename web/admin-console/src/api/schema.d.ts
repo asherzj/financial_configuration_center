@@ -317,7 +317,7 @@ export interface components {
             scope: components["schemas"]["Scope"];
             /** @enum {string} */
             queryType: "ALL" | "ONLY_DATA";
-            conditions?: Record<string, never>[];
+            conditions?: components["schemas"]["FilterCondition"][];
             pageNumber?: number;
             pageSize?: number;
             previewBucket?: number;
@@ -329,6 +329,15 @@ export interface components {
             interactionFields: Record<string, never>[];
             releaseTypes: components["schemas"]["ReleaseTypeMetadata"][];
             snapshot: components["schemas"]["SnapshotIdentity"];
+        };
+        FilterCondition: {
+            field: string;
+            /** @enum {string} */
+            operator: "EXACT" | "CONTAINS" | "CLOSED_RANGE" | "OPEN_RANGE" | "IN" | "NOT_IN";
+            value?: string;
+            lower?: string;
+            upper?: string;
+            set?: string[];
         };
         PageRow: {
             recordKey: string;

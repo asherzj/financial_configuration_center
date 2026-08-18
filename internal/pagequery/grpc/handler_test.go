@@ -42,6 +42,7 @@ func TestQueryPageMapsCompleteAllMetadata(t *testing.T) {
 	response, err := handler.QueryPage(t.Context(), &configv1.QueryPageRequest{
 		ModelCode: "model", Scope: &commonv1.Scope{Region: "cn", Environment: "production", Stage: "blue"},
 		QueryType: commonv1.QueryPageType_QUERY_PAGE_TYPE_ALL, PreviewBucket: int32Pointer(42),
+		Conditions: []*configv1.FilterCondition{{Field: "code", Operator: commonv1.FilterOperator_FILTER_OPERATOR_EXACT, Value: &configv1.ScalarValue{Type: commonv1.FieldType_FIELD_TYPE_STRING, Canonical: "active"}}},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -63,6 +64,9 @@ func TestQueryPageMapsCompleteAllMetadata(t *testing.T) {
 	}
 	if application.last.Region != "cn" || application.last.Stage != "blue" || application.last.PreviewBucket == nil || *application.last.PreviewBucket != 42 {
 		t.Fatalf("QueryPage scope request = %+v", application.last)
+	}
+	if len(application.last.Conditions) != 1 || application.last.Conditions[0].Value == nil || application.last.Conditions[0].Value.Canonical != "active" {
+		t.Fatalf("QueryPage conditions = %+v", application.last.Conditions)
 	}
 }
 

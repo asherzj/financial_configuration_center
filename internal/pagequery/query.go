@@ -5,7 +5,9 @@ import (
 	"fmt"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
+	"time"
 
 	catalog "github.com/asherzj/financial_configuration_center/internal/catalog/domain"
 	"github.com/asherzj/financial_configuration_center/internal/distribution/snapshot"
@@ -15,6 +17,8 @@ import (
 type SnapshotProvider interface {
 	Current() *snapshot.Snapshot
 }
+
+var ErrInvalidArgument = errors.New("invalid page query argument")
 
 type QueryType string
 
@@ -36,6 +40,30 @@ type Request struct {
 	PreviewBucket *int32
 	Type          QueryType
 	Page          PageSpec
+	Conditions    []FilterCondition
+}
+
+type ScalarValue struct {
+	Type      catalog.FieldType
+	Canonical string
+}
+
+type FilterCondition struct {
+	Field    string
+	Operator catalog.FilterOperator
+	Value    *ScalarValue
+	Lower    *ScalarValue
+	Upper    *ScalarValue
+	Set      []ScalarValue
+}
+
+type compiledCondition struct {
+	field    catalog.ModelField
+	operator catalog.FilterOperator
+	value    string
+	lower    *string
+	upper    *string
+	set      map[string]struct{}
 }
 
 type InteractionField struct {
@@ -107,13 +135,13 @@ func (querier *Querier) Query(request Request) (Result, error) {
 	request.Environment = strings.TrimSpace(request.Environment)
 	request.Stage = strings.TrimSpace(request.Stage)
 	if request.ModelCode == "" || request.Region == "" || request.Environment == "" {
-		return Result{}, errors.New("page query: model, region, and environment are required")
+		return Result{}, fmt.Errorf("%w: model, region, and environment are required", ErrInvalidArgument)
 	}
 	if request.PreviewBucket != nil && (*request.PreviewBucket < 0 || *request.PreviewBucket > 99) {
-		return Result{}, errors.New("page query: preview bucket must be between 0 and 99")
+		return Result{}, fmt.Errorf("%w: preview bucket must be between 0 and 99", ErrInvalidArgument)
 	}
 	if request.Type != TypeAll && request.Type != TypeOnlyData {
-		return Result{}, fmt.Errorf("page query: unsupported query type %q", request.Type)
+		return Result{}, fmt.Errorf("%w: unsupported query type %q", ErrInvalidArgument, request.Type)
 	}
 	current := querier.snapshots.Current()
 	if current == nil || current.Environment() != request.Environment {
@@ -131,10 +159,14 @@ func (querier *Querier) Query(request Request) (Result, error) {
 	if !exists {
 		return Result{}, errors.New("page query: collection version is not loaded")
 	}
+	conditions, err := compileConditions(current, request, model)
+	if err != nil {
+		return Result{}, fmt.Errorf("%w: conditions: %v", ErrInvalidArgument, err)
+	}
 
 	pageNumber, pageSize, err := normalizePage(request.Page, model.DefaultPageSize(), model.MaxPageSize())
 	if err != nil {
-		return Result{}, err
+		return Result{}, fmt.Errorf("%w: %v", ErrInvalidArgument, err)
 	}
 	projection := model.ProjectionFields()
 	projectionSet := make(map[string]struct{}, len(projection))
@@ -149,6 +181,15 @@ func (querier *Querier) Query(request Request) (Result, error) {
 	}, baseRecords, current.OverlayRules(model.Collection()))
 	if err != nil {
 		return Result{}, fmt.Errorf("page query: evaluate scope: %w", err)
+	}
+	if len(conditions) > 0 {
+		filtered := make([]catalog.ConfigurationRecord, 0, len(records))
+		for _, record := range records {
+			if matchesConditions(record, conditions) {
+				filtered = append(filtered, record)
+			}
+		}
+		records = filtered
 	}
 	baseByKey := make(map[string]catalog.ConfigurationRecord, len(baseRecords))
 	for _, record := range baseRecords {
@@ -207,13 +248,18 @@ func (querier *Querier) Query(request Request) (Result, error) {
 	}
 	start := int64(pageNumber-1) * int64(pageSize)
 	end := start + int64(pageSize)
-	if start >= total {
-		rows = []Row{}
-	} else {
+	if total > 0 && start >= total {
+		pageNumber = int32(totalPages)
+		start = int64(pageNumber-1) * int64(pageSize)
+		end = start + int64(pageSize)
+	}
+	if total > 0 {
 		if end > total {
 			end = total
 		}
 		rows = rows[start:end]
+	} else {
+		rows = []Row{}
 	}
 
 	result := Result{
@@ -237,6 +283,199 @@ func (querier *Querier) Query(request Request) (Result, error) {
 		}
 	}
 	return result, nil
+}
+
+func compileConditions(current *snapshot.Snapshot, request Request, model catalog.CompiledModel) ([]compiledCondition, error) {
+	if len(request.Conditions) > 20 {
+		return nil, errors.New("at most 20 conditions are allowed")
+	}
+	fields := make(map[string]catalog.ModelField)
+	for _, field := range model.Fields() {
+		fields[field.Name] = field
+	}
+	compiled := make([]compiledCondition, len(request.Conditions))
+	optionCache := make(map[string]map[string]bool)
+	for index, condition := range request.Conditions {
+		field, exists := fields[strings.TrimSpace(condition.Field)]
+		if !exists || !field.Queryable || field.Sensitive {
+			return nil, fmt.Errorf("condition %d field %q is not queryable", index, condition.Field)
+		}
+		if !slices.Contains(field.AllowedFilterOperators, condition.Operator) {
+			return nil, fmt.Errorf("condition %d operator %q is not allowed for field %q", index, condition.Operator, field.Name)
+		}
+		result := compiledCondition{field: field, operator: condition.Operator}
+		canonical := func(value *ScalarValue) (string, error) {
+			if value == nil {
+				return "", errors.New("scalar is required")
+			}
+			if value.Type != "" && value.Type != field.Type {
+				return "", fmt.Errorf("scalar type %q does not match %q", value.Type, field.Type)
+			}
+			return catalog.CanonicalizeScalar(field.Type, value.Canonical)
+		}
+		switch condition.Operator {
+		case catalog.FilterExact, catalog.FilterContains:
+			if condition.Value == nil || condition.Lower != nil || condition.Upper != nil || len(condition.Set) != 0 {
+				return nil, fmt.Errorf("condition %d requires only value", index)
+			}
+			value, err := canonical(condition.Value)
+			if err != nil {
+				return nil, fmt.Errorf("condition %d value: %w", index, err)
+			}
+			result.value = value
+		case catalog.FilterClosedRange, catalog.FilterOpenRange:
+			if condition.Value != nil || len(condition.Set) != 0 || (condition.Lower == nil && condition.Upper == nil) {
+				return nil, fmt.Errorf("condition %d requires lower and/or upper only", index)
+			}
+			if condition.Lower != nil {
+				value, err := canonical(condition.Lower)
+				if err != nil {
+					return nil, fmt.Errorf("condition %d lower: %w", index, err)
+				}
+				result.lower = &value
+			}
+			if condition.Upper != nil {
+				value, err := canonical(condition.Upper)
+				if err != nil {
+					return nil, fmt.Errorf("condition %d upper: %w", index, err)
+				}
+				result.upper = &value
+			}
+			if result.lower != nil && result.upper != nil && compareScalar(field.Type, *result.lower, *result.upper) > 0 {
+				return nil, fmt.Errorf("condition %d lower exceeds upper", index)
+			}
+		case catalog.FilterIn, catalog.FilterNotIn:
+			if condition.Value != nil || condition.Lower != nil || condition.Upper != nil || len(condition.Set) == 0 || len(condition.Set) > 100 {
+				return nil, fmt.Errorf("condition %d requires a set with 1..100 values", index)
+			}
+			result.set = make(map[string]struct{}, len(condition.Set))
+			for valueIndex := range condition.Set {
+				value, err := canonical(&condition.Set[valueIndex])
+				if err != nil {
+					return nil, fmt.Errorf("condition %d set value %d: %w", index, valueIndex, err)
+				}
+				if _, duplicate := result.set[value]; duplicate {
+					return nil, fmt.Errorf("condition %d repeats set value %q", index, value)
+				}
+				result.set[value] = struct{}{}
+			}
+		default:
+			return nil, fmt.Errorf("condition %d operator %q is unsupported", index, condition.Operator)
+		}
+		if field.OptionSource != nil {
+			allowed, cached := optionCache[field.Name]
+			if !cached {
+				options, err := resolveOptions(current, request, field.OptionSource)
+				if err != nil {
+					return nil, fmt.Errorf("condition %d options: %w", index, err)
+				}
+				allowed = make(map[string]bool, len(options))
+				for _, option := range options {
+					allowed[option.Code] = !option.Disabled
+				}
+				optionCache[field.Name] = allowed
+			}
+			for _, value := range conditionValues(result) {
+				if !allowed[value] {
+					return nil, fmt.Errorf("condition %d selection %q is missing or disabled", index, value)
+				}
+			}
+		}
+		compiled[index] = result
+	}
+	return compiled, nil
+}
+
+func conditionValues(condition compiledCondition) []string {
+	if condition.set != nil {
+		values := make([]string, 0, len(condition.set))
+		for value := range condition.set {
+			values = append(values, value)
+		}
+		return values
+	}
+	if condition.lower != nil || condition.upper != nil {
+		values := make([]string, 0, 2)
+		if condition.lower != nil {
+			values = append(values, *condition.lower)
+		}
+		if condition.upper != nil {
+			values = append(values, *condition.upper)
+		}
+		return values
+	}
+	return []string{condition.value}
+}
+
+func matchesConditions(record catalog.ConfigurationRecord, conditions []compiledCondition) bool {
+	for _, condition := range conditions {
+		value, present := record.Data[condition.field.Name]
+		if !present {
+			return false
+		}
+		switch condition.operator {
+		case catalog.FilterExact:
+			if value != condition.value {
+				return false
+			}
+		case catalog.FilterContains:
+			if !strings.Contains(value, condition.value) {
+				return false
+			}
+		case catalog.FilterClosedRange, catalog.FilterOpenRange:
+			if condition.lower != nil {
+				comparison := compareScalar(condition.field.Type, value, *condition.lower)
+				if comparison < 0 || (condition.operator == catalog.FilterOpenRange && comparison == 0) {
+					return false
+				}
+			}
+			if condition.upper != nil {
+				comparison := compareScalar(condition.field.Type, value, *condition.upper)
+				if comparison > 0 || (condition.operator == catalog.FilterOpenRange && comparison == 0) {
+					return false
+				}
+			}
+		case catalog.FilterIn:
+			if _, exists := condition.set[value]; !exists {
+				return false
+			}
+		case catalog.FilterNotIn:
+			if _, exists := condition.set[value]; exists {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+func compareScalar(fieldType catalog.FieldType, left, right string) int {
+	switch fieldType {
+	case catalog.FieldTypeInt64:
+		leftValue, _ := strconv.ParseInt(left, 10, 64)
+		rightValue, _ := strconv.ParseInt(right, 10, 64)
+		if leftValue < rightValue {
+			return -1
+		}
+		if leftValue > rightValue {
+			return 1
+		}
+	case catalog.FieldTypeFloat64:
+		leftValue, _ := strconv.ParseFloat(left, 64)
+		rightValue, _ := strconv.ParseFloat(right, 64)
+		if leftValue < rightValue {
+			return -1
+		}
+		if leftValue > rightValue {
+			return 1
+		}
+	case catalog.FieldTypeTimestamp:
+		leftValue, _ := time.Parse(time.RFC3339Nano, left)
+		rightValue, _ := time.Parse(time.RFC3339Nano, right)
+		return leftValue.Compare(rightValue)
+	default:
+		return strings.Compare(left, right)
+	}
+	return 0
 }
 
 func normalizePage(page PageSpec, defaultSize, maxSize int32) (int32, int32, error) {

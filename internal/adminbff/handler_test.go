@@ -38,6 +38,7 @@ func TestBrowserBaseReleaseJourneyRoutes(t *testing.T) {
 
 	queryResponse := serveJSON(t, handler, http.MethodPost, "/api/v1/query-page", "", map[string]any{
 		"modelCode": "model", "scope": map[string]any{"region": "cn", "environment": "production"}, "queryType": "ALL",
+		"conditions": []any{map[string]any{"field": "id", "operator": "EXACT", "value": "active"}},
 	})
 	if queryResponse.Code != http.StatusOK || queries.last.Region != "cn" || queries.last.Environment != "production" || queries.last.Type != pagequery.TypeAll {
 		t.Fatalf("query response=%d command=%+v body=%s", queryResponse.Code, queries.last, queryResponse.Body.String())
@@ -47,6 +48,9 @@ func TestBrowserBaseReleaseJourneyRoutes(t *testing.T) {
 	}
 	if !bytes.Contains(queryResponse.Body.Bytes(), []byte(`"autoFill":{"source":"UUID","value":""}`)) || !bytes.Contains(queryResponse.Body.Bytes(), []byte(`"validationRules":[{"kind":"REGEX","message":"lowercase","params":{"pattern":"^[a-z]+$"}}]`)) {
 		t.Fatalf("interaction metadata = %s", queryResponse.Body.String())
+	}
+	if len(queries.last.Conditions) != 1 || queries.last.Conditions[0].Value == nil || queries.last.Conditions[0].Value.Canonical != "active" {
+		t.Fatalf("query conditions = %+v", queries.last.Conditions)
 	}
 
 	createResponse := serveJSON(t, handler, http.MethodPost, "/api/v1/releases", "create-id", map[string]any{
@@ -90,6 +94,21 @@ func TestBFFRequiresAuthenticationAndStrictJSON(t *testing.T) {
 	handler.ServeHTTP(recorder, request)
 	if recorder.Code != http.StatusBadRequest {
 		t.Fatalf("unknown JSON field response = %d body=%s", recorder.Code, recorder.Body.String())
+	}
+}
+
+func TestBFFMapsInvalidPageQueryToBadRequest(t *testing.T) {
+	t.Parallel()
+	handler, err := adminbff.New(&queryStub{err: pagequery.ErrInvalidArgument}, &releaseStub{}, authenticator{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	response := serveJSON(t, handler, http.MethodPost, "/api/v1/query-page", "", map[string]any{
+		"modelCode": "model", "scope": map[string]any{"region": "cn", "environment": "production"}, "queryType": "ONLY_DATA",
+		"conditions": []any{map[string]any{"field": "unknown", "operator": "EXACT", "value": "x"}},
+	})
+	if response.Code != http.StatusBadRequest || !bytes.Contains(response.Body.Bytes(), []byte(`"code":"INVALID_ARGUMENT"`)) {
+		t.Fatalf("invalid query response = %d %s", response.Code, response.Body.String())
 	}
 }
 
@@ -197,11 +216,12 @@ func (authenticator authenticator) Authenticate(*http.Request) (adminbff.Princip
 type queryStub struct {
 	result pagequery.Result
 	last   pagequery.Request
+	err    error
 }
 
 func (stub *queryStub) Query(request pagequery.Request) (pagequery.Result, error) {
 	stub.last = request
-	return stub.result, nil
+	return stub.result, stub.err
 }
 
 type releaseStub struct {

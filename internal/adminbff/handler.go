@@ -64,13 +64,22 @@ type scopeRequest struct {
 }
 
 type queryPageRequest struct {
-	ModelCode     string       `json:"modelCode"`
-	Scope         scopeRequest `json:"scope"`
-	QueryType     string       `json:"queryType"`
-	PageNumber    *int32       `json:"pageNumber,omitempty"`
-	PageSize      *int32       `json:"pageSize,omitempty"`
-	Conditions    []any        `json:"conditions,omitempty"`
-	PreviewBucket *int32       `json:"previewBucket,omitempty"`
+	ModelCode     string                   `json:"modelCode"`
+	Scope         scopeRequest             `json:"scope"`
+	QueryType     string                   `json:"queryType"`
+	PageNumber    *int32                   `json:"pageNumber,omitempty"`
+	PageSize      *int32                   `json:"pageSize,omitempty"`
+	Conditions    []filterConditionRequest `json:"conditions,omitempty"`
+	PreviewBucket *int32                   `json:"previewBucket,omitempty"`
+}
+
+type filterConditionRequest struct {
+	Field    string   `json:"field"`
+	Operator string   `json:"operator"`
+	Value    *string  `json:"value,omitempty"`
+	Lower    *string  `json:"lower,omitempty"`
+	Upper    *string  `json:"upper,omitempty"`
+	Set      []string `json:"set,omitempty"`
 }
 
 func (handler *Handler) queryPage(writer http.ResponseWriter, request *http.Request) {
@@ -81,15 +90,28 @@ func (handler *Handler) queryPage(writer http.ResponseWriter, request *http.Requ
 	if !decodeJSON(writer, request, &body) {
 		return
 	}
-	if len(body.Conditions) != 0 {
-		writeError(writer, http.StatusNotImplemented, "NOT_IMPLEMENTED", "filters are not implemented")
-		return
-	}
 	queryType := pagequery.QueryType(body.QueryType)
+	conditions := make([]pagequery.FilterCondition, len(body.Conditions))
+	for index, condition := range body.Conditions {
+		mapped := pagequery.FilterCondition{Field: condition.Field, Operator: catalog.FilterOperator(condition.Operator), Set: make([]pagequery.ScalarValue, len(condition.Set))}
+		if condition.Value != nil {
+			mapped.Value = &pagequery.ScalarValue{Canonical: *condition.Value}
+		}
+		if condition.Lower != nil {
+			mapped.Lower = &pagequery.ScalarValue{Canonical: *condition.Lower}
+		}
+		if condition.Upper != nil {
+			mapped.Upper = &pagequery.ScalarValue{Canonical: *condition.Upper}
+		}
+		for valueIndex, value := range condition.Set {
+			mapped.Set[valueIndex] = pagequery.ScalarValue{Canonical: value}
+		}
+		conditions[index] = mapped
+	}
 	result, err := handler.queries.Query(pagequery.Request{
 		ModelCode: body.ModelCode, Region: body.Scope.Region, Environment: body.Scope.Environment,
 		Stage: body.Scope.Stage, PreviewBucket: body.PreviewBucket, Type: queryType,
-		Page: pagequery.PageSpec{Number: body.PageNumber, Size: body.PageSize},
+		Page: pagequery.PageSpec{Number: body.PageNumber, Size: body.PageSize}, Conditions: conditions,
 	})
 	if err != nil {
 		writeDomainError(writer, err)
@@ -237,6 +259,8 @@ func decodeJSON(writer http.ResponseWriter, request *http.Request, target any) b
 
 func writeDomainError(writer http.ResponseWriter, err error) {
 	switch {
+	case errors.Is(err, pagequery.ErrInvalidArgument):
+		writeError(writer, http.StatusBadRequest, "INVALID_ARGUMENT", err.Error())
 	case errors.Is(err, release.ErrIdempotencyKeyReused):
 		writeError(writer, http.StatusConflict, "IDEMPOTENCY_KEY_REUSED", err.Error())
 	case errors.Is(err, release.ErrActiveConflict):
