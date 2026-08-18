@@ -1,0 +1,64 @@
+package grpc_test
+
+import (
+	"context"
+	"testing"
+
+	"github.com/asherzj/financial_configuration_center/internal/release/application"
+	release "github.com/asherzj/financial_configuration_center/internal/release/domain"
+	releasegrpc "github.com/asherzj/financial_configuration_center/internal/release/grpc"
+	commonv1 "github.com/asherzj/financial_configuration_center/kitex_gen/finconfig/common/v1"
+	controlv1 "github.com/asherzj/financial_configuration_center/kitex_gen/finconfig/control/v1"
+)
+
+func TestReleaseHandlerMapsCreateAndAction(t *testing.T) {
+	t.Parallel()
+
+	commands := &commandStub{create: application.OrderView{ID: "order", Status: release.OrderInProgress, CurrentStep: release.StepBaseApply, Revision: 1}, act: application.OrderView{ID: "order", Status: release.OrderInProgress, CurrentStep: release.StepBaseApply, Revision: 2}}
+	handler, err := releasegrpc.New(commands, actorResolver{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	created, err := handler.CreateReleaseOrder(context.Background(), &controlv1.CreateReleaseOrderRequest{
+		IdempotencyKey: "create-id", ModelCode: "model", ReleaseTypeCode: "direct", Description: "Add route",
+		Scope: &commonv1.Scope{Region: "cn", Environment: "production"},
+		Items: []*controlv1.ReleaseItemInput{{Action: commonv1.ChangeAction_CHANGE_ACTION_ADD, After: map[string]string{"code": "visa"}, ExpectedCollectionRevision: 7}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if created.Detail.Order.Id != "order" || commands.lastCreate.Actor != "operator@example.com" || commands.lastCreate.Items[0].ExpectedCollectionRevision != 7 {
+		t.Fatalf("create mapping response=%+v command=%+v", created, commands.lastCreate)
+	}
+	acted, err := handler.ActOnReleaseOrder(context.Background(), &controlv1.ActOnReleaseOrderRequest{
+		OrderId: "order", ActionRequestId: "action-id", ExpectedOrderRevision: 1,
+		ExpectedCurrentStep: "BASE_APPLY", Action: commonv1.ReleaseAction_RELEASE_ACTION_EXECUTE,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if acted.Detail.Order.EntityRevision != 2 || commands.lastAct.ExpectedCurrentStep != release.StepBaseApply || commands.lastAct.Action != application.ActionExecute {
+		t.Fatalf("action mapping response=%+v command=%+v", acted, commands.lastAct)
+	}
+}
+
+type actorResolver struct{}
+
+func (actorResolver) Subject(context.Context) (string, error) { return "operator@example.com", nil }
+
+type commandStub struct {
+	create     application.OrderView
+	act        application.OrderView
+	lastCreate application.CreateBaseFinalCommand
+	lastAct    application.ActCommand
+}
+
+func (stub *commandStub) CreateBaseFinal(_ context.Context, command application.CreateBaseFinalCommand) (application.OrderView, error) {
+	stub.lastCreate = command
+	return stub.create, nil
+}
+
+func (stub *commandStub) Act(_ context.Context, command application.ActCommand) (application.OrderView, error) {
+	stub.lastAct = command
+	return stub.act, nil
+}

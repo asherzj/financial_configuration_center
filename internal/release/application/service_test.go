@@ -41,11 +41,12 @@ func TestBaseFinalApplicationIsTheOnlyRecordWritePath(t *testing.T) {
 	}
 
 	executed, err := service.Act(context.Background(), application.ActCommand{
-		OrderID:          created.ID,
-		ActionRequestID:  "execute-request-1",
-		ExpectedRevision: 1,
-		Action:           application.ActionExecute,
-		Actor:            "operator@example.com",
+		OrderID:             created.ID,
+		ActionRequestID:     "execute-request-1",
+		ExpectedRevision:    1,
+		ExpectedCurrentStep: release.StepBaseApply,
+		Action:              application.ActionExecute,
+		Actor:               "operator@example.com",
 	})
 	if err != nil {
 		t.Fatalf("execute BASE_APPLY: %v", err)
@@ -58,14 +59,14 @@ func TestBaseFinalApplicationIsTheOnlyRecordWritePath(t *testing.T) {
 	}
 
 	advanced, err := service.Act(context.Background(), application.ActCommand{
-		OrderID: created.ID, ActionRequestID: "advance-request-1", ExpectedRevision: 2,
+		OrderID: created.ID, ActionRequestID: "advance-request-1", ExpectedRevision: 2, ExpectedCurrentStep: release.StepBaseApply,
 		Action: application.ActionAdvance, Actor: "operator@example.com",
 	})
 	if err != nil {
 		t.Fatalf("advance: %v", err)
 	}
 	completed, err := service.Act(context.Background(), application.ActCommand{
-		OrderID: created.ID, ActionRequestID: "complete-request-1", ExpectedRevision: advanced.Revision,
+		OrderID: created.ID, ActionRequestID: "complete-request-1", ExpectedRevision: advanced.Revision, ExpectedCurrentStep: release.StepComplete,
 		Action: application.ActionExecute, Actor: "operator@example.com",
 	})
 	if err != nil {

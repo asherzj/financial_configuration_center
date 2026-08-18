@@ -54,14 +54,14 @@ func TestRealMySQLBaseFinalTransaction(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateBaseFinal: %v", err)
 	}
-	if _, err := service.Act(ctx, application.ActCommand{OrderID: created.ID, ActionRequestID: "018fb4a7-7c43-7de2-bad4-5ea3fc262630", ExpectedRevision: 1, Action: application.ActionExecute, Actor: "operator@example.com"}); err != nil {
+	if _, err := service.Act(ctx, application.ActCommand{OrderID: created.ID, ActionRequestID: "018fb4a7-7c43-7de2-bad4-5ea3fc262630", ExpectedRevision: 1, ExpectedCurrentStep: release.StepBaseApply, Action: application.ActionExecute, Actor: "operator@example.com"}); err != nil {
 		t.Fatalf("execute: %v", err)
 	}
-	advanced, err := service.Act(ctx, application.ActCommand{OrderID: created.ID, ActionRequestID: "018fb4a7-83c8-73aa-924d-9b57558d3200", ExpectedRevision: 2, Action: application.ActionAdvance, Actor: "operator@example.com"})
+	advanced, err := service.Act(ctx, application.ActCommand{OrderID: created.ID, ActionRequestID: "018fb4a7-83c8-73aa-924d-9b57558d3200", ExpectedRevision: 2, ExpectedCurrentStep: release.StepBaseApply, Action: application.ActionAdvance, Actor: "operator@example.com"})
 	if err != nil {
 		t.Fatalf("advance: %v", err)
 	}
-	completed, err := service.Act(ctx, application.ActCommand{OrderID: created.ID, ActionRequestID: "018fb4a7-8a7e-786b-a60d-8d285f483a1a", ExpectedRevision: advanced.Revision, Action: application.ActionExecute, Actor: "operator@example.com"})
+	completed, err := service.Act(ctx, application.ActCommand{OrderID: created.ID, ActionRequestID: "018fb4a7-8a7e-786b-a60d-8d285f483a1a", ExpectedRevision: advanced.Revision, ExpectedCurrentStep: release.StepComplete, Action: application.ActionExecute, Actor: "operator@example.com"})
 	if err != nil {
 		t.Fatalf("complete: %v", err)
 	}

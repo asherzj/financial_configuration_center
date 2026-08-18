@@ -182,7 +182,7 @@ func (handler *Handler) actOnRelease(writer http.ResponseWriter, request *http.R
 	}
 	result, err := handler.releases.Act(request.Context(), application.ActCommand{
 		OrderID: request.PathValue("id"), ActionRequestID: actionID,
-		ExpectedRevision: body.ExpectedOrderRevision, Action: action, Actor: principal.Subject,
+		ExpectedRevision: body.ExpectedOrderRevision, ExpectedCurrentStep: release.StepType(body.ExpectedCurrentStep), Action: action, Actor: principal.Subject,
 	})
 	if err != nil {
 		writeDomainError(writer, err)

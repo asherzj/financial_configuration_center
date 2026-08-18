@@ -73,11 +73,12 @@ const (
 )
 
 type ActCommand struct {
-	OrderID          string
-	ActionRequestID  string
-	ExpectedRevision release.EntityRevision
-	Action           Action
-	Actor            string
+	OrderID             string
+	ActionRequestID     string
+	ExpectedRevision    release.EntityRevision
+	ExpectedCurrentStep release.StepType
+	Action              Action
+	Actor               string
 }
 
 type OrderView struct {
@@ -217,7 +218,7 @@ func (service *Service) Act(ctx context.Context, command ActCommand) (OrderView,
 	if err := service.ready(); err != nil {
 		return OrderView{}, err
 	}
-	if strings.TrimSpace(command.OrderID) == "" || strings.TrimSpace(command.ActionRequestID) == "" || strings.TrimSpace(command.Actor) == "" {
+	if strings.TrimSpace(command.OrderID) == "" || strings.TrimSpace(command.ActionRequestID) == "" || strings.TrimSpace(command.Actor) == "" || command.ExpectedCurrentStep == "" {
 		return OrderView{}, fmt.Errorf("%w: order, action request, and actor are required", release.ErrInvalid)
 	}
 	var result *release.Order
@@ -228,6 +229,9 @@ func (service *Service) Act(ctx context.Context, command ActCommand) (OrderView,
 		}
 		if order.Revision() != command.ExpectedRevision {
 			return fmt.Errorf("%w: order revision is %d, expected %d", release.ErrAborted, order.Revision(), command.ExpectedRevision)
+		}
+		if order.CurrentStep().Type != command.ExpectedCurrentStep {
+			return fmt.Errorf("%w: current step is %s, expected %s", release.ErrAborted, order.CurrentStep().Type, command.ExpectedCurrentStep)
 		}
 		now := service.clock.Now().UTC()
 		switch command.Action {
