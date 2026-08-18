@@ -71,6 +71,23 @@ type ModelField struct {
 	UIControl              UIControlType
 	AllowedFilterOperators []FilterOperator
 	OptionSource           *OptionSourceDefinition
+	ValidationRules        []ValidationRule
+}
+
+type AutoFillSource string
+
+const (
+	AutoFillActorSubject AutoFillSource = "ACTOR_SUBJECT"
+	AutoFillActorName    AutoFillSource = "ACTOR_NAME"
+	AutoFillCurrentTime  AutoFillSource = "CURRENT_TIME"
+	AutoFillConstant     AutoFillSource = "CONSTANT"
+	AutoFillUUID         AutoFillSource = "UUID"
+)
+
+type AutoFillRule struct {
+	Field  string         `json:"field"`
+	Source AutoFillSource `json:"source"`
+	Value  string         `json:"value,omitempty"`
 }
 
 type ReleaseTypeDefinition struct {
@@ -93,6 +110,7 @@ type ModelSpec struct {
 	DefaultPageSize  int32
 	MaxPageSize      int32
 	ReleaseTypes     []ReleaseTypeDefinition
+	AutoFillRules    []AutoFillRule
 	ConfigRevision   ConfigRevision
 }
 
@@ -107,6 +125,7 @@ type CompiledModel struct {
 	defaultPageSize  int32
 	maxPageSize      int32
 	releaseTypes     []ReleaseTypeDefinition
+	autoFillRules    []AutoFillRule
 	configRevision   ConfigRevision
 }
 
@@ -145,7 +164,12 @@ func CompileModel(collection CollectionDefinition, spec ModelSpec) (CompiledMode
 		if _, duplicate := seen[field.Name]; duplicate {
 			return CompiledModel{}, fmt.Errorf("compile model: duplicate field %q", field.Name)
 		}
-		if field.Type != definition.Type || field.Required != definition.Required || field.Sensitive != definition.Sensitive || !sameOptionalString(field.DefaultValue, definition.DefaultValue) {
+		compiledRules, err := compileValidationRules(field.Type, field.Required, field.ValidationRules)
+		if err != nil {
+			return CompiledModel{}, fmt.Errorf("compile model: field %q: %w", field.Name, err)
+		}
+		field.ValidationRules = compiledRules
+		if field.Type != definition.Type || field.Required != definition.Required || field.Sensitive != definition.Sensitive || !sameOptionalString(field.DefaultValue, definition.DefaultValue) || !sameValidationRules(field.ValidationRules, definition.ValidationRules) {
 			return CompiledModel{}, fmt.Errorf("compile model: field %q data semantics differ from collection", field.Name)
 		}
 		if !validUIControl(field.UIControl) {
@@ -201,6 +225,7 @@ func CompileModel(collection CollectionDefinition, spec ModelSpec) (CompiledMode
 			field.DefaultValue = stringPointer(*field.DefaultValue)
 		}
 		field.AllowedFilterOperators = slices.Clone(field.AllowedFilterOperators)
+		field.ValidationRules = cloneValidationRules(field.ValidationRules)
 		fields[index] = field
 		seen[field.Name] = struct{}{}
 	}
@@ -230,6 +255,10 @@ func CompileModel(collection CollectionDefinition, spec ModelSpec) (CompiledMode
 	if err != nil {
 		return CompiledModel{}, err
 	}
+	autoFillRules, err := compileAutoFillRules(fields, spec.AutoFillRules)
+	if err != nil {
+		return CompiledModel{}, err
+	}
 
 	return CompiledModel{
 		code:             spec.Code,
@@ -241,6 +270,7 @@ func CompileModel(collection CollectionDefinition, spec ModelSpec) (CompiledMode
 		defaultPageSize:  spec.DefaultPageSize,
 		maxPageSize:      spec.MaxPageSize,
 		releaseTypes:     releaseTypes,
+		autoFillRules:    autoFillRules,
 		configRevision:   spec.ConfigRevision,
 	}, nil
 }
@@ -259,6 +289,7 @@ func (model CompiledModel) Fields() []ModelField {
 		}
 		field.AllowedFilterOperators = slices.Clone(field.AllowedFilterOperators)
 		field.OptionSource = cloneOptionSource(field.OptionSource)
+		field.ValidationRules = cloneValidationRules(field.ValidationRules)
 		fields[index] = field
 	}
 	return fields
@@ -333,7 +364,60 @@ func (model CompiledModel) ReleaseTypes() []ReleaseTypeDefinition {
 	return slices.Clone(model.releaseTypes)
 }
 
+func (model CompiledModel) AutoFillRules() []AutoFillRule { return slices.Clone(model.autoFillRules) }
+
 func (model CompiledModel) ConfigRevision() ConfigRevision { return model.configRevision }
+
+func compileAutoFillRules(fields []ModelField, source []AutoFillRule) ([]AutoFillRule, error) {
+	byName := make(map[string]ModelField, len(fields))
+	for _, field := range fields {
+		byName[field.Name] = field
+	}
+	compiled := make([]AutoFillRule, len(source))
+	seen := make(map[string]struct{}, len(source))
+	for index, rule := range source {
+		rule.Field = strings.TrimSpace(rule.Field)
+		field, exists := byName[rule.Field]
+		if !exists {
+			return nil, fmt.Errorf("compile model: auto-fill field %q is missing", rule.Field)
+		}
+		if _, duplicate := seen[rule.Field]; duplicate {
+			return nil, fmt.Errorf("compile model: auto-fill field %q is duplicated", rule.Field)
+		}
+		if field.Editable {
+			return nil, fmt.Errorf("compile model: auto-fill field %q must not be editable", rule.Field)
+		}
+		if field.Sensitive {
+			return nil, fmt.Errorf("compile model: auto-fill field %q must not be sensitive", rule.Field)
+		}
+		switch rule.Source {
+		case AutoFillActorSubject, AutoFillActorName:
+			if field.Type != FieldTypeString || rule.Value != "" {
+				return nil, fmt.Errorf("compile model: %s auto-fill requires STRING and no value", rule.Source)
+			}
+		case AutoFillCurrentTime:
+			if field.Type != FieldTypeTimestamp || rule.Value != "" {
+				return nil, errors.New("compile model: CURRENT_TIME auto-fill requires TIMESTAMP and no value")
+			}
+		case AutoFillUUID:
+			if field.Type != FieldTypeString || rule.Value != "" {
+				return nil, errors.New("compile model: UUID auto-fill requires STRING and no value")
+			}
+		case AutoFillConstant:
+			canonical, err := CanonicalizeScalar(field.Type, rule.Value)
+			if err != nil {
+				return nil, fmt.Errorf("compile model: CONSTANT auto-fill field %q: %w", rule.Field, err)
+			}
+			rule.Value = canonical
+		default:
+			return nil, fmt.Errorf("compile model: auto-fill source %q is invalid", rule.Source)
+		}
+		seen[rule.Field] = struct{}{}
+		compiled[index] = rule
+	}
+	slices.SortFunc(compiled, func(left, right AutoFillRule) int { return strings.Compare(left.Field, right.Field) })
+	return compiled, nil
+}
 
 func compileReleaseTypes(source []ReleaseTypeDefinition) ([]ReleaseTypeDefinition, error) {
 	compiled := make([]ReleaseTypeDefinition, len(source))

@@ -160,7 +160,8 @@ export function OperationPage({ api = operationApi }: { api?: OperationApi }) {
   }
 
   const addDraft = async () => {
-    const values = await form.validateFields();
+    const values = await form.validateFields().catch(() => undefined);
+    if (!values) return;
     if (!page) return;
     const edited = Object.fromEntries(
       page.interactionFields
@@ -336,8 +337,12 @@ export function OperationPage({ api = operationApi }: { api?: OperationApi }) {
 
       <Modal title={editingRow ? "修改配置" : "新增配置"} open={addOpen} onCancel={() => { setAddOpen(false); setEditingRow(undefined); }} onOk={() => void addDraft()} okText="加入草稿" destroyOnHidden>
         <Form form={form} layout="vertical" preserve={false}>
-          {page?.interactionFields.filter((field) => field.editable).map((field) => (
-            editingRow && field.sensitive ? (
+          {page?.interactionFields.filter((field) => field.editable || field.autoFill).map((field) => (
+            field.autoFill ? (
+              <Form.Item key={field.name} label={field.displayName} extra={`${field.description}${field.description ? "；" : ""}提交时由服务端生成（${autoFillLabel(field.autoFill.source)}）`}>
+                <Input disabled value="由服务端生成" />
+              </Form.Item>
+            ) : editingRow && field.sensitive ? (
               <Form.Item key={field.name} label={field.displayName} extra={field.description}>
                 <Space orientation="vertical" className="operation-full-width">
                   <Checkbox
@@ -348,7 +353,7 @@ export function OperationPage({ api = operationApi }: { api?: OperationApi }) {
                     替换现有敏感值
                   </Checkbox>
                   {replaceSensitive[field.name] ? (
-                    <Form.Item name={field.name} noStyle rules={[{ required: true, message: `${field.displayName} 为必填项` }]}>
+                    <Form.Item name={field.name} noStyle rules={fieldRules({ ...field, required: true })}>
                       <Input.Password aria-label={field.displayName} autoComplete="new-password" />
                     </Form.Item>
                   ) : <Tag>保持原值</Tag>}
@@ -361,7 +366,7 @@ export function OperationPage({ api = operationApi }: { api?: OperationApi }) {
                 label={field.displayName}
                 extra={field.description}
                 valuePropName={field.uiControl === "BOOLEAN" ? "checked" : "value"}
-                rules={[{ required: field.required, message: `${field.displayName} 为必填项` }]}
+                rules={fieldRules(field)}
               >
                 {editor(field, Boolean(editingRow && field.keyField))}
               </Form.Item>
@@ -517,6 +522,8 @@ export function OperationPage({ api = operationApi }: { api?: OperationApi }) {
 function editor(field: InteractionField, disabled = false) {
   if (field.sensitive) return <Input.Password disabled={disabled} autoComplete="new-password" />;
   switch (field.uiControl) {
+	case "TIME":
+		return <Input type="datetime-local" disabled={disabled} />;
     case "NUMBER":
       return <InputNumber stringMode className="operation-full-width" disabled={disabled} />;
     case "BOOLEAN":
@@ -539,17 +546,86 @@ function renderValue(field: InteractionField, value?: string, masked = false) {
 
 function fromCanonicalDefault(field: InteractionField): unknown {
   if (field.type === "BOOL") return field.defaultValue === "true";
+	if (field.type === "TIMESTAMP" && field.defaultValue) return toDatetimeLocal(field.defaultValue);
   return field.defaultValue;
 }
 
 function fromCanonicalValue(field: InteractionField, value?: string): unknown {
   if (field.type === "BOOL") return value === "true";
+	if (field.type === "TIMESTAMP" && value) return toDatetimeLocal(value);
   return value;
 }
 
 function toCanonicalInput(field: InteractionField, value: unknown): string {
   if (field.type === "BOOL") return value ? "true" : "false";
+	if (field.type === "TIMESTAMP") {
+		const parsed = new Date(String(value));
+		if (!Number.isNaN(parsed.valueOf())) return parsed.toISOString();
+	}
   return String(value);
+}
+
+function fieldRules(field: InteractionField) {
+  return [
+    { required: field.required, message: `${field.displayName} 为必填项` },
+    {
+      validator: async (_: unknown, input: unknown) => {
+        if (input === undefined || input === null || input === "") return;
+        const value = field.type === "BOOL" ? (input ? "true" : "false") : String(input);
+        for (const rule of field.validationRules) {
+		  if (!passesValidationRule(field, rule, value)) throw new Error(rule.message);
+        }
+      },
+    },
+  ];
+}
+
+function passesValidationRule(field: InteractionField, rule: InteractionField["validationRules"][number], value: string) {
+  switch (rule.kind) {
+    case "REQUIRED": return value.length > 0;
+    case "ENUM": {
+      try { return (JSON.parse(rule.params.values ?? "[]") as string[]).includes(value); } catch { return true; }
+    }
+    case "REGEX": {
+      try { return new RegExp(rule.params.pattern ?? "").test(value); } catch { return true; }
+    }
+	case "MIN": return compareRuleValue(field.type, value, rule.params.value) >= 0;
+	case "MAX": return compareRuleValue(field.type, value, rule.params.value) <= 0;
+    case "MIN_LENGTH": return [...value].length >= Number(rule.params.value);
+    case "MAX_LENGTH": return [...value].length <= Number(rule.params.value);
+    default: return true;
+  }
+}
+
+function compareRuleValue(type: InteractionField["type"], left: string, right = "") {
+	if (type === "INT64") {
+		try {
+			const leftValue = BigInt(left);
+			const rightValue = BigInt(right);
+			return leftValue < rightValue ? -1 : leftValue > rightValue ? 1 : 0;
+		} catch { return 0; }
+	}
+	const leftValue = type === "TIMESTAMP" ? Date.parse(left) : Number(left);
+	const rightValue = type === "TIMESTAMP" ? Date.parse(right) : Number(right);
+	if (!Number.isFinite(leftValue) || !Number.isFinite(rightValue)) return 0;
+	return leftValue < rightValue ? -1 : leftValue > rightValue ? 1 : 0;
+}
+
+function toDatetimeLocal(value: string) {
+	const date = new Date(value);
+	if (Number.isNaN(date.valueOf())) return value;
+	const local = new Date(date.valueOf() - date.getTimezoneOffset() * 60_000);
+	return local.toISOString().slice(0, 19);
+}
+
+function autoFillLabel(source: NonNullable<InteractionField["autoFill"]>["source"]) {
+  switch (source) {
+    case "ACTOR_SUBJECT": return "当前操作人账号";
+    case "ACTOR_NAME": return "当前操作人姓名";
+    case "CURRENT_TIME": return "当前时间";
+    case "CONSTANT": return "系统常量";
+    case "UUID": return "UUID";
+  }
 }
 
 function actionLabel(action: ReleaseAction, release: ReleaseDetail) {

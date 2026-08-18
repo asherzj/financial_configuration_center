@@ -142,6 +142,55 @@ describe("OperationPage", () => {
     expect(screen.getByRole("button", { name: "执行 BASE_APPLY" })).toBeInTheDocument();
   });
 
+  it("renders auto-fill metadata as read-only and enforces validation rules", async () => {
+	const generatedPage: PageResult = {
+		...page,
+		interactionFields: [
+			{ ...page.interactionFields[0]!, validationRules: [{ kind: "REGEX", params: { pattern: "^[a-z][a-z0-9-]+$" }, message: "lowercase slug only" }] },
+			...page.interactionFields.slice(1),
+			{
+				name: "created_by",
+				displayName: "Created by",
+				description: "Audit actor",
+				type: "STRING",
+				uiControl: "INPUT",
+				queryable: false,
+				editable: false,
+				required: true,
+				sensitive: false,
+				projected: false,
+				keyField: false,
+				autoFill: { source: "ACTOR_SUBJECT", value: "" },
+				allowedFilterOperators: [],
+				defaultFilterOperator: "EXACT",
+				displayOrder: 3,
+				validationRules: [],
+				options: [],
+			},
+		],
+	};
+	const api: OperationApi = {
+		queryPage: vi.fn().mockResolvedValue(generatedPage),
+		createRelease: vi.fn().mockResolvedValue(created),
+		actOnRelease: vi.fn().mockResolvedValue(created),
+	};
+	render(<OperationPage api={api} />);
+
+	await screen.findByText("visa-cn");
+	fireEvent.click(screen.getByRole("button", { name: "新增配置" }));
+	expect(screen.getByText("Audit actor；提交时由服务端生成（当前操作人账号）")).toBeInTheDocument();
+	expect(screen.getByDisplayValue("由服务端生成")).toBeDisabled();
+	fireEvent.change(screen.getByLabelText("Route code"), { target: { value: "INVALID" } });
+	fireEvent.change(screen.getByLabelText("Priority"), { target: { value: "1" } });
+	fireEvent.click(screen.getByRole("button", { name: "加入草稿" }));
+	expect(await screen.findByText("lowercase slug only")).toBeInTheDocument();
+	expect(screen.queryByText("草稿 1")).not.toBeInTheDocument();
+
+	fireEvent.change(screen.getByLabelText("Route code"), { target: { value: "valid-route" } });
+	fireEvent.click(screen.getByRole("button", { name: "加入草稿" }));
+	expect(await screen.findByText("草稿 1")).toBeInTheDocument();
+  });
+
   it("selects an approval release type and drives manual review from server actions", async () => {
     const approvalPage: PageResult = {
       ...page,

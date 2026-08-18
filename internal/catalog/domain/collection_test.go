@@ -212,6 +212,99 @@ func TestCompileModelRequiresTypedOptionsAndProtectsSensitiveFields(t *testing.T
 	if _, err := domain.CompileModel(definition, base); err == nil {
 		t.Fatal("sensitive queryable field compiled")
 	}
+	base.Fields[1].Queryable = false
+	base.Fields[1].AllowedFilterOperators = nil
+	base.Fields[1].Editable = false
+	base.AutoFillRules = []domain.AutoFillRule{{Field: "secret", Source: domain.AutoFillActorSubject}}
+	if _, err := domain.CompileModel(definition, base); err == nil {
+		t.Fatal("sensitive auto-fill field compiled")
+	}
+}
+
+func TestValidationRulesAreCompiledEnforcedAndImmutable(t *testing.T) {
+	t.Parallel()
+	rules := []domain.ValidationRule{
+		{Kind: domain.ValidationRegex, Params: map[string]string{"pattern": `^[a-z][a-z0-9-]+$`}, Message: "must be a slug"},
+		{Kind: domain.ValidationMinLength, Params: map[string]string{"value": "3"}, Message: "too short"},
+		{Kind: domain.ValidationMaxLength, Params: map[string]string{"value": "12"}, Message: "too long"},
+	}
+	definition, err := domain.CompileCollection(domain.CollectionSpec{
+		Name: "validated", KeyFields: []string{"code"}, SchemaVersion: 1,
+		Fields: []domain.FieldDefinition{{Name: "code", DisplayName: "Code", Type: domain.FieldTypeString, Required: true, DisplayOrder: 0, ValidationRules: rules}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	model, err := domain.CompileModel(definition, domain.ModelSpec{
+		Code: "validated-admin", Name: "Validated", Collection: definition.Name(),
+		Fields:           []domain.ModelField{{Name: "code", Type: domain.FieldTypeString, Required: true, Editable: true, UIControl: domain.UIControlInput, ValidationRules: rules}},
+		ProjectionFields: []string{"code"}, KeyFields: []string{"code"}, DefaultPageSize: 20, MaxPageSize: 100, ConfigRevision: 1,
+	})
+	if err != nil {
+		t.Fatalf("CompileModel: %v", err)
+	}
+	if _, err := definition.NewRecord("production", map[string]string{"code": "UP"}); err == nil {
+		t.Fatal("record violating regex and minimum length was accepted")
+	}
+	if _, err := definition.NewRecord("production", map[string]string{"code": "valid-code"}); err != nil {
+		t.Fatalf("valid record: %v", err)
+	}
+	rules[0].Params["pattern"] = ".*"
+	if model.Fields()[0].ValidationRules[0].Params["pattern"] != `^[a-z][a-z0-9-]+$` {
+		t.Fatal("compiled model leaked validation rule mutation")
+	}
+	mismatch := model.Fields()
+	mismatch[0].ValidationRules[1].Params["value"] = "4"
+	if _, err := domain.CompileModel(definition, domain.ModelSpec{
+		Code: "mismatch", Name: "Mismatch", Collection: definition.Name(), Fields: mismatch,
+		ProjectionFields: []string{"code"}, KeyFields: []string{"code"}, DefaultPageSize: 20, MaxPageSize: 100, ConfigRevision: 1,
+	}); err == nil {
+		t.Fatal("model validation rules differing from collection compiled")
+	}
+}
+
+func TestCompileModelRequiresClosedTypedAutoFillRules(t *testing.T) {
+	t.Parallel()
+	definition, err := domain.CompileCollection(domain.CollectionSpec{
+		Name: "generated_records", KeyFields: []string{"id"}, SchemaVersion: 1,
+		Fields: []domain.FieldDefinition{
+			{Name: "id", DisplayName: "ID", Type: domain.FieldTypeString, Required: true, DisplayOrder: 0},
+			{Name: "created_at", DisplayName: "Created at", Type: domain.FieldTypeTimestamp, Required: true, DisplayOrder: 1},
+			{Name: "created_by", DisplayName: "Created by", Type: domain.FieldTypeString, Required: true, DisplayOrder: 2},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	base := domain.ModelSpec{
+		Code: "generated-admin", Name: "Generated", Collection: definition.Name(),
+		Fields: []domain.ModelField{
+			{Name: "id", Type: domain.FieldTypeString, Required: true, UIControl: domain.UIControlInput},
+			{Name: "created_at", Type: domain.FieldTypeTimestamp, Required: true, UIControl: domain.UIControlTime},
+			{Name: "created_by", Type: domain.FieldTypeString, Required: true, UIControl: domain.UIControlInput},
+		},
+		ProjectionFields: []string{"id", "created_at", "created_by"}, KeyFields: []string{"id"}, DefaultPageSize: 20, MaxPageSize: 100, ConfigRevision: 1,
+		AutoFillRules: []domain.AutoFillRule{
+			{Field: "id", Source: domain.AutoFillUUID},
+			{Field: "created_at", Source: domain.AutoFillCurrentTime},
+			{Field: "created_by", Source: domain.AutoFillActorSubject},
+		},
+	}
+	model, err := domain.CompileModel(definition, base)
+	if err != nil {
+		t.Fatalf("CompileModel: %v", err)
+	}
+	if got := model.AutoFillRules(); len(got) != 3 || got[0].Field != "created_at" || got[2].Source != domain.AutoFillUUID {
+		t.Fatalf("auto-fill rules = %+v", got)
+	}
+	base.AutoFillRules[0].Source = domain.AutoFillCurrentTime
+	if _, err := domain.CompileModel(definition, base); err == nil {
+		t.Fatal("type-incompatible auto-fill rule compiled")
+	}
+	base.AutoFillRules[0].Source = domain.AutoFillSource("CALLER_VALUE")
+	if _, err := domain.CompileModel(definition, base); err == nil {
+		t.Fatal("open auto-fill source compiled")
+	}
 }
 
 func sensitiveOptionCollection(t *testing.T) domain.CollectionDefinition {

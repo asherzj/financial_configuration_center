@@ -53,6 +53,8 @@ type InteractionField struct {
 	AllowedFilterOperators []catalog.FilterOperator
 	DefaultFilterOperator  catalog.FilterOperator
 	DefaultValue           *string
+	AutoFill               *catalog.AutoFillRule
+	ValidationRules        []catalog.ValidationRule
 	DisplayOrder           int32
 	Options                []catalog.SelectOptionDefinition
 }
@@ -264,11 +266,16 @@ func interactionFields(current *snapshot.Snapshot, request Request, definition c
 		keySet[field] = struct{}{}
 	}
 	modelFields := model.Fields()
+	autoFillByField := make(map[string]catalog.AutoFillRule)
+	for _, rule := range model.AutoFillRules() {
+		autoFillByField[rule.Field] = rule
+	}
 	fields := make([]InteractionField, len(modelFields))
 	for index, modelField := range modelFields {
 		definitionField, _ := definition.Field(modelField.Name)
 		_, projected := projection[modelField.Name]
 		_, key := keySet[modelField.Name]
+		autoFill, generated := autoFillByField[modelField.Name]
 		var defaultOperator catalog.FilterOperator
 		if len(modelField.AllowedFilterOperators) > 0 {
 			defaultOperator = modelField.AllowedFilterOperators[0]
@@ -279,6 +286,10 @@ func interactionFields(current *snapshot.Snapshot, request Request, definition c
 			Editable: modelField.Editable, Required: modelField.Required, Sensitive: modelField.Sensitive,
 			Projected: projected, KeyField: key, AllowedFilterOperators: slices.Clone(modelField.AllowedFilterOperators),
 			DefaultFilterOperator: defaultOperator, DefaultValue: cloneStringPointer(modelField.DefaultValue), DisplayOrder: definitionField.DisplayOrder,
+			ValidationRules: modelField.ValidationRules,
+		}
+		if generated {
+			fields[index].AutoFill = &autoFill
 		}
 		options, err := resolveOptions(current, request, modelField.OptionSource)
 		if err != nil {

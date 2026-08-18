@@ -313,13 +313,20 @@ func queryPageResponse(result pagequery.Result) map[string]any {
 		for optionIndex, option := range field.Options {
 			options[optionIndex] = map[string]any{"code": option.Code, "label": option.Label, "disabled": option.Disabled}
 		}
+		validationRules := make([]map[string]any, len(field.ValidationRules))
+		for ruleIndex, rule := range field.ValidationRules {
+			validationRules[ruleIndex] = map[string]any{"kind": rule.Kind, "params": rule.Params, "message": rule.Message}
+		}
 		fields[index] = map[string]any{
 			"name": field.Name, "displayName": field.DisplayName, "description": field.Description,
 			"type": field.Type, "uiControl": field.UIControl, "queryable": field.Queryable,
 			"editable": field.Editable, "required": field.Required, "sensitive": field.Sensitive,
 			"projected": field.Projected, "keyField": field.KeyField,
 			"allowedFilterOperators": field.AllowedFilterOperators, "defaultFilterOperator": field.DefaultFilterOperator,
-			"defaultValue": field.DefaultValue, "displayOrder": field.DisplayOrder, "validationRules": []any{}, "options": options,
+			"defaultValue": field.DefaultValue, "displayOrder": field.DisplayOrder, "validationRules": validationRules, "options": options,
+		}
+		if field.AutoFill != nil {
+			fields[index]["autoFill"] = map[string]any{"source": field.AutoFill.Source, "value": field.AutoFill.Value}
 		}
 	}
 	releaseTypes := make([]map[string]any, len(result.ReleaseTypes))

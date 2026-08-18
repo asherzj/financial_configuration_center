@@ -86,11 +86,20 @@ func (handler *Handler) QueryPage(_ context.Context, request *configv1.QueryPage
 		for optionIndex, option := range field.Options {
 			options[optionIndex] = &configv1.SelectOption{Code: option.Code, Label: option.Label, Disabled: option.Disabled}
 		}
+		validationRules := make([]*configv1.ValidationRule, len(field.ValidationRules))
+		for ruleIndex, rule := range field.ValidationRules {
+			validationRules[ruleIndex] = &configv1.ValidationRule{Kind: string(rule.Kind), Params: cloneMap(rule.Params), Message: rule.Message}
+		}
+		var autoFill *configv1.AutoFillRule
+		if field.AutoFill != nil {
+			autoFill = &configv1.AutoFillRule{Source: string(field.AutoFill.Source), Value: field.AutoFill.Value}
+		}
 		response.InteractionFields[index] = &configv1.PageInteractionField{
 			Name: field.Name, DisplayName: field.DisplayName, Description: field.Description,
 			Type: toFieldType(field.Type), UiControl: toUIControl(field.UIControl),
 			Queryable: field.Queryable, Editable: field.Editable, IsRequired: field.Required,
 			Sensitive: field.Sensitive, Projected: field.Projected, KeyField: field.KeyField,
+			AutoFill: autoFill, ValidationRules: validationRules,
 			AllowedFilterOperators: operators, DefaultFilterOperator: toFilterOperator(field.DefaultFilterOperator),
 			DefaultValue: cloneStringPointer(field.DefaultValue), DisplayOrder: field.DisplayOrder, Options: options,
 		}

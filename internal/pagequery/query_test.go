@@ -38,7 +38,7 @@ func TestAllReturnsRowsAndModelDrivenInteractionMetadata(t *testing.T) {
 		t.Fatalf("release types = %+v", result.ReleaseTypes)
 	}
 	first := result.InteractionFields[0]
-	if first.Name != "route_code" || !first.Projected || !first.KeyField || !first.Editable || !first.Queryable || len(first.AllowedFilterOperators) == 0 {
+	if first.Name != "route_code" || !first.Projected || !first.KeyField || !first.Editable || !first.Queryable || len(first.AllowedFilterOperators) == 0 || len(first.ValidationRules) != 1 {
 		t.Fatalf("interaction field is incomplete: %+v", first)
 	}
 	if result.CollectionRevision != 8 || result.Snapshot.Generation != 1 {
@@ -193,7 +193,7 @@ func querySnapshot(t *testing.T) (*snapshot.Manager, catalog.CompiledModel, []st
 	model, err := catalog.CompileModel(definition, catalog.ModelSpec{
 		Code: "payment-route-admin", Name: "Payment routes", Collection: definition.Name(),
 		Fields: []catalog.ModelField{
-			{Name: "route_code", Type: catalog.FieldTypeString, Required: true, Editable: true, Queryable: true, UIControl: catalog.UIControlInput, AllowedFilterOperators: []catalog.FilterOperator{catalog.FilterExact, catalog.FilterContains}},
+			{Name: "route_code", Type: catalog.FieldTypeString, Required: true, Editable: true, Queryable: true, UIControl: catalog.UIControlInput, AllowedFilterOperators: []catalog.FilterOperator{catalog.FilterExact, catalog.FilterContains}, ValidationRules: []catalog.ValidationRule{{Kind: catalog.ValidationMinLength, Params: map[string]string{"value": "1"}, Message: "route code is required"}}},
 			{Name: "priority", Type: catalog.FieldTypeInt64, Required: true, Editable: true, Queryable: true, UIControl: catalog.UIControlNumber, AllowedFilterOperators: []catalog.FilterOperator{catalog.FilterExact, catalog.FilterClosedRange}},
 			{Name: "enabled", Type: catalog.FieldTypeBool, Required: true, Editable: true, Queryable: true, DefaultValue: &defaultEnabled, UIControl: catalog.UIControlBoolean, AllowedFilterOperators: []catalog.FilterOperator{catalog.FilterExact}},
 		},
@@ -229,7 +229,7 @@ func mustDefinition(t *testing.T) catalog.CollectionDefinition {
 	definition, err := catalog.CompileCollection(catalog.CollectionSpec{
 		Name: "payment_routes", SDKDeliveryEnabled: true, SchemaVersion: 1, KeyFields: []string{"route_code"},
 		Fields: []catalog.FieldDefinition{
-			{Name: "route_code", DisplayName: "Route code", Type: catalog.FieldTypeString, Required: true, DisplayOrder: 0},
+			{Name: "route_code", DisplayName: "Route code", Type: catalog.FieldTypeString, Required: true, DisplayOrder: 0, ValidationRules: []catalog.ValidationRule{{Kind: catalog.ValidationMinLength, Params: map[string]string{"value": "1"}, Message: "route code is required"}}},
 			{Name: "priority", DisplayName: "Priority", Type: catalog.FieldTypeInt64, Required: true, DisplayOrder: 1},
 			{Name: "enabled", DisplayName: "Enabled", Type: catalog.FieldTypeBool, Required: true, DefaultValue: &defaultEnabled, DisplayOrder: 2},
 		},

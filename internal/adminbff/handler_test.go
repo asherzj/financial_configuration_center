@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/asherzj/financial_configuration_center/internal/adminbff"
+	catalog "github.com/asherzj/financial_configuration_center/internal/catalog/domain"
 	"github.com/asherzj/financial_configuration_center/internal/pagequery"
 	"github.com/asherzj/financial_configuration_center/internal/release/application"
 	release "github.com/asherzj/financial_configuration_center/internal/release/domain"
@@ -17,7 +18,15 @@ import (
 func TestBrowserBaseReleaseJourneyRoutes(t *testing.T) {
 	t.Parallel()
 
-	queries := &queryStub{result: pagequery.Result{ModelCode: "model", ModelName: "Model", QueryType: pagequery.TypeAll, PageNumber: 1, PageSize: 20, ReleaseTypes: []pagequery.ReleaseType{{Code: "direct", Name: "Direct", TemplateCode: "base-final", Available: true}}}}
+	queries := &queryStub{result: pagequery.Result{
+		ModelCode: "model", ModelName: "Model", QueryType: pagequery.TypeAll, PageNumber: 1, PageSize: 20,
+		InteractionFields: []pagequery.InteractionField{{
+			Name: "id", DisplayName: "ID", Type: catalog.FieldTypeString, UIControl: catalog.UIControlInput,
+			AutoFill:        &catalog.AutoFillRule{Field: "id", Source: catalog.AutoFillUUID},
+			ValidationRules: []catalog.ValidationRule{{Kind: catalog.ValidationRegex, Params: map[string]string{"pattern": "^[a-z]+$"}, Message: "lowercase"}},
+		}},
+		ReleaseTypes: []pagequery.ReleaseType{{Code: "direct", Name: "Direct", TemplateCode: "base-final", Available: true}},
+	}}
 	releases := &releaseStub{
 		created: application.OrderView{ID: "order-1", Status: release.OrderInProgress, CurrentStepCode: "base-apply", CurrentStep: release.StepBaseApply, Revision: 1},
 		acted:   application.OrderView{ID: "order-1", Status: release.OrderInProgress, CurrentStepCode: "base-apply", CurrentStep: release.StepBaseApply, Revision: 2},
@@ -35,6 +44,9 @@ func TestBrowserBaseReleaseJourneyRoutes(t *testing.T) {
 	}
 	if !bytes.Contains(queryResponse.Body.Bytes(), []byte(`"releaseTypes":[{"available":true,"code":"direct","name":"Direct","templateCode":"base-final"}]`)) {
 		t.Fatalf("release type metadata = %s", queryResponse.Body.String())
+	}
+	if !bytes.Contains(queryResponse.Body.Bytes(), []byte(`"autoFill":{"source":"UUID","value":""}`)) || !bytes.Contains(queryResponse.Body.Bytes(), []byte(`"validationRules":[{"kind":"REGEX","message":"lowercase","params":{"pattern":"^[a-z]+$"}}]`)) {
+		t.Fatalf("interaction metadata = %s", queryResponse.Body.String())
 	}
 
 	createResponse := serveJSON(t, handler, http.MethodPost, "/api/v1/releases", "create-id", map[string]any{

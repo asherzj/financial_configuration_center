@@ -26,7 +26,9 @@ func TestQueryPageMapsCompleteAllMetadata(t *testing.T) {
 			Name: "code", DisplayName: "Code", Type: catalog.FieldTypeString, UIControl: catalog.UIControlSelect,
 			Queryable: true, Editable: true, Required: true, Projected: true, KeyField: true,
 			AllowedFilterOperators: []catalog.FilterOperator{catalog.FilterExact}, DefaultFilterOperator: catalog.FilterExact,
-			Options: []catalog.SelectOptionDefinition{{Code: "active", Label: "Active"}, {Code: "legacy", Label: "Legacy", Disabled: true}},
+			AutoFill:        &catalog.AutoFillRule{Field: "code", Source: catalog.AutoFillUUID},
+			ValidationRules: []catalog.ValidationRule{{Kind: catalog.ValidationRegex, Params: map[string]string{"pattern": "^[a-z]+$"}, Message: "lowercase only"}},
+			Options:         []catalog.SelectOptionDefinition{{Code: "active", Label: "Active"}, {Code: "legacy", Label: "Legacy", Disabled: true}},
 		}},
 		ReleaseTypes: []pagequery.ReleaseType{{Code: "direct", Name: "Direct", TemplateCode: "base-final", Available: true}},
 		PageNumber:   1, PageSize: 20, TotalNumber: 1, TotalPages: 1,
@@ -52,6 +54,9 @@ func TestQueryPageMapsCompleteAllMetadata(t *testing.T) {
 	}
 	if len(response.InteractionFields[0].Options) != 2 || !response.InteractionFields[0].Options[1].Disabled {
 		t.Fatalf("QueryPage options = %+v", response.InteractionFields[0].Options)
+	}
+	if response.InteractionFields[0].AutoFill == nil || response.InteractionFields[0].AutoFill.Source != "UUID" || len(response.InteractionFields[0].ValidationRules) != 1 || response.InteractionFields[0].ValidationRules[0].Params["pattern"] != "^[a-z]+$" {
+		t.Fatalf("QueryPage interaction contract = %+v", response.InteractionFields[0])
 	}
 	if !response.Rows[0].BasePresent || response.Rows[0].BaseValues["code"] != "base" || len(response.Rows[0].ChangedFields) != 1 {
 		t.Fatalf("QueryPage row diff = %+v", response.Rows[0])

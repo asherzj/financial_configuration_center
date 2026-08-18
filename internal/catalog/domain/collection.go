@@ -12,14 +12,15 @@ var identifierPattern = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9_.-]{0,190}$`)
 
 // FieldDefinition declares one canonical record field.
 type FieldDefinition struct {
-	Name         string
-	DisplayName  string
-	Type         FieldType
-	Required     bool
-	Sensitive    bool
-	DefaultValue *string
-	Description  string
-	DisplayOrder int32
+	Name            string
+	DisplayName     string
+	Type            FieldType
+	Required        bool
+	Sensitive       bool
+	DefaultValue    *string
+	Description     string
+	DisplayOrder    int32
+	ValidationRules []ValidationRule
 }
 
 // CollectionSpec is untrusted input to CompileCollection.
@@ -88,6 +89,16 @@ func CompileCollection(spec CollectionSpec) (CollectionDefinition, error) {
 				return CollectionDefinition{}, fmt.Errorf("compile collection: field %q default: %w", field.Name, err)
 			}
 			field.DefaultValue = stringPointer(canonical)
+		}
+		compiledRules, err := compileValidationRules(field.Type, field.Required, field.ValidationRules)
+		if err != nil {
+			return CollectionDefinition{}, fmt.Errorf("compile collection: field %q: %w", field.Name, err)
+		}
+		field.ValidationRules = compiledRules
+		if field.DefaultValue != nil {
+			if err := validateCanonicalFieldValue(field, *field.DefaultValue); err != nil {
+				return CollectionDefinition{}, fmt.Errorf("compile collection: field %q default: %w", field.Name, err)
+			}
 		}
 		fields[index] = cloneField(field)
 		fieldsByName[field.Name] = cloneField(field)
@@ -199,6 +210,9 @@ func (definition CollectionDefinition) NewRecord(environment string, input map[s
 		if err != nil {
 			return ConfigurationRecord{}, fmt.Errorf("new record: field %q: %w", field.Name, err)
 		}
+		if err := validateCanonicalFieldValue(field, canonical); err != nil {
+			return ConfigurationRecord{}, fmt.Errorf("new record: field %q: %w", field.Name, err)
+		}
 		data[field.Name] = canonical
 	}
 	recordKey, err := EncodeKey(definition.keyFields, data)
@@ -217,6 +231,7 @@ func cloneField(field FieldDefinition) FieldDefinition {
 	if field.DefaultValue != nil {
 		field.DefaultValue = stringPointer(*field.DefaultValue)
 	}
+	field.ValidationRules = cloneValidationRules(field.ValidationRules)
 	return field
 }
 

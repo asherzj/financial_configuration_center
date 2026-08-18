@@ -17,6 +17,7 @@ export interface InteractionField {
   allowedFilterOperators: FilterOperator[];
   defaultFilterOperator: FilterOperator;
   defaultValue?: string;
+  autoFill?: { source: "ACTOR_SUBJECT" | "ACTOR_NAME" | "CURRENT_TIME" | "CONSTANT" | "UUID"; value: string };
   displayOrder: number;
   validationRules: Array<{ kind: string; params: Record<string, string>; message: string }>;
   options: Array<{ code: string; label: string; disabled: boolean }>;
