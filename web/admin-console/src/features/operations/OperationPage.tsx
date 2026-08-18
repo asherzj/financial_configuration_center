@@ -45,6 +45,7 @@ interface DraftRow {
   effectiveBefore?: Record<string, string>;
   after: Record<string, string>;
   expectedRecordRevision: number;
+  preserveSensitiveFields?: string[];
 }
 
 export function OperationPage({ api = operationApi }: { api?: OperationApi }) {
@@ -64,6 +65,7 @@ export function OperationPage({ api = operationApi }: { api?: OperationApi }) {
   const [releaseTypeCode, setReleaseTypeCode] = useState<string>();
   const [description, setDescription] = useState("");
   const [comment, setComment] = useState("");
+  const [replaceSensitive, setReplaceSensitive] = useState<Record<string, boolean>>({});
   const [error, setError] = useState<string>();
 
   const load = useCallback(async () => {
@@ -107,7 +109,7 @@ export function OperationPage({ api = operationApi }: { api?: OperationApi }) {
       key: field.name,
       render: (value: string | undefined, row: PageRow) => (
         <Space size={4}>
-          {renderValue(field, value)}
+          {renderValue(field, value, row.maskedFields.includes(field.name))}
           {row.changedFields.includes(field.name) ? <Tag color="gold">Scope 覆盖</Tag> : null}
         </Space>
       ),
@@ -134,6 +136,7 @@ export function OperationPage({ api = operationApi }: { api?: OperationApi }) {
 
   const openAdd = () => {
     setEditingRow(undefined);
+    setReplaceSensitive({});
     form.resetFields();
     const defaults = Object.fromEntries(
       (page?.interactionFields ?? [])
@@ -146,6 +149,7 @@ export function OperationPage({ api = operationApi }: { api?: OperationApi }) {
 
   function openEdit(row: PageRow) {
     setEditingRow(row);
+    setReplaceSensitive({});
     form.resetFields();
     form.setFieldsValue(Object.fromEntries(
       (page?.interactionFields ?? [])
@@ -160,13 +164,19 @@ export function OperationPage({ api = operationApi }: { api?: OperationApi }) {
     if (!page) return;
     const edited = Object.fromEntries(
       page.interactionFields
-        .filter((field) => field.editable && values[field.name] !== undefined)
+        .filter((field) => field.editable && values[field.name] !== undefined && (!editingRow || !field.sensitive || replaceSensitive[field.name]))
         .map((field) => [field.name, toCanonicalInput(field, values[field.name])]),
     );
     const after = editingRow ? { ...editingRow.values, ...edited } : edited;
+    const preserveSensitiveFields = editingRow
+      ? page.interactionFields
+        .filter((field) => field.sensitive && editingRow.maskedFields.includes(field.name) && !replaceSensitive[field.name])
+        .map((field) => field.name)
+      : [];
     setDrafts((current) => [...current, editingRow ? {
       id: crypto.randomUUID(), action: "MODIFY", baseBefore: { ...editingRow.baseValues },
       effectiveBefore: { ...editingRow.values }, after, expectedRecordRevision: editingRow.recordRevision,
+      ...(preserveSensitiveFields.length > 0 ? { preserveSensitiveFields } : {}),
     } : {
       id: crypto.randomUUID(), action: "ADD", after, expectedRecordRevision: 0,
     }]);
@@ -204,6 +214,7 @@ export function OperationPage({ api = operationApi }: { api?: OperationApi }) {
           ...(draft.baseBefore ? { baseBefore: draft.baseBefore } : {}),
           ...(draft.effectiveBefore ? { effectiveBefore: draft.effectiveBefore } : {}),
           after: draft.after,
+          ...(draft.preserveSensitiveFields ? { preserveSensitiveFields: draft.preserveSensitiveFields } : {}),
           expectedRecordRevision: draft.expectedRecordRevision,
           expectedCollectionRevision: page.collectionRevision,
         })),
@@ -326,16 +337,35 @@ export function OperationPage({ api = operationApi }: { api?: OperationApi }) {
       <Modal title={editingRow ? "修改配置" : "新增配置"} open={addOpen} onCancel={() => { setAddOpen(false); setEditingRow(undefined); }} onOk={() => void addDraft()} okText="加入草稿" destroyOnHidden>
         <Form form={form} layout="vertical" preserve={false}>
           {page?.interactionFields.filter((field) => field.editable).map((field) => (
-            <Form.Item
-              key={field.name}
-              name={field.name}
-              label={field.displayName}
-              extra={field.description}
-              valuePropName={field.uiControl === "BOOLEAN" ? "checked" : "value"}
-              rules={[{ required: field.required, message: `${field.displayName} 为必填项` }]}
-            >
-              {editor(field, Boolean(editingRow && field.keyField))}
-            </Form.Item>
+            editingRow && field.sensitive ? (
+              <Form.Item key={field.name} label={field.displayName} extra={field.description}>
+                <Space orientation="vertical" className="operation-full-width">
+                  <Checkbox
+                    aria-label={`替换 ${field.displayName}`}
+                    checked={Boolean(replaceSensitive[field.name])}
+                    onChange={(event) => setReplaceSensitive((current) => ({ ...current, [field.name]: event.target.checked }))}
+                  >
+                    替换现有敏感值
+                  </Checkbox>
+                  {replaceSensitive[field.name] ? (
+                    <Form.Item name={field.name} noStyle rules={[{ required: true, message: `${field.displayName} 为必填项` }]}>
+                      <Input.Password aria-label={field.displayName} autoComplete="new-password" />
+                    </Form.Item>
+                  ) : <Tag>保持原值</Tag>}
+                </Space>
+              </Form.Item>
+            ) : (
+              <Form.Item
+                key={field.name}
+                name={field.name}
+                label={field.displayName}
+                extra={field.description}
+                valuePropName={field.uiControl === "BOOLEAN" ? "checked" : "value"}
+                rules={[{ required: field.required, message: `${field.displayName} 为必填项` }]}
+              >
+                {editor(field, Boolean(editingRow && field.keyField))}
+              </Form.Item>
+            )
           ))}
         </Form>
       </Modal>
@@ -348,11 +378,17 @@ export function OperationPage({ api = operationApi }: { api?: OperationApi }) {
               <Descriptions column={1} size="small">
                 {projectedFields.map((field) => (
                   <Descriptions.Item key={field.name} label={field.displayName}>
-                    <Space wrap>
-                      {draft.baseBefore ? <Tag>Base {draft.baseBefore[field.name] ?? "—"}</Tag> : null}
-                      {draft.effectiveBefore ? <Tag color="blue">Effective {draft.effectiveBefore[field.name] ?? "—"}</Tag> : null}
-                      <Tag color="green">After {draft.after[field.name] ?? "—"}</Tag>
-                    </Space>
+                    {field.sensitive ? (
+                      draft.preserveSensitiveFields?.includes(field.name)
+                        ? <Tag>{field.displayName}：保持原值</Tag>
+                        : <Tag color="orange">已设置新的敏感值</Tag>
+                    ) : (
+                      <Space wrap>
+                        {draft.baseBefore ? <Tag>Base {draft.baseBefore[field.name] ?? "—"}</Tag> : null}
+                        {draft.effectiveBefore ? <Tag color="blue">Effective {draft.effectiveBefore[field.name] ?? "—"}</Tag> : null}
+                        <Tag color="green">After {draft.after[field.name] ?? "—"}</Tag>
+                      </Space>
+                    )}
                   </Descriptions.Item>
                 ))}
               </Descriptions>
@@ -479,6 +515,7 @@ export function OperationPage({ api = operationApi }: { api?: OperationApi }) {
 }
 
 function editor(field: InteractionField, disabled = false) {
+  if (field.sensitive) return <Input.Password disabled={disabled} autoComplete="new-password" />;
   switch (field.uiControl) {
     case "NUMBER":
       return <InputNumber stringMode className="operation-full-width" disabled={disabled} />;
@@ -494,8 +531,8 @@ function editor(field: InteractionField, disabled = false) {
   }
 }
 
-function renderValue(field: InteractionField, value?: string) {
-  if (field.sensitive && value !== undefined) return <Tag>••••••</Tag>;
+function renderValue(field: InteractionField, value?: string, masked = false) {
+  if (field.sensitive && (masked || value !== undefined)) return <Tag>••••••</Tag>;
   if (field.type === "BOOL") return <Tag color={value === "true" ? "green" : "default"}>{value === "true" ? "是" : "否"}</Tag>;
   return value ?? "—";
 }

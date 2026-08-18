@@ -74,6 +74,7 @@ export interface CreateReleaseRequest {
     baseBefore?: Record<string, string>;
     effectiveBefore?: Record<string, string>;
     after?: Record<string, string>;
+    preserveSensitiveFields?: string[];
     expectedRecordRevision: number;
     expectedCollectionRevision: number;
   }>;

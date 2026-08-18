@@ -408,4 +408,100 @@ describe("OperationPage", () => {
 	expect(screen.getByText("对比一致")).toBeInTheDocument();
 	expect(screen.getAllByText("expected-digest")).toHaveLength(2);
   });
+
+  it("keeps masked sensitive values unless the operator explicitly replaces them", async () => {
+	const sensitivePage: PageResult = {
+		...page,
+		rows: [{
+			...page.rows[0]!,
+			maskedFields: ["api_secret"],
+		}],
+		projectionFields: [...page.projectionFields, "api_secret"],
+		interactionFields: [...page.interactionFields, {
+			name: "api_secret",
+			displayName: "API secret",
+			description: "Protected credential",
+			type: "STRING",
+			uiControl: "INPUT",
+			queryable: false,
+			editable: true,
+			required: false,
+			sensitive: true,
+			projected: true,
+			keyField: false,
+			allowedFilterOperators: [],
+			defaultFilterOperator: "EXACT",
+			displayOrder: 3,
+			validationRules: [],
+			options: [],
+		}],
+	};
+	const createRelease = vi.fn().mockResolvedValue(created);
+	const api: OperationApi = {
+		queryPage: vi.fn().mockResolvedValue(sensitivePage),
+		createRelease,
+		actOnRelease: vi.fn().mockResolvedValue(created),
+	};
+	render(<OperationPage api={api} />);
+
+	expect(await screen.findByText("••••••")).toBeInTheDocument();
+	fireEvent.click(screen.getByRole("button", { name: "修改 visa-cn" }));
+	expect(screen.getByText("保持原值")).toBeInTheDocument();
+	expect(screen.getByRole("checkbox", { name: "替换 API secret" })).not.toBeChecked();
+	fireEvent.change(screen.getByLabelText("Priority"), { target: { value: "2" } });
+	fireEvent.click(screen.getByRole("button", { name: "加入草稿" }));
+	await screen.findByText("草稿 1");
+	fireEvent.click(screen.getByRole("button", { name: "审阅并发布" }));
+	expect(await screen.findByText("API secret：保持原值")).toBeInTheDocument();
+	fireEvent.click(screen.getByRole("button", { name: "创建发布单" }));
+	await waitFor(() => expect(createRelease).toHaveBeenCalledTimes(1));
+	expect(createRelease.mock.calls[0]?.[0].items[0].preserveSensitiveFields).toEqual(["api_secret"]);
+	expect(createRelease.mock.calls[0]?.[0].items[0].after.api_secret).toBeUndefined();
+  });
+
+  it("replaces a masked sensitive value only after explicit confirmation", async () => {
+	const sensitivePage: PageResult = {
+		...page,
+		rows: [{ ...page.rows[0]!, maskedFields: ["api_secret"] }],
+		projectionFields: [...page.projectionFields, "api_secret"],
+		interactionFields: [...page.interactionFields, {
+			name: "api_secret",
+			displayName: "API secret",
+			description: "Protected credential",
+			type: "STRING",
+			uiControl: "INPUT",
+			queryable: false,
+			editable: true,
+			required: false,
+			sensitive: true,
+			projected: true,
+			keyField: false,
+			allowedFilterOperators: [],
+			defaultFilterOperator: "EXACT",
+			displayOrder: 3,
+			validationRules: [],
+			options: [],
+		}],
+	};
+	const createRelease = vi.fn().mockResolvedValue(created);
+	const api: OperationApi = {
+		queryPage: vi.fn().mockResolvedValue(sensitivePage),
+		createRelease,
+		actOnRelease: vi.fn().mockResolvedValue(created),
+	};
+	render(<OperationPage api={api} />);
+
+	await screen.findByText("••••••");
+	fireEvent.click(screen.getByRole("button", { name: "修改 visa-cn" }));
+	fireEvent.click(screen.getByRole("checkbox", { name: "替换 API secret" }));
+	fireEvent.change(screen.getByLabelText("API secret"), { target: { value: "new-secret" } });
+	fireEvent.click(screen.getByRole("button", { name: "加入草稿" }));
+	await screen.findByText("草稿 1");
+	fireEvent.click(screen.getByRole("button", { name: "审阅并发布" }));
+	expect(await screen.findByText("已设置新的敏感值")).toBeInTheDocument();
+	fireEvent.click(screen.getByRole("button", { name: "创建发布单" }));
+	await waitFor(() => expect(createRelease).toHaveBeenCalledTimes(1));
+	expect(createRelease.mock.calls[0]?.[0].items[0].preserveSensitiveFields).toBeUndefined();
+	expect(createRelease.mock.calls[0]?.[0].items[0].after.api_secret).toBe("new-secret");
+  });
 });
