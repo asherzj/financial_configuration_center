@@ -182,8 +182,56 @@ describe("OperationPage", () => {
       ],
       allowedActions: ["ADVANCE"],
     };
+    const applyPending: ReleaseDetail = {
+      ...approved,
+      order: {
+        ...approved.order,
+        currentStep: "apply",
+        currentStepType: "BASE_APPLY",
+        currentStepStatus: "PENDING",
+        entityRevision: 4,
+      },
+      allowedActions: ["EXECUTE"],
+    };
+    const applyExecuted: ReleaseDetail = {
+      ...applyPending,
+      order: { ...applyPending.order, currentStepStatus: "EXECUTED", entityRevision: 5 },
+      steps: [
+        applyPending.steps[0]!,
+        { code: "apply", type: "BASE_APPLY", status: "EXECUTED" },
+        applyPending.steps[2]!,
+      ],
+      allowedActions: ["ADVANCE"],
+    };
+    const completePending: ReleaseDetail = {
+      ...applyExecuted,
+      order: {
+        ...applyExecuted.order,
+        currentStep: "done",
+        currentStepType: "COMPLETE",
+        currentStepStatus: "PENDING",
+        entityRevision: 6,
+      },
+      allowedActions: ["EXECUTE"],
+    };
+    const succeeded: ReleaseDetail = {
+      ...completePending,
+      order: { ...completePending.order, status: "SUCCEEDED", currentStepStatus: "EXECUTED", entityRevision: 7 },
+      steps: [
+        completePending.steps[0]!,
+        completePending.steps[1]!,
+        { code: "done", type: "COMPLETE", status: "EXECUTED" },
+      ],
+      allowedActions: [],
+    };
     const createRelease = vi.fn().mockResolvedValue(approvalCreated);
-    const actOnRelease = vi.fn().mockResolvedValueOnce(submitted).mockResolvedValueOnce(approved);
+    const actOnRelease = vi.fn()
+      .mockResolvedValueOnce(submitted)
+      .mockResolvedValueOnce(approved)
+      .mockResolvedValueOnce(applyPending)
+      .mockResolvedValueOnce(applyExecuted)
+      .mockResolvedValueOnce(completePending)
+      .mockResolvedValueOnce(succeeded);
     const api: OperationApi = {
       queryPage: vi.fn().mockResolvedValue(approvalPage),
       createRelease,
@@ -228,6 +276,18 @@ describe("OperationPage", () => {
       expectedOrderRevision: 2,
       expectedCurrentStep: "review",
     });
-    expect(await screen.findByRole("button", { name: "推进下一步" })).toBeInTheDocument();
+    fireEvent.click(await screen.findByRole("button", { name: "推进下一步" }));
+    fireEvent.click(await screen.findByRole("button", { name: "执行 BASE_APPLY" }));
+    fireEvent.click(await screen.findByRole("button", { name: "推进下一步" }));
+    fireEvent.click(await screen.findByRole("button", { name: "完成发布" }));
+
+    await waitFor(() => expect(actOnRelease).toHaveBeenCalledTimes(6));
+    expect(actOnRelease.mock.calls.slice(2).map((call) => call[2])).toEqual([
+      { action: "ADVANCE", expectedOrderRevision: 3, expectedCurrentStep: "review" },
+      { action: "EXECUTE", expectedOrderRevision: 4, expectedCurrentStep: "apply" },
+      { action: "ADVANCE", expectedOrderRevision: 5, expectedCurrentStep: "apply" },
+      { action: "EXECUTE", expectedOrderRevision: 6, expectedCurrentStep: "done" },
+    ]);
+    expect(await screen.findByText("草稿 0")).toBeInTheDocument();
   });
 });

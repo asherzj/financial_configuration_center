@@ -1,7 +1,7 @@
 # FC-005 Scope Overlay
 
-- Status: blocked
-- Blocked by: FC-004
+- Status: in-progress
+- Blocked by: FC-004 (done)
 - Spec: acceptance scenario 7
 
 ## Outcome
