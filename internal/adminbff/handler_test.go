@@ -1,0 +1,131 @@
+package adminbff_test
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"testing"
+
+	"github.com/asherzj/financial_configuration_center/internal/adminbff"
+	"github.com/asherzj/financial_configuration_center/internal/pagequery"
+	"github.com/asherzj/financial_configuration_center/internal/release/application"
+	release "github.com/asherzj/financial_configuration_center/internal/release/domain"
+)
+
+func TestBrowserBaseReleaseJourneyRoutes(t *testing.T) {
+	t.Parallel()
+
+	queries := &queryStub{result: pagequery.Result{ModelCode: "model", ModelName: "Model", QueryType: pagequery.TypeAll, PageNumber: 1, PageSize: 20}}
+	releases := &releaseStub{
+		created: application.OrderView{ID: "order-1", Status: release.OrderInProgress, CurrentStep: release.StepBaseApply, Revision: 1},
+		acted:   application.OrderView{ID: "order-1", Status: release.OrderInProgress, CurrentStep: release.StepBaseApply, Revision: 2},
+	}
+	handler, err := adminbff.New(queries, releases, authenticator{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	queryResponse := serveJSON(t, handler, http.MethodPost, "/api/v1/query-page", "", map[string]any{
+		"modelCode": "model", "scope": map[string]any{"region": "cn", "environment": "production"}, "queryType": "ALL",
+	})
+	if queryResponse.Code != http.StatusOK || queries.last.Environment != "production" || queries.last.Type != pagequery.TypeAll {
+		t.Fatalf("query response=%d command=%+v body=%s", queryResponse.Code, queries.last, queryResponse.Body.String())
+	}
+
+	createResponse := serveJSON(t, handler, http.MethodPost, "/api/v1/releases", "create-id", map[string]any{
+		"modelCode": "model", "releaseTypeCode": "direct", "description": "Add visa route",
+		"scope": map[string]any{"region": "cn", "environment": "production"},
+		"items": []any{map[string]any{"action": "ADD", "after": map[string]string{"route_code": "visa", "priority": "7"}, "expectedRecordRevision": 0, "expectedCollectionRevision": 7}},
+	})
+	if createResponse.Code != http.StatusCreated || releases.lastCreate.Actor != "operator@example.com" || releases.lastCreate.IdempotencyKey != "create-id" {
+		t.Fatalf("create response=%d command=%+v body=%s", createResponse.Code, releases.lastCreate, createResponse.Body.String())
+	}
+
+	actionResponse := serveJSON(t, handler, http.MethodPost, "/api/v1/releases/order-1/actions", "action-id", map[string]any{
+		"action": "EXECUTE", "expectedOrderRevision": 1, "expectedCurrentStep": "BASE_APPLY",
+	})
+	if actionResponse.Code != http.StatusOK || releases.lastAct.OrderID != "order-1" || releases.lastAct.ActionRequestID != "action-id" || releases.lastAct.Action != application.ActionExecute {
+		t.Fatalf("action response=%d command=%+v body=%s", actionResponse.Code, releases.lastAct, actionResponse.Body.String())
+	}
+
+	directWrite := serveJSON(t, handler, http.MethodPost, "/api/v1/configuration-records", "", map[string]any{"data": map[string]string{"code": "bypass"}})
+	if directWrite.Code != http.StatusNotFound {
+		t.Fatalf("direct record route returned %d", directWrite.Code)
+	}
+}
+
+func TestBFFRequiresAuthenticationAndStrictJSON(t *testing.T) {
+	t.Parallel()
+
+	handler, err := adminbff.New(&queryStub{}, &releaseStub{}, authenticator{reject: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	response := serveJSON(t, handler, http.MethodPost, "/api/v1/query-page", "", map[string]any{"modelCode": "model"})
+	if response.Code != http.StatusUnauthorized {
+		t.Fatalf("unauthenticated response = %d", response.Code)
+	}
+
+	handler, _ = adminbff.New(&queryStub{}, &releaseStub{}, authenticator{})
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/query-page", bytes.NewBufferString(`{"modelCode":"model","unknown":true}`))
+	request.Header.Set("Content-Type", "application/json")
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("unknown JSON field response = %d body=%s", recorder.Code, recorder.Body.String())
+	}
+}
+
+type authenticator struct{ reject bool }
+
+func (authenticator authenticator) Authenticate(*http.Request) (adminbff.Principal, error) {
+	if authenticator.reject {
+		return adminbff.Principal{}, adminbff.ErrUnauthenticated
+	}
+	return adminbff.Principal{Subject: "operator@example.com"}, nil
+}
+
+type queryStub struct {
+	result pagequery.Result
+	last   pagequery.Request
+}
+
+func (stub *queryStub) Query(request pagequery.Request) (pagequery.Result, error) {
+	stub.last = request
+	return stub.result, nil
+}
+
+type releaseStub struct {
+	created    application.OrderView
+	acted      application.OrderView
+	lastCreate application.CreateBaseFinalCommand
+	lastAct    application.ActCommand
+}
+
+func (stub *releaseStub) CreateBaseFinal(_ context.Context, command application.CreateBaseFinalCommand) (application.OrderView, error) {
+	stub.lastCreate = command
+	return stub.created, nil
+}
+
+func (stub *releaseStub) Act(_ context.Context, command application.ActCommand) (application.OrderView, error) {
+	stub.lastAct = command
+	return stub.acted, nil
+}
+
+func serveJSON(t *testing.T, handler http.Handler, method, path, idempotency string, payload any) *httptest.ResponseRecorder {
+	t.Helper()
+	encoded, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(method, path, bytes.NewReader(encoded))
+	request.Header.Set("Content-Type", "application/json")
+	if idempotency != "" {
+		request.Header.Set("Idempotency-Key", idempotency)
+	}
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, request)
+	return recorder
+}
