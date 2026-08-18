@@ -29,7 +29,7 @@ func TestReleaseHandlerMapsCreateAndAction(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if created.Detail.Order.Id != "order" || commands.lastCreate.Actor != "operator@example.com" || commands.lastCreate.Items[0].ExpectedCollectionRevision != 7 || len(commands.lastCreate.Items[0].PreserveSensitiveFields) != 1 {
+	if created.Detail.Order.Id != "order" || commands.lastCreate.Actor != "operator@example.com" || commands.lastCreate.ActorName != "Operator" || commands.lastCreate.Items[0].ExpectedCollectionRevision != 7 || len(commands.lastCreate.Items[0].PreserveSensitiveFields) != 1 {
 		t.Fatalf("create mapping response=%+v command=%+v", created, commands.lastCreate)
 	}
 	acted, err := handler.ActOnReleaseOrder(context.Background(), &controlv1.ActOnReleaseOrderRequest{
@@ -91,7 +91,8 @@ func TestReleaseHandlerMapsCompareMismatch(t *testing.T) {
 
 type actorResolver struct{}
 
-func (actorResolver) Subject(context.Context) (string, error) { return "operator@example.com", nil }
+func (actorResolver) Subject(context.Context) (string, error)     { return "operator@example.com", nil }
+func (actorResolver) DisplayName(context.Context) (string, error) { return "Operator", nil }
 func (actorResolver) Roles(context.Context) ([]string, error) {
 	return []string{"RELEASE_APPROVER"}, nil
 }

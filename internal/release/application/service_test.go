@@ -80,6 +80,133 @@ func TestBaseFinalApplicationIsTheOnlyRecordWritePath(t *testing.T) {
 	}
 }
 
+func TestCreateBaseFinalGeneratesAutoFillAfterReplayCheck(t *testing.T) {
+	t.Parallel()
+	definition, err := catalog.CompileCollection(catalog.CollectionSpec{
+		Name: "generated", KeyFields: []string{"id"}, SchemaVersion: 1,
+		Fields: []catalog.FieldDefinition{
+			{Name: "id", DisplayName: "ID", Type: catalog.FieldTypeString, Required: true, DisplayOrder: 0},
+			{Name: "owner", DisplayName: "Owner", Type: catalog.FieldTypeString, Required: true, DisplayOrder: 1},
+			{Name: "display", DisplayName: "Display", Type: catalog.FieldTypeString, Required: true, DisplayOrder: 2},
+			{Name: "created_at", DisplayName: "Created at", Type: catalog.FieldTypeTimestamp, Required: true, DisplayOrder: 3},
+			{Name: "source", DisplayName: "Source", Type: catalog.FieldTypeString, Required: true, DisplayOrder: 4},
+			{Name: "payload", DisplayName: "Payload", Type: catalog.FieldTypeString, Required: true, DisplayOrder: 5},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	model, err := catalog.CompileModel(definition, catalog.ModelSpec{
+		Code: "generated-admin", Name: "Generated", Collection: definition.Name(),
+		Fields: []catalog.ModelField{
+			{Name: "id", Type: catalog.FieldTypeString, Required: true, UIControl: catalog.UIControlInput},
+			{Name: "owner", Type: catalog.FieldTypeString, Required: true, UIControl: catalog.UIControlInput},
+			{Name: "display", Type: catalog.FieldTypeString, Required: true, UIControl: catalog.UIControlInput},
+			{Name: "created_at", Type: catalog.FieldTypeTimestamp, Required: true, UIControl: catalog.UIControlTime},
+			{Name: "source", Type: catalog.FieldTypeString, Required: true, UIControl: catalog.UIControlInput},
+			{Name: "payload", Type: catalog.FieldTypeString, Required: true, Editable: true, UIControl: catalog.UIControlInput},
+		},
+		ProjectionFields: []string{"id", "owner", "display", "created_at", "source", "payload"}, KeyFields: []string{"id"}, DefaultPageSize: 20, MaxPageSize: 100, ConfigRevision: 7,
+		AutoFillRules: []catalog.AutoFillRule{
+			{Field: "id", Source: catalog.AutoFillUUID},
+			{Field: "owner", Source: catalog.AutoFillActorSubject},
+			{Field: "display", Source: catalog.AutoFillActorName},
+			{Field: "created_at", Source: catalog.AutoFillCurrentTime},
+			{Field: "source", Source: catalog.AutoFillConstant, Value: "admin"},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := newFakeUnitOfWork(definition, model)
+	ids := &sequenceIDs{values: []string{"generated-id", "order", "item"}}
+	createdAt := time.Date(2026, 8, 19, 22, 30, 0, 123, time.UTC)
+	service := application.NewService(store, ids, fixedClock{now: createdAt})
+	command := application.CreateBaseFinalCommand{
+		IdempotencyKey: "auto-fill", ModelCode: model.Code(), Scope: release.Scope{Region: "cn", Environment: "production"},
+		Actor: "operator@example.com", ActorName: "Operator", Items: []application.AddDraft{{
+			Data: map[string]string{
+				"id": "caller-id", "owner": "caller-owner", "display": "Caller", "created_at": "2000-01-01T00:00:00Z", "source": "caller", "payload": "kept",
+			},
+			ExpectedCollectionRevision: 7,
+		}},
+	}
+	created, err := service.CreateBaseFinal(context.Background(), command)
+	if err != nil {
+		t.Fatalf("CreateBaseFinal: %v", err)
+	}
+	item := store.orders[created.ID].Items()[0]
+	want := map[string]string{
+		"id": "generated-id", "owner": "operator@example.com", "display": "Operator",
+		"created_at": createdAt.Format(time.RFC3339Nano), "source": "admin", "payload": "kept",
+	}
+	if !reflect.DeepEqual(item.After.Data, want) {
+		t.Fatalf("auto-filled after = %#v, want %#v", item.After.Data, want)
+	}
+	replay := command
+	replay.Items = []application.AddDraft{{Data: map[string]string{
+		"id": "another-spoof", "owner": "another-spoof", "display": "Spoof", "created_at": "2030-01-01T00:00:00Z", "source": "spoof", "payload": "kept",
+	}, ExpectedCollectionRevision: 7}}
+	replayed, err := service.CreateBaseFinal(context.Background(), replay)
+	if err != nil || !reflect.DeepEqual(replayed, created) || ids.next != 3 {
+		t.Fatalf("auto-fill replay = %+v, error=%v, generated IDs=%d", replayed, err, ids.next)
+	}
+}
+
+func TestCreateOverlayPreservesAutoFilledKeyAndRegeneratesOtherFields(t *testing.T) {
+	t.Parallel()
+	definition, err := catalog.CompileCollection(catalog.CollectionSpec{
+		Name: "owned", KeyFields: []string{"id"}, SchemaVersion: 1,
+		Fields: []catalog.FieldDefinition{
+			{Name: "id", DisplayName: "ID", Type: catalog.FieldTypeString, Required: true, DisplayOrder: 0},
+			{Name: "owner", DisplayName: "Owner", Type: catalog.FieldTypeString, Required: true, DisplayOrder: 1},
+			{Name: "payload", DisplayName: "Payload", Type: catalog.FieldTypeString, Required: true, DisplayOrder: 2},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	model, err := catalog.CompileModel(definition, catalog.ModelSpec{
+		Code: "owned-admin", Name: "Owned", Collection: definition.Name(),
+		Fields: []catalog.ModelField{
+			{Name: "id", Type: catalog.FieldTypeString, Required: true, UIControl: catalog.UIControlInput},
+			{Name: "owner", Type: catalog.FieldTypeString, Required: true, UIControl: catalog.UIControlInput},
+			{Name: "payload", Type: catalog.FieldTypeString, Required: true, Editable: true, UIControl: catalog.UIControlInput},
+		},
+		ProjectionFields: []string{"id", "owner", "payload"}, KeyFields: []string{"id"}, DefaultPageSize: 20, MaxPageSize: 100, ConfigRevision: 7,
+		AutoFillRules: []catalog.AutoFillRule{{Field: "id", Source: catalog.AutoFillUUID}, {Field: "owner", Source: catalog.AutoFillActorSubject}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	template, err := release.CompileTemplate([]byte(`{"steps":[{"code":"apply","type":"OVERLAY_APPLY","params":{}},{"code":"complete","type":"COMPLETE","params":{}}]}`), release.FinalEffectOverlay)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := newFakeUnitOfWork(definition, model)
+	store.template = application.TemplateRef{Code: "scope-final", Version: 1, ReleaseTypeCode: "scope", Definition: template}
+	base, _ := definition.NewRecord("production", map[string]string{"id": "stable-id", "owner": "creator", "payload": "before"})
+	base.ConfigRevision = 5
+	store.records["production"][base.RecordKey] = base
+	service := application.NewService(store, &sequenceIDs{values: []string{"item", "order"}}, fixedClock{now: time.Date(2026, 8, 19, 22, 45, 0, 0, time.UTC)})
+	created, err := service.CreateRelease(context.Background(), application.CreateReleaseCommand{
+		IdempotencyKey: "auto-modify", ModelCode: model.Code(), ReleaseTypeCode: "scope",
+		Scope: release.Scope{Region: "cn", Environment: "production", Stage: "blue"}, Actor: "modifier",
+		Items: []application.ReleaseDraft{{
+			Action: release.ChangeModify, BaseBefore: base.Data, EffectiveBefore: base.Data,
+			After:                  map[string]string{"id": "caller-tried-to-change", "owner": "spoof", "payload": "after"},
+			ExpectedRecordRevision: 5, ExpectedCollectionRevision: 7,
+		}},
+	})
+	if err != nil {
+		t.Fatalf("CreateRelease: %v", err)
+	}
+	after := store.orders[created.ID].Items()[0].After
+	if after.RecordKey != base.RecordKey || after.Data["id"] != "stable-id" || after.Data["owner"] != "modifier" || after.Data["payload"] != "after" {
+		t.Fatalf("auto-filled modify = %+v", after)
+	}
+}
+
 func TestOverlayFinalApplicationAppliesAndRollsBackAtomically(t *testing.T) {
 	t.Parallel()
 	definition, model := compiledCatalog(t)

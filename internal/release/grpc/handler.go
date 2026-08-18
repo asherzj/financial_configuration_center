@@ -24,6 +24,10 @@ type ActorResolver interface {
 	Subject(context.Context) (string, error)
 }
 
+type ActorNameResolver interface {
+	DisplayName(context.Context) (string, error)
+}
+
 type RoleResolver interface {
 	Roles(context.Context) ([]string, error)
 }
@@ -47,6 +51,10 @@ func (handler *Handler) CreateReleaseOrder(ctx context.Context, request *control
 	actor, err := handler.actors.Subject(ctx)
 	if err != nil || strings.TrimSpace(actor) == "" {
 		return nil, status.Error(codes.Unauthenticated, "authenticated actor is required")
+	}
+	actorName := ""
+	if names, ok := handler.actors.(ActorNameResolver); ok {
+		actorName, _ = names.DisplayName(ctx)
 	}
 	items := make([]application.ReleaseDraft, len(request.Items))
 	for index, item := range request.Items {
@@ -74,7 +82,7 @@ func (handler *Handler) CreateReleaseOrder(ctx context.Context, request *control
 	view, err := handler.commands.CreateRelease(ctx, application.CreateReleaseCommand{
 		IdempotencyKey: request.IdempotencyKey, ModelCode: request.ModelCode, ReleaseTypeCode: request.ReleaseTypeCode,
 		Scope: release.Scope{Region: request.Scope.Region, Environment: request.Scope.Environment, Stage: request.Scope.Stage},
-		Actor: actor, Items: items,
+		Actor: actor, ActorName: actorName, Items: items,
 	})
 	if err != nil {
 		return nil, mapError(err)

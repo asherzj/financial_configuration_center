@@ -101,6 +101,7 @@ type CreateReleaseCommand struct {
 	ReleaseTypeCode string
 	Scope           release.Scope
 	Actor           string
+	ActorName       string
 	Items           []ReleaseDraft
 }
 
@@ -120,6 +121,7 @@ type CreateBaseFinalCommand struct {
 	ReleaseTypeCode string
 	Scope           release.Scope
 	Actor           string
+	ActorName       string
 	Items           []AddDraft
 }
 
@@ -226,14 +228,12 @@ func (service *Service) CreateBaseFinal(ctx context.Context, command CreateBaseF
 		}
 
 		records := make([]catalog.ConfigurationRecord, len(command.Items))
-		recordKeys := make([]string, len(command.Items))
 		for index, draft := range command.Items {
-			record, err := bundle.Definition.NewRecord(command.Scope.Environment, draft.Data)
+			record, err := bundle.Definition.NewRecord(command.Scope.Environment, withAutoFillPlaceholders(bundle.Model, draft.Data, nil))
 			if err != nil {
 				return fmt.Errorf("canonicalize release item %d: %w", index, err)
 			}
 			records[index] = record
-			recordKeys[index] = record.RecordKey
 		}
 		requestDigest, err := normalizedCreateDigest(command, records)
 		if err != nil {
@@ -250,6 +250,20 @@ func (service *Service) CreateBaseFinal(ctx context.Context, command CreateBaseF
 			result := stored.Result
 			replayed = &result
 			return nil
+		}
+		createdAt := service.clock.Now().UTC()
+		recordKeys := make([]string, len(command.Items))
+		for index, draft := range command.Items {
+			data, err := service.applyAutoFill(bundle.Model, draft.Data, nil, command.Actor, command.ActorName, createdAt)
+			if err != nil {
+				return fmt.Errorf("%w: item %d: %v", release.ErrFailedPrecondition, index, err)
+			}
+			record, err := bundle.Definition.NewRecord(command.Scope.Environment, data)
+			if err != nil {
+				return fmt.Errorf("canonicalize generated release item %d: %w", index, err)
+			}
+			records[index] = record
+			recordKeys[index] = record.RecordKey
 		}
 		authority, err := transaction.LoadBaseAuthority(ctx, bundle.Definition.Name(), strings.TrimSpace(command.Scope.Environment), recordKeys)
 		if err != nil {
@@ -285,17 +299,16 @@ func (service *Service) CreateBaseFinal(ctx context.Context, command CreateBaseF
 				ExpectedCollectionRevision: draft.ExpectedCollectionRevision,
 			}
 		}
-		now := service.clock.Now().UTC()
 		order, err := release.NewBaseFinalOrder(release.BaseFinalOrderSpec{
 			ID:             orderID,
-			ReleaseNumber:  service.ids.NewReleaseNumber(now),
+			ReleaseNumber:  service.ids.NewReleaseNumber(createdAt),
 			IdempotencyKey: command.IdempotencyKey,
 			ModelCode:      command.ModelCode,
 			TemplateCode:   bundle.Template.Code, TemplateVersion: bundle.Template.Version,
 			ReleaseTypeCode: bundle.Template.ReleaseTypeCode, RequestDigest: requestDigest,
 			Scope:     command.Scope,
 			CreatedBy: command.Actor,
-			CreatedAt: now,
+			CreatedAt: createdAt,
 			Items:     itemSpecs,
 			Template:  bundle.Template.Definition,
 		})
@@ -355,7 +368,8 @@ func (service *Service) CreateRelease(ctx context.Context, command CreateRelease
 			if err != nil {
 				return fmt.Errorf("canonicalize item %d effective before: %w", index, err)
 			}
-			after, err := canonicalOptionalRecord(bundle.Definition, command.Scope.Environment, withSensitivePlaceholders(bundle.Definition, draft.After, preserved))
+			afterSource := withSensitivePlaceholders(bundle.Definition, draft.After, preserved)
+			after, err := canonicalOptionalRecord(bundle.Definition, command.Scope.Environment, withAutoFillPlaceholders(bundle.Model, afterSource, effectiveBefore))
 			if err != nil {
 				return fmt.Errorf("canonicalize item %d after: %w", index, err)
 			}
@@ -397,6 +411,28 @@ func (service *Service) CreateRelease(ctx context.Context, command CreateRelease
 			replayed = &result
 			return nil
 		}
+		createdAt := service.clock.Now().UTC()
+		for index, draft := range canonical {
+			if draft.after == nil {
+				continue
+			}
+			source := withSensitivePlaceholders(bundle.Definition, command.Items[index].After, draft.preserveSensitiveFields)
+			data, err := service.applyAutoFill(bundle.Model, source, draft.effectiveBefore, command.Actor, command.ActorName, createdAt)
+			if err != nil {
+				return fmt.Errorf("%w: item %d: %v", release.ErrFailedPrecondition, index, err)
+			}
+			after, err := bundle.Definition.NewRecord(command.Scope.Environment, data)
+			if err != nil {
+				return fmt.Errorf("canonicalize generated item %d after: %w", index, err)
+			}
+			draft.after = &after
+			target := draft.after
+			if draft.effectiveBefore != nil && target.RecordKey != draft.effectiveBefore.RecordKey {
+				return fmt.Errorf("%w: item %d auto-fill changed record key", release.ErrInvalid, index)
+			}
+			canonical[index] = draft
+			keys[index] = target.RecordKey
+		}
 
 		authority, err := transaction.LoadBaseAuthority(ctx, bundle.Definition.Name(), command.Scope.Environment, keys)
 		if err != nil {
@@ -424,12 +460,11 @@ func (service *Service) CreateRelease(ctx context.Context, command CreateRelease
 					ExpectedRecordRevision: draft.expectedRecordRevision, ExpectedCollectionRevision: draft.expectedCollectionRevision,
 				}
 			}
-			now := service.clock.Now().UTC()
 			order, err := release.NewBaseFinalOrder(release.BaseFinalOrderSpec{
-				ID: orderID, ReleaseNumber: service.ids.NewReleaseNumber(now), IdempotencyKey: command.IdempotencyKey,
+				ID: orderID, ReleaseNumber: service.ids.NewReleaseNumber(createdAt), IdempotencyKey: command.IdempotencyKey,
 				ModelCode: command.ModelCode, TemplateCode: bundle.Template.Code, TemplateVersion: bundle.Template.Version,
 				ReleaseTypeCode: bundle.Template.ReleaseTypeCode, RequestDigest: requestDigest, Scope: command.Scope,
-				CreatedBy: command.Actor, CreatedAt: now, Items: items, Template: bundle.Template.Definition,
+				CreatedBy: command.Actor, CreatedAt: createdAt, Items: items, Template: bundle.Template.Definition,
 			})
 			if err != nil {
 				return err
@@ -492,12 +527,11 @@ func (service *Service) CreateRelease(ctx context.Context, command CreateRelease
 				PreserveSensitiveFields: append([]string(nil), draft.preserveSensitiveFields...),
 			}
 		}
-		now := service.clock.Now().UTC()
 		order, err := release.NewOverlayFinalOrder(release.OverlayFinalOrderSpec{
-			ID: service.ids.NewID(), ReleaseNumber: service.ids.NewReleaseNumber(now), IdempotencyKey: command.IdempotencyKey,
+			ID: service.ids.NewID(), ReleaseNumber: service.ids.NewReleaseNumber(createdAt), IdempotencyKey: command.IdempotencyKey,
 			ModelCode: command.ModelCode, TemplateCode: bundle.Template.Code, TemplateVersion: bundle.Template.Version,
 			ReleaseTypeCode: bundle.Template.ReleaseTypeCode, RequestDigest: requestDigest, Scope: command.Scope,
-			CreatedBy: command.Actor, CreatedAt: now, Items: itemSpecs, Template: bundle.Template.Definition,
+			CreatedBy: command.Actor, CreatedAt: createdAt, Items: itemSpecs, Template: bundle.Template.Definition,
 		})
 		if err != nil {
 			return err
@@ -582,6 +616,73 @@ func withSensitivePlaceholders(definition catalog.CollectionDefinition, source m
 		}
 	}
 	return result
+}
+
+func withAutoFillPlaceholders(model catalog.CompiledModel, source map[string]string, before *catalog.ConfigurationRecord) map[string]string {
+	if source == nil {
+		return nil
+	}
+	result := maps.Clone(source)
+	keyFields := make(map[string]struct{}, len(model.KeyFields()))
+	for _, name := range model.KeyFields() {
+		keyFields[name] = struct{}{}
+	}
+	for _, rule := range model.AutoFillRules() {
+		if before != nil {
+			if _, key := keyFields[rule.Field]; key {
+				copyAuthoritativeField(result, before.Data, rule.Field)
+				continue
+			}
+		}
+		switch rule.Source {
+		case catalog.AutoFillCurrentTime:
+			result[rule.Field] = "1970-01-01T00:00:00Z"
+		case catalog.AutoFillConstant:
+			result[rule.Field] = rule.Value
+		case catalog.AutoFillUUID:
+			result[rule.Field] = "00000000-0000-0000-0000-000000000000"
+		default:
+			result[rule.Field] = "auto-fill"
+		}
+	}
+	return result
+}
+
+func (service *Service) applyAutoFill(model catalog.CompiledModel, source map[string]string, before *catalog.ConfigurationRecord, actor, actorName string, now time.Time) (map[string]string, error) {
+	if source == nil {
+		return nil, nil
+	}
+	result := maps.Clone(source)
+	keyFields := make(map[string]struct{}, len(model.KeyFields()))
+	for _, name := range model.KeyFields() {
+		keyFields[name] = struct{}{}
+	}
+	for _, rule := range model.AutoFillRules() {
+		if before != nil {
+			if _, key := keyFields[rule.Field]; key {
+				copyAuthoritativeField(result, before.Data, rule.Field)
+				continue
+			}
+		}
+		switch rule.Source {
+		case catalog.AutoFillActorSubject:
+			result[rule.Field] = actor
+		case catalog.AutoFillActorName:
+			if strings.TrimSpace(actorName) == "" {
+				return nil, fmt.Errorf("ACTOR_NAME identity is unavailable for field %q", rule.Field)
+			}
+			result[rule.Field] = actorName
+		case catalog.AutoFillCurrentTime:
+			result[rule.Field] = now.UTC().Format(time.RFC3339Nano)
+		case catalog.AutoFillConstant:
+			result[rule.Field] = rule.Value
+		case catalog.AutoFillUUID:
+			result[rule.Field] = service.ids.NewID()
+		default:
+			return nil, fmt.Errorf("unsupported auto-fill source %q", rule.Source)
+		}
+	}
+	return result, nil
 }
 
 func hydratePreservedSensitiveFields(draft *canonicalReleaseDraft, actualBase, actualEffective *catalog.ConfigurationRecord) error {

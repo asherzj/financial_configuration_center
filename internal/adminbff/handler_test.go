@@ -54,7 +54,7 @@ func TestBrowserBaseReleaseJourneyRoutes(t *testing.T) {
 		"scope": map[string]any{"region": "cn", "environment": "production"},
 		"items": []any{map[string]any{"action": "ADD", "after": map[string]string{"route_code": "visa", "priority": "7"}, "expectedRecordRevision": 0, "expectedCollectionRevision": 7}},
 	})
-	if createResponse.Code != http.StatusCreated || releases.lastCreate.Actor != "operator@example.com" || releases.lastCreate.IdempotencyKey != "create-id" {
+	if createResponse.Code != http.StatusCreated || releases.lastCreate.Actor != "operator@example.com" || releases.lastCreate.ActorName != "Operator" || releases.lastCreate.IdempotencyKey != "create-id" {
 		t.Fatalf("create response=%d command=%+v body=%s", createResponse.Code, releases.lastCreate, createResponse.Body.String())
 	}
 
@@ -191,7 +191,7 @@ func (authenticator authenticator) Authenticate(*http.Request) (adminbff.Princip
 	if authenticator.reject {
 		return adminbff.Principal{}, adminbff.ErrUnauthenticated
 	}
-	return adminbff.Principal{Subject: "operator@example.com", Roles: append([]string(nil), authenticator.roles...)}, nil
+	return adminbff.Principal{Subject: "operator@example.com", DisplayName: "Operator", Roles: append([]string(nil), authenticator.roles...)}, nil
 }
 
 type queryStub struct {

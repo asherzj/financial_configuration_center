@@ -970,6 +970,49 @@ func TestRealMySQLCreateRejectsFilteredCollectionOption(t *testing.T) {
 	assertCount(t, raw, `SELECT COUNT(*) FROM release_orders`, 1)
 }
 
+func TestRealMySQLCreatePersistsServerGeneratedAutoFill(t *testing.T) {
+	dsn := isolatedDatabase(t)
+	raw, err := sql.Open("mysql", dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	seedAutoFillModel(t, raw)
+	defer raw.Close()
+
+	ctx := context.Background()
+	database, err := platformmysql.Open(ctx, platformmysql.Config{DSN: dsn, MaxOpenConns: 4, MaxIdleConns: 2, ConnMaxLifetime: time.Minute, ConnMaxIdleTime: time.Minute})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = database.Close() })
+	store, err := mysqlstore.New(database)
+	if err != nil {
+		t.Fatal(err)
+	}
+	createdAt := time.Date(2026, 8, 19, 23, 0, 0, 456, time.UTC)
+	service := application.NewService(store, &numberedIDs{next: 950, releaseNumber: "REL-20260819-0950"}, fixedClock{now: createdAt})
+	command := baseCreate("mysql-auto-fill", "operator@example.com", "production", "generated-route", 7)
+	command.ActorName = "Operator"
+	command.Items[0].Data["created_by"] = "spoof"
+	command.Items[0].Data["created_at"] = "2000-01-01T00:00:00Z"
+	command.Items[0].Data["origin"] = "spoof"
+	command.Items[0].Data["request_id"] = "spoof"
+	if _, err := service.CreateBaseFinal(ctx, command); err != nil {
+		t.Fatalf("CreateBaseFinal: %v", err)
+	}
+	var encoded []byte
+	if err := raw.QueryRow(`SELECT after_data FROM release_order_items LIMIT 1`).Scan(&encoded); err != nil {
+		t.Fatal(err)
+	}
+	var after map[string]string
+	if err := json.Unmarshal(encoded, &after); err != nil {
+		t.Fatal(err)
+	}
+	if after["created_by"] != "operator@example.com" || after["created_at"] != createdAt.Format(time.RFC3339Nano) || after["origin"] != "admin" || after["request_id"] != "00000000-0000-4000-8000-000000000951" {
+		t.Fatalf("persisted auto-fill = %#v", after)
+	}
+}
+
 func isolatedDatabase(t *testing.T) string {
 	t.Helper()
 	base := os.Getenv("FINCONFIG_TEST_MYSQL_DSN")
@@ -1105,6 +1148,50 @@ func seedDynamicPriorityOptions(t *testing.T, db *sql.DB) {
 		ReleaseTypes: []catalog.ReleaseTypeDefinition{{Code: "direct", Name: "Direct", TemplateCode: "base-final", Enabled: true}},
 	}
 	modelJSON, _ := json.Marshal(model)
+	if _, err := db.Exec(`UPDATE configuration_models SET definition = ? WHERE code = 'payment-route-admin'`, modelJSON); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func seedAutoFillModel(t *testing.T, db *sql.DB) {
+	t.Helper()
+	defaultEnabled := "false"
+	fields := []catalog.FieldDefinition{
+		{Name: "route_code", DisplayName: "Route code", Type: catalog.FieldTypeString, Required: true, DisplayOrder: 0},
+		{Name: "priority", DisplayName: "Priority", Type: catalog.FieldTypeInt64, Required: true, DisplayOrder: 1},
+		{Name: "enabled", DisplayName: "Enabled", Type: catalog.FieldTypeBool, Required: true, DefaultValue: &defaultEnabled, DisplayOrder: 2},
+		{Name: "api_secret", DisplayName: "API secret", Type: catalog.FieldTypeString, Sensitive: true, DisplayOrder: 3},
+		{Name: "created_by", DisplayName: "Created by", Type: catalog.FieldTypeString, Required: true, DisplayOrder: 4},
+		{Name: "created_at", DisplayName: "Created at", Type: catalog.FieldTypeTimestamp, Required: true, DisplayOrder: 5},
+		{Name: "origin", DisplayName: "Origin", Type: catalog.FieldTypeString, Required: true, DisplayOrder: 6},
+		{Name: "request_id", DisplayName: "Request ID", Type: catalog.FieldTypeString, Required: true, DisplayOrder: 7},
+	}
+	model := catalog.ModelSpec{
+		Fields: []catalog.ModelField{
+			{Name: "route_code", Type: catalog.FieldTypeString, Required: true, Editable: true, Queryable: true, UIControl: catalog.UIControlInput, AllowedFilterOperators: []catalog.FilterOperator{catalog.FilterExact}},
+			{Name: "priority", Type: catalog.FieldTypeInt64, Required: true, Editable: true, Queryable: true, UIControl: catalog.UIControlSelect, AllowedFilterOperators: []catalog.FilterOperator{catalog.FilterExact}, OptionSource: &catalog.OptionSourceDefinition{Kind: catalog.OptionSourceStatic, StaticOptions: []catalog.SelectOptionDefinition{{Code: "1", Label: "Low"}}}},
+			{Name: "enabled", Type: catalog.FieldTypeBool, Required: true, Editable: true, Queryable: true, DefaultValue: &defaultEnabled, UIControl: catalog.UIControlBoolean, AllowedFilterOperators: []catalog.FilterOperator{catalog.FilterExact}},
+			{Name: "api_secret", Type: catalog.FieldTypeString, Sensitive: true, Editable: true, UIControl: catalog.UIControlInput},
+			{Name: "created_by", Type: catalog.FieldTypeString, Required: true, UIControl: catalog.UIControlInput},
+			{Name: "created_at", Type: catalog.FieldTypeTimestamp, Required: true, UIControl: catalog.UIControlTime},
+			{Name: "origin", Type: catalog.FieldTypeString, Required: true, UIControl: catalog.UIControlInput},
+			{Name: "request_id", Type: catalog.FieldTypeString, Required: true, UIControl: catalog.UIControlInput},
+		},
+		ProjectionFields: []string{"route_code", "priority", "enabled", "api_secret", "created_by", "created_at", "origin", "request_id"},
+		KeyFields:        []string{"route_code"}, DefaultPageSize: 20, MaxPageSize: 100,
+		ReleaseTypes: []catalog.ReleaseTypeDefinition{{Code: "direct", Name: "Direct", TemplateCode: "base-final", Enabled: true}},
+		AutoFillRules: []catalog.AutoFillRule{
+			{Field: "created_by", Source: catalog.AutoFillActorSubject},
+			{Field: "created_at", Source: catalog.AutoFillCurrentTime},
+			{Field: "origin", Source: catalog.AutoFillConstant, Value: "admin"},
+			{Field: "request_id", Source: catalog.AutoFillUUID},
+		},
+	}
+	fieldsJSON, _ := json.Marshal(fields)
+	modelJSON, _ := json.Marshal(model)
+	if _, err := db.Exec(`UPDATE configuration_collections SET fields = ? WHERE name = 'payment_routes'`, fieldsJSON); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := db.Exec(`UPDATE configuration_models SET definition = ? WHERE code = 'payment-route-admin'`, modelJSON); err != nil {
 		t.Fatal(err)
 	}

@@ -17,8 +17,9 @@ import (
 var ErrUnauthenticated = errors.New("unauthenticated")
 
 type Principal struct {
-	Subject string
-	Roles   []string
+	Subject     string
+	DisplayName string
+	Roles       []string
 }
 
 type Authenticator interface {
@@ -149,7 +150,7 @@ func (handler *Handler) createRelease(writer http.ResponseWriter, request *http.
 	result, err := handler.releases.CreateRelease(request.Context(), application.CreateReleaseCommand{
 		IdempotencyKey: idempotency, ModelCode: body.ModelCode, ReleaseTypeCode: body.ReleaseTypeCode,
 		Scope: release.Scope{Region: body.Scope.Region, Environment: body.Scope.Environment, Stage: body.Scope.Stage},
-		Actor: principal.Subject, Items: drafts,
+		Actor: principal.Subject, ActorName: principal.DisplayName, Items: drafts,
 	})
 	if err != nil {
 		writeDomainError(writer, err)
