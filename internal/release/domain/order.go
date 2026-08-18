@@ -10,6 +10,7 @@ import (
 	"time"
 
 	catalog "github.com/asherzj/financial_configuration_center/internal/catalog/domain"
+	overlay "github.com/asherzj/financial_configuration_center/internal/overlay/domain"
 )
 
 var (
@@ -27,14 +28,16 @@ type OrderStatus string
 const (
 	OrderInProgress OrderStatus = "IN_PROGRESS"
 	OrderSucceeded  OrderStatus = "SUCCEEDED"
+	OrderRolledBack OrderStatus = "ROLLED_BACK"
 	OrderRejected   OrderStatus = "REJECTED"
 )
 
 type ItemStatus string
 
 const (
-	ItemPending ItemStatus = "PENDING"
-	ItemApplied ItemStatus = "APPLIED"
+	ItemPending    ItemStatus = "PENDING"
+	ItemApplied    ItemStatus = "APPLIED"
+	ItemRolledBack ItemStatus = "ROLLED_BACK"
 )
 
 type StepType string
@@ -50,11 +53,12 @@ const (
 type StepStatus string
 
 const (
-	StepPending   StepStatus = "PENDING"
-	StepExecuting StepStatus = "EXECUTING"
-	StepExecuted  StepStatus = "EXECUTED"
-	StepApproved  StepStatus = "APPROVED"
-	StepRejected  StepStatus = "REJECTED"
+	StepPending    StepStatus = "PENDING"
+	StepExecuting  StepStatus = "EXECUTING"
+	StepExecuted   StepStatus = "EXECUTED"
+	StepApproved   StepStatus = "APPROVED"
+	StepRejected   StepStatus = "REJECTED"
+	StepRolledBack StepStatus = "ROLLED_BACK"
 )
 
 type ApprovalStatus string
@@ -81,12 +85,16 @@ type ApprovalState struct {
 
 type ChangeAction string
 
-const ChangeAdd ChangeAction = "ADD"
+const (
+	ChangeAdd    ChangeAction = "ADD"
+	ChangeModify ChangeAction = "MODIFY"
+	ChangeDelete ChangeAction = "DELETE"
+)
 
 type Scope struct {
-	Region      string
-	Environment string
-	Stage       string
+	Region      string `json:"region"`
+	Environment string `json:"environment"`
+	Stage       string `json:"stage"`
 }
 
 type BaseFinalItemSpec struct {
@@ -112,6 +120,32 @@ type BaseFinalOrderSpec struct {
 	Template        CompiledTemplate
 }
 
+type OverlayFinalItemSpec struct {
+	ID                         string
+	Action                     ChangeAction
+	BaseBefore                 *catalog.ConfigurationRecord
+	EffectiveBefore            *catalog.ConfigurationRecord
+	After                      *catalog.ConfigurationRecord
+	ExpectedRecordRevision     catalog.ConfigRevision
+	ExpectedCollectionRevision catalog.ConfigRevision
+}
+
+type OverlayFinalOrderSpec struct {
+	ID              string
+	ReleaseNumber   string
+	IdempotencyKey  string
+	ModelCode       string
+	TemplateCode    string
+	TemplateVersion uint64
+	ReleaseTypeCode string
+	RequestDigest   string
+	Scope           Scope
+	CreatedBy       string
+	CreatedAt       time.Time
+	Items           []OverlayFinalItemSpec
+	Template        CompiledTemplate
+}
+
 type Item struct {
 	ID                         string
 	Action                     ChangeAction
@@ -133,8 +167,39 @@ type StepState struct {
 	RequiredRoles      []string
 	SelfApprovalPolicy SelfApprovalPolicy
 	Approval           *ApprovalState
+	Effect             *StepEffectEnvelope
 	ExecutedAt         *time.Time
 	ExecutedBy         string
+	RolledBackAt       *time.Time
+	RolledBackBy       string
+}
+
+type OverlayAuthority struct {
+	CollectionRevision catalog.ConfigRevision
+	BaseRecords        map[string]*catalog.ConfigurationRecord
+	Rules              map[string]*overlay.Rule
+}
+
+type OverlayRuleChange struct {
+	RecordKey    string        `json:"recordKey"`
+	PreviousRule *overlay.Rule `json:"previousRule,omitempty"`
+	NewRule      *overlay.Rule `json:"newRule,omitempty"`
+}
+
+type OverlayEffect struct {
+	EffectVersion    int32                  `json:"effectVersion"`
+	Collection       string                 `json:"collection"`
+	Scope            Scope                  `json:"scope"`
+	PreviousRevision catalog.ConfigRevision `json:"previousRevision"`
+	AppliedRevision  catalog.ConfigRevision `json:"appliedRevision"`
+	Changes          []OverlayRuleChange    `json:"changes"`
+	ExecutedAt       time.Time              `json:"executedAt"`
+	ExecutedBy       string                 `json:"executedBy"`
+}
+
+type StepEffectEnvelope struct {
+	EffectVersion int32          `json:"effectVersion"`
+	Overlay       *OverlayEffect `json:"overlay,omitempty"`
 }
 
 type BaseAuthority struct {
@@ -267,6 +332,102 @@ func NewBaseFinalOrder(spec BaseFinalOrderSpec) (*Order, error) {
 	}, nil
 }
 
+func NewOverlayFinalOrder(spec OverlayFinalOrderSpec) (*Order, error) {
+	spec.Scope.Region = strings.TrimSpace(spec.Scope.Region)
+	spec.Scope.Environment = strings.TrimSpace(spec.Scope.Environment)
+	spec.Scope.Stage = strings.TrimSpace(spec.Scope.Stage)
+	if strings.TrimSpace(spec.ID) == "" || strings.TrimSpace(spec.ReleaseNumber) == "" || strings.TrimSpace(spec.IdempotencyKey) == "" || strings.TrimSpace(spec.ModelCode) == "" || strings.TrimSpace(spec.TemplateCode) == "" || spec.TemplateVersion == 0 || strings.TrimSpace(spec.ReleaseTypeCode) == "" || len(spec.RequestDigest) != 64 {
+		return nil, fmt.Errorf("%w: order identity is required", ErrInvalid)
+	}
+	if spec.Scope.Region == "" || spec.Scope.Environment == "" || spec.Scope.Stage == "" {
+		return nil, fmt.Errorf("%w: full scope is required for OVERLAY_FINAL", ErrInvalid)
+	}
+	if strings.TrimSpace(spec.CreatedBy) == "" || spec.CreatedAt.IsZero() || len(spec.Items) == 0 || len(spec.Items) > 500 {
+		return nil, fmt.Errorf("%w: creator, creation time, and 1..500 items are required", ErrInvalid)
+	}
+	if spec.Template.FinalEffect() != FinalEffectOverlay {
+		return nil, fmt.Errorf("%w: OVERLAY_FINAL template is required", ErrInvalid)
+	}
+
+	items := make([]Item, len(spec.Items))
+	seen := make(map[string]struct{}, len(spec.Items))
+	collection := ""
+	for index, item := range spec.Items {
+		target := item.After
+		if target == nil {
+			target = item.EffectiveBefore
+		}
+		if target == nil || strings.TrimSpace(item.ID) == "" || target.Collection == "" || target.RecordKey == "" {
+			return nil, fmt.Errorf("%w: item %d identity is required", ErrInvalid, index)
+		}
+		if collection == "" {
+			collection = target.Collection
+		}
+		if target.Collection != collection || target.Environment != spec.Scope.Environment {
+			return nil, fmt.Errorf("%w: item %d target differs from collection or scope", ErrInvalid, index)
+		}
+		if !validOverlayItemShape(item) {
+			return nil, fmt.Errorf("%w: item %d before/after shape is invalid for %s", ErrInvalid, index, item.Action)
+		}
+		for _, record := range []*catalog.ConfigurationRecord{item.BaseBefore, item.EffectiveBefore, item.After} {
+			if record != nil && (record.Collection != collection || record.Environment != spec.Scope.Environment || record.RecordKey != target.RecordKey || record.Data == nil) {
+				return nil, fmt.Errorf("%w: item %d record identity differs from target", ErrInvalid, index)
+			}
+		}
+		identity := collection + "\x00" + target.RecordKey
+		if _, duplicate := seen[identity]; duplicate {
+			return nil, fmt.Errorf("%w: duplicate item record key", ErrInvalid)
+		}
+		seen[identity] = struct{}{}
+		items[index] = Item{
+			ID:                         item.ID,
+			Action:                     item.Action,
+			Collection:                 collection,
+			RecordKey:                  target.RecordKey,
+			BaseBefore:                 cloneRecordPointer(item.BaseBefore),
+			EffectiveBefore:            cloneRecordPointer(item.EffectiveBefore),
+			After:                      cloneRecordPointer(item.After),
+			ExpectedRecordRevision:     item.ExpectedRecordRevision,
+			ExpectedCollectionRevision: item.ExpectedCollectionRevision,
+			Status:                     ItemPending,
+			ActiveConflictKey:          overlayConflictKey(collection, spec.Scope, target.RecordKey),
+		}
+	}
+
+	definitions := spec.Template.Steps()
+	steps := make([]StepState, len(definitions))
+	for index, definition := range definitions {
+		steps[index] = StepState{Code: definition.Code, Type: definition.Type, Status: StepPending, RequiredRoles: append([]string(nil), definition.RequiredRoles...)}
+		if definition.ManualReview != nil {
+			steps[index].SelfApprovalPolicy = definition.ManualReview.SelfApprovalPolicy
+		}
+	}
+	createdAt := spec.CreatedAt.UTC()
+	return &Order{
+		id: spec.ID, releaseNumber: spec.ReleaseNumber, idempotencyKey: spec.IdempotencyKey,
+		modelCode: spec.ModelCode, templateCode: spec.TemplateCode, templateVersion: spec.TemplateVersion,
+		releaseTypeCode: spec.ReleaseTypeCode, requestDigest: spec.RequestDigest, scope: spec.Scope,
+		createdBy: spec.CreatedBy, createdAt: createdAt, updatedBy: spec.CreatedBy, updatedAt: createdAt,
+		status: OrderInProgress, revision: 1, steps: steps, items: items,
+	}, nil
+}
+
+func validOverlayItemShape(item OverlayFinalItemSpec) bool {
+	if item.ExpectedCollectionRevision == 0 {
+		return false
+	}
+	switch item.Action {
+	case ChangeAdd:
+		return item.BaseBefore == nil && item.EffectiveBefore == nil && item.After != nil && item.ExpectedRecordRevision == 0
+	case ChangeModify:
+		return item.BaseBefore != nil && item.EffectiveBefore != nil && item.After != nil && item.ExpectedRecordRevision > 0
+	case ChangeDelete:
+		return item.BaseBefore != nil && item.EffectiveBefore != nil && item.After == nil && item.ExpectedRecordRevision > 0
+	default:
+		return false
+	}
+}
+
 func (order *Order) ExecuteManualReview(expected EntityRevision, actor string, at time.Time) error {
 	if order.revision != expected {
 		return fmt.Errorf("%w: order revision is %d, expected %d", ErrAborted, order.revision, expected)
@@ -375,6 +536,119 @@ func (order *Order) ExecuteBase(authority BaseAuthority, actor string, at time.T
 		ExecutedAt:       at,
 		ExecutedBy:       actor,
 	}, nil
+}
+
+func (order *Order) ExecuteOverlay(authority OverlayAuthority, newRevision catalog.ConfigRevision, actor string, at time.Time) (OverlayEffect, error) {
+	if err := order.requireCurrent(StepOverlayApply, StepPending); err != nil {
+		return OverlayEffect{}, err
+	}
+	if strings.TrimSpace(actor) == "" || at.IsZero() || newRevision <= authority.CollectionRevision {
+		return OverlayEffect{}, fmt.Errorf("%w: actor, execution time, and config revision are required", ErrInvalid)
+	}
+	executionAt := at.UTC()
+	changes := make([]OverlayRuleChange, len(order.items))
+	for index, item := range order.items {
+		if authority.CollectionRevision != item.ExpectedCollectionRevision {
+			return OverlayEffect{}, fmt.Errorf("%w: collection revision is %d, expected %d", ErrAborted, authority.CollectionRevision, item.ExpectedCollectionRevision)
+		}
+		base := authority.BaseRecords[item.RecordKey]
+		if item.ExpectedRecordRevision == 0 {
+			if base != nil {
+				return OverlayEffect{}, fmt.Errorf("%w: base record %q now exists", ErrAborted, item.RecordKey)
+			}
+		} else if base == nil || base.ConfigRevision != item.ExpectedRecordRevision {
+			return OverlayEffect{}, fmt.Errorf("%w: base record %q revision changed", ErrAborted, item.RecordKey)
+		}
+		previous := cloneOverlayRulePointer(authority.Rules[item.RecordKey])
+		if previous != nil && (previous.Collection != item.Collection || previous.RecordKey != item.RecordKey || previous.Scope != overlayScope(order.scope)) {
+			return OverlayEffect{}, fmt.Errorf("%w: current overlay rule identity is inconsistent", ErrInvalid)
+		}
+
+		var next *overlay.Rule
+		if base != nil || item.After != nil {
+			ruleID := item.ID
+			createdAt := executionAt
+			createdBy := actor
+			if previous != nil {
+				ruleID = previous.ID
+				createdAt = previous.CreatedAt
+				createdBy = previous.CreatedBy
+			}
+			activation := newRevision
+			compiled, err := overlay.CompileRule(overlay.RuleSpec{
+				ID: ruleID, Collection: item.Collection, Scope: overlayScope(order.scope), RecordKey: item.RecordKey,
+				Base: base, Desired: item.After, ConfigRevision: newRevision, ReleaseOrderID: order.id,
+				ActivatedRevision: &activation, ActivatedAt: &executionAt,
+				CreatedAt: createdAt, CreatedBy: createdBy, UpdatedAt: executionAt, UpdatedBy: actor,
+			})
+			if err != nil {
+				return OverlayEffect{}, fmt.Errorf("%w: compile item %q: %v", ErrInvalid, item.RecordKey, err)
+			}
+			next = &compiled
+		}
+		changes[index] = OverlayRuleChange{RecordKey: item.RecordKey, PreviousRule: previous, NewRule: cloneOverlayRulePointer(next)}
+	}
+
+	at = executionAt
+	effect := OverlayEffect{
+		EffectVersion: 1, Collection: order.items[0].Collection, Scope: order.scope,
+		PreviousRevision: authority.CollectionRevision, AppliedRevision: newRevision, Changes: changes, ExecutedAt: at, ExecutedBy: actor,
+	}
+	step := &order.steps[order.currentStep]
+	step.Status = StepExecuted
+	step.ExecutedAt = timePointer(at)
+	step.ExecutedBy = actor
+	step.Effect = &StepEffectEnvelope{EffectVersion: 1, Overlay: cloneOverlayEffectPointer(&effect)}
+	order.bump(actor, at)
+	return *cloneOverlayEffectPointer(&effect), nil
+}
+
+func (order *Order) RollbackOverlay(expected EntityRevision, currentCollectionRevision, newRevision catalog.ConfigRevision, actor string, at time.Time) (OverlayEffect, error) {
+	if order.revision != expected {
+		return OverlayEffect{}, fmt.Errorf("%w: order revision is %d, expected %d", ErrAborted, order.revision, expected)
+	}
+	if order.status != OrderInProgress || strings.TrimSpace(actor) == "" || at.IsZero() || currentCollectionRevision == 0 || newRevision <= currentCollectionRevision {
+		return OverlayEffect{}, fmt.Errorf("%w: order cannot be rolled back", ErrInvalid)
+	}
+	effectIndex := -1
+	for index := len(order.steps) - 1; index >= 0; index-- {
+		if order.steps[index].Effect != nil && order.steps[index].Effect.Overlay != nil {
+			effectIndex = index
+			break
+		}
+	}
+	if effectIndex < 0 {
+		return OverlayEffect{}, fmt.Errorf("%w: order has no applied overlay effect", ErrInvalid)
+	}
+	original := order.steps[effectIndex].Effect.Overlay
+	if currentCollectionRevision != original.AppliedRevision {
+		return OverlayEffect{}, fmt.Errorf("%w: collection revision is %d, expected applied revision %d", ErrAborted, currentCollectionRevision, original.AppliedRevision)
+	}
+	changes := make([]OverlayRuleChange, len(original.Changes))
+	for index := range original.Changes {
+		source := original.Changes[len(original.Changes)-1-index]
+		changes[index] = OverlayRuleChange{
+			RecordKey: source.RecordKey, PreviousRule: cloneOverlayRulePointer(source.NewRule), NewRule: cloneOverlayRulePointer(source.PreviousRule),
+		}
+	}
+	at = at.UTC()
+	compensation := OverlayEffect{
+		EffectVersion: 1, Collection: original.Collection, Scope: original.Scope,
+		PreviousRevision: currentCollectionRevision, AppliedRevision: newRevision, Changes: changes, ExecutedAt: at, ExecutedBy: actor,
+	}
+	step := &order.steps[effectIndex]
+	step.Status = StepRolledBack
+	step.RolledBackAt = timePointer(at)
+	step.RolledBackBy = actor
+	for index := range order.items {
+		order.items[index].Status = ItemRolledBack
+		order.items[index].ActiveConflictKey = ""
+	}
+	order.currentStep = effectIndex
+	order.status = OrderRolledBack
+	order.completedAt = timePointer(at)
+	order.bump(actor, at)
+	return *cloneOverlayEffectPointer(&compensation), nil
 }
 
 func (order *Order) Advance(expected EntityRevision, actor string, at time.Time) error {
@@ -539,6 +813,16 @@ func baseConflictKey(collection, environment, recordKey string) string {
 	return hex.EncodeToString(sum[:])
 }
 
+func overlayConflictKey(collection string, scope Scope, recordKey string) string {
+	encoded, _ := json.Marshal([]string{"OVERLAY", collection, scope.Region, scope.Environment, scope.Stage, recordKey})
+	sum := sha256.Sum256(encoded)
+	return hex.EncodeToString(sum[:])
+}
+
+func overlayScope(scope Scope) overlay.Scope {
+	return overlay.Scope{Region: scope.Region, Environment: scope.Environment, Stage: scope.Stage}
+}
+
 func cloneItem(item Item) Item {
 	if item.BaseBefore != nil {
 		cloned := cloneRecord(*item.BaseBefore)
@@ -564,6 +848,65 @@ func cloneRecord(record catalog.ConfigurationRecord) catalog.ConfigurationRecord
 	return record
 }
 
+func cloneRecordPointer(record *catalog.ConfigurationRecord) *catalog.ConfigurationRecord {
+	if record == nil {
+		return nil
+	}
+	cloned := cloneRecord(*record)
+	return &cloned
+}
+
+func cloneOverlayRulePointer(rule *overlay.Rule) *overlay.Rule {
+	if rule == nil {
+		return nil
+	}
+	cloned := *rule
+	cloned.Content = make(map[string]string, len(rule.Content))
+	for key, value := range rule.Content {
+		cloned.Content[key] = value
+	}
+	cloned.RolloutRanges = append([]overlay.BucketRange(nil), rule.RolloutRanges...)
+	if rule.ActivatedRevision != nil {
+		value := *rule.ActivatedRevision
+		cloned.ActivatedRevision = &value
+	}
+	if rule.EffectiveFrom != nil {
+		value := *rule.EffectiveFrom
+		cloned.EffectiveFrom = &value
+	}
+	if rule.EffectiveUntil != nil {
+		value := *rule.EffectiveUntil
+		cloned.EffectiveUntil = &value
+	}
+	if rule.ActivatedAt != nil {
+		value := *rule.ActivatedAt
+		cloned.ActivatedAt = &value
+	}
+	if rule.ExpiredRevision != nil {
+		value := *rule.ExpiredRevision
+		cloned.ExpiredRevision = &value
+	}
+	if rule.ExpiredAt != nil {
+		value := *rule.ExpiredAt
+		cloned.ExpiredAt = &value
+	}
+	return &cloned
+}
+
+func cloneOverlayEffectPointer(effect *OverlayEffect) *OverlayEffect {
+	if effect == nil {
+		return nil
+	}
+	cloned := *effect
+	cloned.Changes = make([]OverlayRuleChange, len(effect.Changes))
+	for index, change := range effect.Changes {
+		cloned.Changes[index] = OverlayRuleChange{
+			RecordKey: change.RecordKey, PreviousRule: cloneOverlayRulePointer(change.PreviousRule), NewRule: cloneOverlayRulePointer(change.NewRule),
+		}
+	}
+	return &cloned
+}
+
 func cloneStep(step StepState) StepState {
 	step.RequiredRoles = append([]string(nil), step.RequiredRoles...)
 	if step.Approval != nil {
@@ -575,6 +918,14 @@ func cloneStep(step StepState) StepState {
 	}
 	if step.ExecutedAt != nil {
 		step.ExecutedAt = timePointer(*step.ExecutedAt)
+	}
+	if step.RolledBackAt != nil {
+		step.RolledBackAt = timePointer(*step.RolledBackAt)
+	}
+	if step.Effect != nil {
+		effect := *step.Effect
+		effect.Overlay = cloneOverlayEffectPointer(step.Effect.Overlay)
+		step.Effect = &effect
 	}
 	return step
 }

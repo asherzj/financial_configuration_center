@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"time"
 
 	catalog "github.com/asherzj/financial_configuration_center/internal/catalog/domain"
 )
@@ -13,9 +14,9 @@ var ErrInvariant = errors.New("overlay invariant violated")
 // Scope identifies the exact configuration visibility range. An empty Stage
 // on a Rule is an environment-wide layer, not a wildcard submitted by callers.
 type Scope struct {
-	Region      string
-	Environment string
-	Stage       string
+	Region      string `json:"region"`
+	Environment string `json:"environment"`
+	Stage       string `json:"stage"`
 }
 
 // Query identifies one collection and one full scope to evaluate.
@@ -34,24 +35,32 @@ const (
 )
 
 type BucketRange struct {
-	Start int32
-	End   int32
+	Start int32 `json:"start"`
+	End   int32 `json:"end"`
 }
 
 // Rule is the distribution-visible OverlayRule representation. A rule is
 // effective only after activation and before expiration.
 type Rule struct {
-	ID                string
-	Collection        string
-	Scope             Scope
-	RecordKey         string
-	Action            Action
-	Content           map[string]string
-	RolloutRanges     []BucketRange
-	ConfigRevision    catalog.ConfigRevision
-	ReleaseOrderID    string
-	ActivatedRevision *catalog.ConfigRevision
-	ExpiredRevision   *catalog.ConfigRevision
+	ID                string                  `json:"id"`
+	Collection        string                  `json:"collection"`
+	Scope             Scope                   `json:"scope"`
+	RecordKey         string                  `json:"recordKey"`
+	Action            Action                  `json:"action"`
+	Content           map[string]string       `json:"content,omitempty"`
+	RolloutRanges     []BucketRange           `json:"rolloutRanges"`
+	ConfigRevision    catalog.ConfigRevision  `json:"configRevision"`
+	ReleaseOrderID    string                  `json:"releaseOrderId"`
+	EffectiveFrom     *time.Time              `json:"effectiveFrom,omitempty"`
+	EffectiveUntil    *time.Time              `json:"effectiveUntil,omitempty"`
+	ActivatedRevision *catalog.ConfigRevision `json:"activatedRevision,omitempty"`
+	ActivatedAt       *time.Time              `json:"activatedAt,omitempty"`
+	ExpiredRevision   *catalog.ConfigRevision `json:"expiredRevision,omitempty"`
+	ExpiredAt         *time.Time              `json:"expiredAt,omitempty"`
+	CreatedAt         time.Time               `json:"createdAt"`
+	CreatedBy         string                  `json:"createdBy"`
+	UpdatedAt         time.Time               `json:"updatedAt"`
+	UpdatedBy         string                  `json:"updatedBy"`
 }
 
 // Evaluate returns immutable effective records in RecordKey order.

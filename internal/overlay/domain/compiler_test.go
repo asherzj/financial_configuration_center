@@ -96,7 +96,7 @@ func TestCompileRuleUsesDeleteWhenDesiredIsMissing(t *testing.T) {
 	}
 }
 
-func TestCompileRuleRejectsUnchangedDesiredState(t *testing.T) {
+func TestCompileRuleUsesModifyWhenDesiredMatchesBase(t *testing.T) {
 	base := catalog.ConfigurationRecord{
 		Collection:  "payment_routes",
 		Environment: "production",
@@ -106,7 +106,7 @@ func TestCompileRuleRejectsUnchangedDesiredState(t *testing.T) {
 	desired := base
 	desired.ConfigRevision = 99
 
-	_, err := overlay.CompileRule(overlay.RuleSpec{
+	rule, err := overlay.CompileRule(overlay.RuleSpec{
 		ID:         "overlay-a",
 		Collection: "payment_routes",
 		Scope:      overlay.Scope{Region: "cn", Environment: "production", Stage: "blue"},
@@ -114,8 +114,11 @@ func TestCompileRuleRejectsUnchangedDesiredState(t *testing.T) {
 		Base:       &base,
 		Desired:    &desired,
 	})
-	if !errors.Is(err, overlay.ErrInvalidSpec) {
-		t.Fatalf("CompileRule error = %v, want ErrInvalidSpec", err)
+	if err != nil {
+		t.Fatalf("CompileRule: %v", err)
+	}
+	if rule.Action != overlay.ActionModify || !reflect.DeepEqual(rule.Content, desired.Data) {
+		t.Fatalf("compiled rule = %#v, want base-relative MODIFY", rule)
 	}
 }
 

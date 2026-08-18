@@ -3,7 +3,7 @@ package domain
 import (
 	"errors"
 	"fmt"
-	"maps"
+	"time"
 
 	catalog "github.com/asherzj/financial_configuration_center/internal/catalog/domain"
 )
@@ -22,8 +22,16 @@ type RuleSpec struct {
 	RolloutRanges     []BucketRange
 	ConfigRevision    catalog.ConfigRevision
 	ReleaseOrderID    string
+	EffectiveFrom     *time.Time
+	EffectiveUntil    *time.Time
 	ActivatedRevision *catalog.ConfigRevision
+	ActivatedAt       *time.Time
 	ExpiredRevision   *catalog.ConfigRevision
+	ExpiredAt         *time.Time
+	CreatedAt         time.Time
+	CreatedBy         string
+	UpdatedAt         time.Time
+	UpdatedBy         string
 }
 
 // CompileRule derives a canonical OverlayRule from base and desired states.
@@ -42,9 +50,6 @@ func CompileRule(spec RuleSpec) (Rule, error) {
 	}
 	if (spec.Base != nil && spec.Base.Data == nil) || (spec.Desired != nil && spec.Desired.Data == nil) {
 		return Rule{}, fmt.Errorf("%w: present records require content", ErrInvalidSpec)
-	}
-	if spec.Base != nil && spec.Desired != nil && maps.Equal(spec.Base.Data, spec.Desired.Data) {
-		return Rule{}, fmt.Errorf("%w: desired state is unchanged", ErrInvalidSpec)
 	}
 	ranges, err := normalizeRanges(spec.RolloutRanges)
 	if err != nil {
@@ -69,8 +74,16 @@ func CompileRule(spec RuleSpec) (Rule, error) {
 		RolloutRanges:     ranges,
 		ConfigRevision:    spec.ConfigRevision,
 		ReleaseOrderID:    spec.ReleaseOrderID,
+		EffectiveFrom:     cloneTime(spec.EffectiveFrom),
+		EffectiveUntil:    cloneTime(spec.EffectiveUntil),
 		ActivatedRevision: cloneRevision(spec.ActivatedRevision),
+		ActivatedAt:       cloneTime(spec.ActivatedAt),
 		ExpiredRevision:   cloneRevision(spec.ExpiredRevision),
+		ExpiredAt:         cloneTime(spec.ExpiredAt),
+		CreatedAt:         spec.CreatedAt,
+		CreatedBy:         spec.CreatedBy,
+		UpdatedAt:         spec.UpdatedAt,
+		UpdatedBy:         spec.UpdatedBy,
 	}, nil
 }
 
@@ -85,5 +98,13 @@ func cloneRevision(revision *catalog.ConfigRevision) *catalog.ConfigRevision {
 		return nil
 	}
 	cloned := *revision
+	return &cloned
+}
+
+func cloneTime(value *time.Time) *time.Time {
+	if value == nil {
+		return nil
+	}
+	cloned := *value
 	return &cloned
 }
