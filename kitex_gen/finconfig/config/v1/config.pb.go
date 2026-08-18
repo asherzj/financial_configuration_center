@@ -253,6 +253,112 @@ func (x *CollectionPayload) GetChangeCursor() int64 {
 	return 0
 }
 
+// CollectionData is the deterministic uncompressed protobuf body carried by
+// CollectionPayload.data when codec is "PROTOBUF" and format_version is 1.
+type CollectionData struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Records       []*SnapshotRecord      `protobuf:"bytes,1,rep,name=records,proto3" json:"records,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *CollectionData) Reset() {
+	*x = CollectionData{}
+	mi := &file_finconfig_config_v1_config_proto_msgTypes[3]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *CollectionData) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*CollectionData) ProtoMessage() {}
+
+func (x *CollectionData) ProtoReflect() protoreflect.Message {
+	mi := &file_finconfig_config_v1_config_proto_msgTypes[3]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use CollectionData.ProtoReflect.Descriptor instead.
+func (*CollectionData) Descriptor() ([]byte, []int) {
+	return file_finconfig_config_v1_config_proto_rawDescGZIP(), []int{3}
+}
+
+func (x *CollectionData) GetRecords() []*SnapshotRecord {
+	if x != nil {
+		return x.Records
+	}
+	return nil
+}
+
+type SnapshotRecord struct {
+	state          protoimpl.MessageState `protogen:"open.v1"`
+	RecordKey      string                 `protobuf:"bytes,1,opt,name=record_key,json=recordKey,proto3" json:"record_key,omitempty"`
+	RecordRevision int64                  `protobuf:"varint,2,opt,name=record_revision,json=recordRevision,proto3" json:"record_revision,omitempty"`
+	Values         map[string]string      `protobuf:"bytes,3,rep,name=values,proto3" json:"values,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
+}
+
+func (x *SnapshotRecord) Reset() {
+	*x = SnapshotRecord{}
+	mi := &file_finconfig_config_v1_config_proto_msgTypes[4]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SnapshotRecord) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SnapshotRecord) ProtoMessage() {}
+
+func (x *SnapshotRecord) ProtoReflect() protoreflect.Message {
+	mi := &file_finconfig_config_v1_config_proto_msgTypes[4]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SnapshotRecord.ProtoReflect.Descriptor instead.
+func (*SnapshotRecord) Descriptor() ([]byte, []int) {
+	return file_finconfig_config_v1_config_proto_rawDescGZIP(), []int{4}
+}
+
+func (x *SnapshotRecord) GetRecordKey() string {
+	if x != nil {
+		return x.RecordKey
+	}
+	return ""
+}
+
+func (x *SnapshotRecord) GetRecordRevision() int64 {
+	if x != nil {
+		return x.RecordRevision
+	}
+	return 0
+}
+
+func (x *SnapshotRecord) GetValues() map[string]string {
+	if x != nil {
+		return x.Values
+	}
+	return nil
+}
+
 type GetSnapshotResponse struct {
 	state              protoimpl.MessageState `protogen:"open.v1"`
 	Snapshot           *v1.SnapshotIdentity   `protobuf:"bytes,1,opt,name=snapshot,proto3" json:"snapshot,omitempty"`
@@ -265,7 +371,7 @@ type GetSnapshotResponse struct {
 
 func (x *GetSnapshotResponse) Reset() {
 	*x = GetSnapshotResponse{}
-	mi := &file_finconfig_config_v1_config_proto_msgTypes[3]
+	mi := &file_finconfig_config_v1_config_proto_msgTypes[5]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -277,7 +383,7 @@ func (x *GetSnapshotResponse) String() string {
 func (*GetSnapshotResponse) ProtoMessage() {}
 
 func (x *GetSnapshotResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_finconfig_config_v1_config_proto_msgTypes[3]
+	mi := &file_finconfig_config_v1_config_proto_msgTypes[5]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -290,7 +396,7 @@ func (x *GetSnapshotResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetSnapshotResponse.ProtoReflect.Descriptor instead.
 func (*GetSnapshotResponse) Descriptor() ([]byte, []int) {
-	return file_finconfig_config_v1_config_proto_rawDescGZIP(), []int{3}
+	return file_finconfig_config_v1_config_proto_rawDescGZIP(), []int{5}
 }
 
 func (x *GetSnapshotResponse) GetSnapshot() *v1.SnapshotIdentity {
@@ -333,7 +439,7 @@ type DiffVersionsRequest struct {
 
 func (x *DiffVersionsRequest) Reset() {
 	*x = DiffVersionsRequest{}
-	mi := &file_finconfig_config_v1_config_proto_msgTypes[4]
+	mi := &file_finconfig_config_v1_config_proto_msgTypes[6]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -345,7 +451,7 @@ func (x *DiffVersionsRequest) String() string {
 func (*DiffVersionsRequest) ProtoMessage() {}
 
 func (x *DiffVersionsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_finconfig_config_v1_config_proto_msgTypes[4]
+	mi := &file_finconfig_config_v1_config_proto_msgTypes[6]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -358,7 +464,7 @@ func (x *DiffVersionsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DiffVersionsRequest.ProtoReflect.Descriptor instead.
 func (*DiffVersionsRequest) Descriptor() ([]byte, []int) {
-	return file_finconfig_config_v1_config_proto_rawDescGZIP(), []int{4}
+	return file_finconfig_config_v1_config_proto_rawDescGZIP(), []int{6}
 }
 
 func (x *DiffVersionsRequest) GetConsumerId() string {
@@ -401,7 +507,7 @@ type DiffVersionsResponse struct {
 
 func (x *DiffVersionsResponse) Reset() {
 	*x = DiffVersionsResponse{}
-	mi := &file_finconfig_config_v1_config_proto_msgTypes[5]
+	mi := &file_finconfig_config_v1_config_proto_msgTypes[7]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -413,7 +519,7 @@ func (x *DiffVersionsResponse) String() string {
 func (*DiffVersionsResponse) ProtoMessage() {}
 
 func (x *DiffVersionsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_finconfig_config_v1_config_proto_msgTypes[5]
+	mi := &file_finconfig_config_v1_config_proto_msgTypes[7]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -426,7 +532,7 @@ func (x *DiffVersionsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DiffVersionsResponse.ProtoReflect.Descriptor instead.
 func (*DiffVersionsResponse) Descriptor() ([]byte, []int) {
-	return file_finconfig_config_v1_config_proto_rawDescGZIP(), []int{5}
+	return file_finconfig_config_v1_config_proto_rawDescGZIP(), []int{7}
 }
 
 func (x *DiffVersionsResponse) GetSnapshot() *v1.SnapshotIdentity {
@@ -470,7 +576,7 @@ type GetCollectionsRequest struct {
 
 func (x *GetCollectionsRequest) Reset() {
 	*x = GetCollectionsRequest{}
-	mi := &file_finconfig_config_v1_config_proto_msgTypes[6]
+	mi := &file_finconfig_config_v1_config_proto_msgTypes[8]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -482,7 +588,7 @@ func (x *GetCollectionsRequest) String() string {
 func (*GetCollectionsRequest) ProtoMessage() {}
 
 func (x *GetCollectionsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_finconfig_config_v1_config_proto_msgTypes[6]
+	mi := &file_finconfig_config_v1_config_proto_msgTypes[8]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -495,7 +601,7 @@ func (x *GetCollectionsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetCollectionsRequest.ProtoReflect.Descriptor instead.
 func (*GetCollectionsRequest) Descriptor() ([]byte, []int) {
-	return file_finconfig_config_v1_config_proto_rawDescGZIP(), []int{6}
+	return file_finconfig_config_v1_config_proto_rawDescGZIP(), []int{8}
 }
 
 func (x *GetCollectionsRequest) GetConsumerId() string {
@@ -543,7 +649,7 @@ type GetCollectionsResponse struct {
 
 func (x *GetCollectionsResponse) Reset() {
 	*x = GetCollectionsResponse{}
-	mi := &file_finconfig_config_v1_config_proto_msgTypes[7]
+	mi := &file_finconfig_config_v1_config_proto_msgTypes[9]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -555,7 +661,7 @@ func (x *GetCollectionsResponse) String() string {
 func (*GetCollectionsResponse) ProtoMessage() {}
 
 func (x *GetCollectionsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_finconfig_config_v1_config_proto_msgTypes[7]
+	mi := &file_finconfig_config_v1_config_proto_msgTypes[9]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -568,7 +674,7 @@ func (x *GetCollectionsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetCollectionsResponse.ProtoReflect.Descriptor instead.
 func (*GetCollectionsResponse) Descriptor() ([]byte, []int) {
-	return file_finconfig_config_v1_config_proto_rawDescGZIP(), []int{7}
+	return file_finconfig_config_v1_config_proto_rawDescGZIP(), []int{9}
 }
 
 func (x *GetCollectionsResponse) GetSnapshot() *v1.SnapshotIdentity {
@@ -596,7 +702,7 @@ type WatchRequest struct {
 
 func (x *WatchRequest) Reset() {
 	*x = WatchRequest{}
-	mi := &file_finconfig_config_v1_config_proto_msgTypes[8]
+	mi := &file_finconfig_config_v1_config_proto_msgTypes[10]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -608,7 +714,7 @@ func (x *WatchRequest) String() string {
 func (*WatchRequest) ProtoMessage() {}
 
 func (x *WatchRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_finconfig_config_v1_config_proto_msgTypes[8]
+	mi := &file_finconfig_config_v1_config_proto_msgTypes[10]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -621,7 +727,7 @@ func (x *WatchRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use WatchRequest.ProtoReflect.Descriptor instead.
 func (*WatchRequest) Descriptor() ([]byte, []int) {
-	return file_finconfig_config_v1_config_proto_rawDescGZIP(), []int{8}
+	return file_finconfig_config_v1_config_proto_rawDescGZIP(), []int{10}
 }
 
 func (x *WatchRequest) GetConsumerId() string {
@@ -658,7 +764,7 @@ type WatchResponse struct {
 
 func (x *WatchResponse) Reset() {
 	*x = WatchResponse{}
-	mi := &file_finconfig_config_v1_config_proto_msgTypes[9]
+	mi := &file_finconfig_config_v1_config_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -670,7 +776,7 @@ func (x *WatchResponse) String() string {
 func (*WatchResponse) ProtoMessage() {}
 
 func (x *WatchResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_finconfig_config_v1_config_proto_msgTypes[9]
+	mi := &file_finconfig_config_v1_config_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -683,7 +789,7 @@ func (x *WatchResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use WatchResponse.ProtoReflect.Descriptor instead.
 func (*WatchResponse) Descriptor() ([]byte, []int) {
-	return file_finconfig_config_v1_config_proto_rawDescGZIP(), []int{9}
+	return file_finconfig_config_v1_config_proto_rawDescGZIP(), []int{11}
 }
 
 func (x *WatchResponse) GetEventId() string {
@@ -731,7 +837,7 @@ type ScalarValue struct {
 
 func (x *ScalarValue) Reset() {
 	*x = ScalarValue{}
-	mi := &file_finconfig_config_v1_config_proto_msgTypes[10]
+	mi := &file_finconfig_config_v1_config_proto_msgTypes[12]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -743,7 +849,7 @@ func (x *ScalarValue) String() string {
 func (*ScalarValue) ProtoMessage() {}
 
 func (x *ScalarValue) ProtoReflect() protoreflect.Message {
-	mi := &file_finconfig_config_v1_config_proto_msgTypes[10]
+	mi := &file_finconfig_config_v1_config_proto_msgTypes[12]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -756,7 +862,7 @@ func (x *ScalarValue) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ScalarValue.ProtoReflect.Descriptor instead.
 func (*ScalarValue) Descriptor() ([]byte, []int) {
-	return file_finconfig_config_v1_config_proto_rawDescGZIP(), []int{10}
+	return file_finconfig_config_v1_config_proto_rawDescGZIP(), []int{12}
 }
 
 func (x *ScalarValue) GetType() v1.FieldType {
@@ -787,7 +893,7 @@ type FilterCondition struct {
 
 func (x *FilterCondition) Reset() {
 	*x = FilterCondition{}
-	mi := &file_finconfig_config_v1_config_proto_msgTypes[11]
+	mi := &file_finconfig_config_v1_config_proto_msgTypes[13]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -799,7 +905,7 @@ func (x *FilterCondition) String() string {
 func (*FilterCondition) ProtoMessage() {}
 
 func (x *FilterCondition) ProtoReflect() protoreflect.Message {
-	mi := &file_finconfig_config_v1_config_proto_msgTypes[11]
+	mi := &file_finconfig_config_v1_config_proto_msgTypes[13]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -812,7 +918,7 @@ func (x *FilterCondition) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use FilterCondition.ProtoReflect.Descriptor instead.
 func (*FilterCondition) Descriptor() ([]byte, []int) {
-	return file_finconfig_config_v1_config_proto_rawDescGZIP(), []int{11}
+	return file_finconfig_config_v1_config_proto_rawDescGZIP(), []int{13}
 }
 
 func (x *FilterCondition) GetField() string {
@@ -871,7 +977,7 @@ type QueryPageRequest struct {
 
 func (x *QueryPageRequest) Reset() {
 	*x = QueryPageRequest{}
-	mi := &file_finconfig_config_v1_config_proto_msgTypes[12]
+	mi := &file_finconfig_config_v1_config_proto_msgTypes[14]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -883,7 +989,7 @@ func (x *QueryPageRequest) String() string {
 func (*QueryPageRequest) ProtoMessage() {}
 
 func (x *QueryPageRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_finconfig_config_v1_config_proto_msgTypes[12]
+	mi := &file_finconfig_config_v1_config_proto_msgTypes[14]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -896,7 +1002,7 @@ func (x *QueryPageRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use QueryPageRequest.ProtoReflect.Descriptor instead.
 func (*QueryPageRequest) Descriptor() ([]byte, []int) {
-	return file_finconfig_config_v1_config_proto_rawDescGZIP(), []int{12}
+	return file_finconfig_config_v1_config_proto_rawDescGZIP(), []int{14}
 }
 
 func (x *QueryPageRequest) GetModelCode() string {
@@ -952,7 +1058,7 @@ type SelectOption struct {
 
 func (x *SelectOption) Reset() {
 	*x = SelectOption{}
-	mi := &file_finconfig_config_v1_config_proto_msgTypes[13]
+	mi := &file_finconfig_config_v1_config_proto_msgTypes[15]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -964,7 +1070,7 @@ func (x *SelectOption) String() string {
 func (*SelectOption) ProtoMessage() {}
 
 func (x *SelectOption) ProtoReflect() protoreflect.Message {
-	mi := &file_finconfig_config_v1_config_proto_msgTypes[13]
+	mi := &file_finconfig_config_v1_config_proto_msgTypes[15]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -977,7 +1083,7 @@ func (x *SelectOption) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SelectOption.ProtoReflect.Descriptor instead.
 func (*SelectOption) Descriptor() ([]byte, []int) {
-	return file_finconfig_config_v1_config_proto_rawDescGZIP(), []int{13}
+	return file_finconfig_config_v1_config_proto_rawDescGZIP(), []int{15}
 }
 
 func (x *SelectOption) GetCode() string {
@@ -1012,7 +1118,7 @@ type ValidationRule struct {
 
 func (x *ValidationRule) Reset() {
 	*x = ValidationRule{}
-	mi := &file_finconfig_config_v1_config_proto_msgTypes[14]
+	mi := &file_finconfig_config_v1_config_proto_msgTypes[16]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1024,7 +1130,7 @@ func (x *ValidationRule) String() string {
 func (*ValidationRule) ProtoMessage() {}
 
 func (x *ValidationRule) ProtoReflect() protoreflect.Message {
-	mi := &file_finconfig_config_v1_config_proto_msgTypes[14]
+	mi := &file_finconfig_config_v1_config_proto_msgTypes[16]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1037,7 +1143,7 @@ func (x *ValidationRule) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ValidationRule.ProtoReflect.Descriptor instead.
 func (*ValidationRule) Descriptor() ([]byte, []int) {
-	return file_finconfig_config_v1_config_proto_rawDescGZIP(), []int{14}
+	return file_finconfig_config_v1_config_proto_rawDescGZIP(), []int{16}
 }
 
 func (x *ValidationRule) GetKind() string {
@@ -1071,7 +1177,7 @@ type AutoFillRule struct {
 
 func (x *AutoFillRule) Reset() {
 	*x = AutoFillRule{}
-	mi := &file_finconfig_config_v1_config_proto_msgTypes[15]
+	mi := &file_finconfig_config_v1_config_proto_msgTypes[17]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1083,7 +1189,7 @@ func (x *AutoFillRule) String() string {
 func (*AutoFillRule) ProtoMessage() {}
 
 func (x *AutoFillRule) ProtoReflect() protoreflect.Message {
-	mi := &file_finconfig_config_v1_config_proto_msgTypes[15]
+	mi := &file_finconfig_config_v1_config_proto_msgTypes[17]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1096,7 +1202,7 @@ func (x *AutoFillRule) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AutoFillRule.ProtoReflect.Descriptor instead.
 func (*AutoFillRule) Descriptor() ([]byte, []int) {
-	return file_finconfig_config_v1_config_proto_rawDescGZIP(), []int{15}
+	return file_finconfig_config_v1_config_proto_rawDescGZIP(), []int{17}
 }
 
 func (x *AutoFillRule) GetSource() string {
@@ -1139,7 +1245,7 @@ type PageInteractionField struct {
 
 func (x *PageInteractionField) Reset() {
 	*x = PageInteractionField{}
-	mi := &file_finconfig_config_v1_config_proto_msgTypes[16]
+	mi := &file_finconfig_config_v1_config_proto_msgTypes[18]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1151,7 +1257,7 @@ func (x *PageInteractionField) String() string {
 func (*PageInteractionField) ProtoMessage() {}
 
 func (x *PageInteractionField) ProtoReflect() protoreflect.Message {
-	mi := &file_finconfig_config_v1_config_proto_msgTypes[16]
+	mi := &file_finconfig_config_v1_config_proto_msgTypes[18]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1164,7 +1270,7 @@ func (x *PageInteractionField) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PageInteractionField.ProtoReflect.Descriptor instead.
 func (*PageInteractionField) Descriptor() ([]byte, []int) {
-	return file_finconfig_config_v1_config_proto_rawDescGZIP(), []int{16}
+	return file_finconfig_config_v1_config_proto_rawDescGZIP(), []int{18}
 }
 
 func (x *PageInteractionField) GetName() string {
@@ -1305,7 +1411,7 @@ type PageRow struct {
 
 func (x *PageRow) Reset() {
 	*x = PageRow{}
-	mi := &file_finconfig_config_v1_config_proto_msgTypes[17]
+	mi := &file_finconfig_config_v1_config_proto_msgTypes[19]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1317,7 +1423,7 @@ func (x *PageRow) String() string {
 func (*PageRow) ProtoMessage() {}
 
 func (x *PageRow) ProtoReflect() protoreflect.Message {
-	mi := &file_finconfig_config_v1_config_proto_msgTypes[17]
+	mi := &file_finconfig_config_v1_config_proto_msgTypes[19]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1330,7 +1436,7 @@ func (x *PageRow) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PageRow.ProtoReflect.Descriptor instead.
 func (*PageRow) Descriptor() ([]byte, []int) {
-	return file_finconfig_config_v1_config_proto_rawDescGZIP(), []int{17}
+	return file_finconfig_config_v1_config_proto_rawDescGZIP(), []int{19}
 }
 
 func (x *PageRow) GetRecordKey() string {
@@ -1374,7 +1480,7 @@ type ReleaseType struct {
 
 func (x *ReleaseType) Reset() {
 	*x = ReleaseType{}
-	mi := &file_finconfig_config_v1_config_proto_msgTypes[18]
+	mi := &file_finconfig_config_v1_config_proto_msgTypes[20]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1386,7 +1492,7 @@ func (x *ReleaseType) String() string {
 func (*ReleaseType) ProtoMessage() {}
 
 func (x *ReleaseType) ProtoReflect() protoreflect.Message {
-	mi := &file_finconfig_config_v1_config_proto_msgTypes[18]
+	mi := &file_finconfig_config_v1_config_proto_msgTypes[20]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1399,7 +1505,7 @@ func (x *ReleaseType) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ReleaseType.ProtoReflect.Descriptor instead.
 func (*ReleaseType) Descriptor() ([]byte, []int) {
-	return file_finconfig_config_v1_config_proto_rawDescGZIP(), []int{18}
+	return file_finconfig_config_v1_config_proto_rawDescGZIP(), []int{20}
 }
 
 func (x *ReleaseType) GetCode() string {
@@ -1456,7 +1562,7 @@ type QueryPageResponse struct {
 
 func (x *QueryPageResponse) Reset() {
 	*x = QueryPageResponse{}
-	mi := &file_finconfig_config_v1_config_proto_msgTypes[19]
+	mi := &file_finconfig_config_v1_config_proto_msgTypes[21]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1468,7 +1574,7 @@ func (x *QueryPageResponse) String() string {
 func (*QueryPageResponse) ProtoMessage() {}
 
 func (x *QueryPageResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_finconfig_config_v1_config_proto_msgTypes[19]
+	mi := &file_finconfig_config_v1_config_proto_msgTypes[21]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1481,7 +1587,7 @@ func (x *QueryPageResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use QueryPageResponse.ProtoReflect.Descriptor instead.
 func (*QueryPageResponse) Descriptor() ([]byte, []int) {
-	return file_finconfig_config_v1_config_proto_rawDescGZIP(), []int{19}
+	return file_finconfig_config_v1_config_proto_rawDescGZIP(), []int{21}
 }
 
 func (x *QueryPageResponse) GetModelCode() string {
@@ -1572,7 +1678,7 @@ type RefreshTarget struct {
 
 func (x *RefreshTarget) Reset() {
 	*x = RefreshTarget{}
-	mi := &file_finconfig_config_v1_config_proto_msgTypes[20]
+	mi := &file_finconfig_config_v1_config_proto_msgTypes[22]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1584,7 +1690,7 @@ func (x *RefreshTarget) String() string {
 func (*RefreshTarget) ProtoMessage() {}
 
 func (x *RefreshTarget) ProtoReflect() protoreflect.Message {
-	mi := &file_finconfig_config_v1_config_proto_msgTypes[20]
+	mi := &file_finconfig_config_v1_config_proto_msgTypes[22]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1597,7 +1703,7 @@ func (x *RefreshTarget) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RefreshTarget.ProtoReflect.Descriptor instead.
 func (*RefreshTarget) Descriptor() ([]byte, []int) {
-	return file_finconfig_config_v1_config_proto_rawDescGZIP(), []int{20}
+	return file_finconfig_config_v1_config_proto_rawDescGZIP(), []int{22}
 }
 
 func (x *RefreshTarget) GetCollection() string {
@@ -1634,7 +1740,7 @@ type NotifyRequest struct {
 
 func (x *NotifyRequest) Reset() {
 	*x = NotifyRequest{}
-	mi := &file_finconfig_config_v1_config_proto_msgTypes[21]
+	mi := &file_finconfig_config_v1_config_proto_msgTypes[23]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1646,7 +1752,7 @@ func (x *NotifyRequest) String() string {
 func (*NotifyRequest) ProtoMessage() {}
 
 func (x *NotifyRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_finconfig_config_v1_config_proto_msgTypes[21]
+	mi := &file_finconfig_config_v1_config_proto_msgTypes[23]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1659,7 +1765,7 @@ func (x *NotifyRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use NotifyRequest.ProtoReflect.Descriptor instead.
 func (*NotifyRequest) Descriptor() ([]byte, []int) {
-	return file_finconfig_config_v1_config_proto_rawDescGZIP(), []int{21}
+	return file_finconfig_config_v1_config_proto_rawDescGZIP(), []int{23}
 }
 
 func (x *NotifyRequest) GetEventId() string {
@@ -1707,7 +1813,7 @@ type NotifyResponse struct {
 
 func (x *NotifyResponse) Reset() {
 	*x = NotifyResponse{}
-	mi := &file_finconfig_config_v1_config_proto_msgTypes[22]
+	mi := &file_finconfig_config_v1_config_proto_msgTypes[24]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1719,7 +1825,7 @@ func (x *NotifyResponse) String() string {
 func (*NotifyResponse) ProtoMessage() {}
 
 func (x *NotifyResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_finconfig_config_v1_config_proto_msgTypes[22]
+	mi := &file_finconfig_config_v1_config_proto_msgTypes[24]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1732,7 +1838,7 @@ func (x *NotifyResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use NotifyResponse.ProtoReflect.Descriptor instead.
 func (*NotifyResponse) Descriptor() ([]byte, []int) {
-	return file_finconfig_config_v1_config_proto_rawDescGZIP(), []int{22}
+	return file_finconfig_config_v1_config_proto_rawDescGZIP(), []int{24}
 }
 
 func (x *NotifyResponse) GetAccepted() bool {
@@ -1757,7 +1863,7 @@ type GetSnapshotStatusRequest struct {
 
 func (x *GetSnapshotStatusRequest) Reset() {
 	*x = GetSnapshotStatusRequest{}
-	mi := &file_finconfig_config_v1_config_proto_msgTypes[23]
+	mi := &file_finconfig_config_v1_config_proto_msgTypes[25]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1769,7 +1875,7 @@ func (x *GetSnapshotStatusRequest) String() string {
 func (*GetSnapshotStatusRequest) ProtoMessage() {}
 
 func (x *GetSnapshotStatusRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_finconfig_config_v1_config_proto_msgTypes[23]
+	mi := &file_finconfig_config_v1_config_proto_msgTypes[25]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1782,7 +1888,7 @@ func (x *GetSnapshotStatusRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetSnapshotStatusRequest.ProtoReflect.Descriptor instead.
 func (*GetSnapshotStatusRequest) Descriptor() ([]byte, []int) {
-	return file_finconfig_config_v1_config_proto_rawDescGZIP(), []int{23}
+	return file_finconfig_config_v1_config_proto_rawDescGZIP(), []int{25}
 }
 
 type GetSnapshotStatusResponse struct {
@@ -1796,7 +1902,7 @@ type GetSnapshotStatusResponse struct {
 
 func (x *GetSnapshotStatusResponse) Reset() {
 	*x = GetSnapshotStatusResponse{}
-	mi := &file_finconfig_config_v1_config_proto_msgTypes[24]
+	mi := &file_finconfig_config_v1_config_proto_msgTypes[26]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1808,7 +1914,7 @@ func (x *GetSnapshotStatusResponse) String() string {
 func (*GetSnapshotStatusResponse) ProtoMessage() {}
 
 func (x *GetSnapshotStatusResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_finconfig_config_v1_config_proto_msgTypes[24]
+	mi := &file_finconfig_config_v1_config_proto_msgTypes[26]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1821,7 +1927,7 @@ func (x *GetSnapshotStatusResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetSnapshotStatusResponse.ProtoReflect.Descriptor instead.
 func (*GetSnapshotStatusResponse) Descriptor() ([]byte, []int) {
-	return file_finconfig_config_v1_config_proto_rawDescGZIP(), []int{24}
+	return file_finconfig_config_v1_config_proto_rawDescGZIP(), []int{26}
 }
 
 func (x *GetSnapshotStatusResponse) GetSnapshot() *v1.SnapshotIdentity {
@@ -1855,7 +1961,7 @@ type GetCollectionStatusRequest struct {
 
 func (x *GetCollectionStatusRequest) Reset() {
 	*x = GetCollectionStatusRequest{}
-	mi := &file_finconfig_config_v1_config_proto_msgTypes[25]
+	mi := &file_finconfig_config_v1_config_proto_msgTypes[27]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1867,7 +1973,7 @@ func (x *GetCollectionStatusRequest) String() string {
 func (*GetCollectionStatusRequest) ProtoMessage() {}
 
 func (x *GetCollectionStatusRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_finconfig_config_v1_config_proto_msgTypes[25]
+	mi := &file_finconfig_config_v1_config_proto_msgTypes[27]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1880,7 +1986,7 @@ func (x *GetCollectionStatusRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetCollectionStatusRequest.ProtoReflect.Descriptor instead.
 func (*GetCollectionStatusRequest) Descriptor() ([]byte, []int) {
-	return file_finconfig_config_v1_config_proto_rawDescGZIP(), []int{25}
+	return file_finconfig_config_v1_config_proto_rawDescGZIP(), []int{27}
 }
 
 func (x *GetCollectionStatusRequest) GetCollection() string {
@@ -1910,7 +2016,7 @@ type GetCollectionStatusResponse struct {
 
 func (x *GetCollectionStatusResponse) Reset() {
 	*x = GetCollectionStatusResponse{}
-	mi := &file_finconfig_config_v1_config_proto_msgTypes[26]
+	mi := &file_finconfig_config_v1_config_proto_msgTypes[28]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1922,7 +2028,7 @@ func (x *GetCollectionStatusResponse) String() string {
 func (*GetCollectionStatusResponse) ProtoMessage() {}
 
 func (x *GetCollectionStatusResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_finconfig_config_v1_config_proto_msgTypes[26]
+	mi := &file_finconfig_config_v1_config_proto_msgTypes[28]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1935,7 +2041,7 @@ func (x *GetCollectionStatusResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetCollectionStatusResponse.ProtoReflect.Descriptor instead.
 func (*GetCollectionStatusResponse) Descriptor() ([]byte, []int) {
-	return file_finconfig_config_v1_config_proto_rawDescGZIP(), []int{26}
+	return file_finconfig_config_v1_config_proto_rawDescGZIP(), []int{28}
 }
 
 func (x *GetCollectionStatusResponse) GetCollection() string {
@@ -2001,7 +2107,17 @@ const file_finconfig_config_v1_config_proto_rawDesc = "" +
 	"\x0eformat_version\x18\x03 \x01(\x05R\rformatVersion\x12\x12\n" +
 	"\x04data\x18\x04 \x01(\fR\x04data\x12:\n" +
 	"\aversion\x18\x05 \x01(\v2 .finconfig.config.v1.VersionViewR\aversion\x12#\n" +
-	"\rchange_cursor\x18\x06 \x01(\x03R\fchangeCursor\"\x85\x02\n" +
+	"\rchange_cursor\x18\x06 \x01(\x03R\fchangeCursor\"O\n" +
+	"\x0eCollectionData\x12=\n" +
+	"\arecords\x18\x01 \x03(\v2#.finconfig.config.v1.SnapshotRecordR\arecords\"\xdc\x01\n" +
+	"\x0eSnapshotRecord\x12\x1d\n" +
+	"\n" +
+	"record_key\x18\x01 \x01(\tR\trecordKey\x12'\n" +
+	"\x0frecord_revision\x18\x02 \x01(\x03R\x0erecordRevision\x12G\n" +
+	"\x06values\x18\x03 \x03(\v2/.finconfig.config.v1.SnapshotRecord.ValuesEntryR\x06values\x1a9\n" +
+	"\vValuesEntry\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\x85\x02\n" +
 	"\x13GetSnapshotResponse\x12A\n" +
 	"\bsnapshot\x18\x01 \x01(\v2%.finconfig.common.v1.SnapshotIdentityR\bsnapshot\x120\n" +
 	"\x05scope\x18\x02 \x01(\v2\x1a.finconfig.common.v1.ScopeR\x05scope\x12H\n" +
@@ -2196,119 +2312,124 @@ func file_finconfig_config_v1_config_proto_rawDescGZIP() []byte {
 	return file_finconfig_config_v1_config_proto_rawDescData
 }
 
-var file_finconfig_config_v1_config_proto_msgTypes = make([]protoimpl.MessageInfo, 29)
+var file_finconfig_config_v1_config_proto_msgTypes = make([]protoimpl.MessageInfo, 32)
 var file_finconfig_config_v1_config_proto_goTypes = []any{
 	(*VersionView)(nil),                 // 0: finconfig.config.v1.VersionView
 	(*GetSnapshotRequest)(nil),          // 1: finconfig.config.v1.GetSnapshotRequest
 	(*CollectionPayload)(nil),           // 2: finconfig.config.v1.CollectionPayload
-	(*GetSnapshotResponse)(nil),         // 3: finconfig.config.v1.GetSnapshotResponse
-	(*DiffVersionsRequest)(nil),         // 4: finconfig.config.v1.DiffVersionsRequest
-	(*DiffVersionsResponse)(nil),        // 5: finconfig.config.v1.DiffVersionsResponse
-	(*GetCollectionsRequest)(nil),       // 6: finconfig.config.v1.GetCollectionsRequest
-	(*GetCollectionsResponse)(nil),      // 7: finconfig.config.v1.GetCollectionsResponse
-	(*WatchRequest)(nil),                // 8: finconfig.config.v1.WatchRequest
-	(*WatchResponse)(nil),               // 9: finconfig.config.v1.WatchResponse
-	(*ScalarValue)(nil),                 // 10: finconfig.config.v1.ScalarValue
-	(*FilterCondition)(nil),             // 11: finconfig.config.v1.FilterCondition
-	(*QueryPageRequest)(nil),            // 12: finconfig.config.v1.QueryPageRequest
-	(*SelectOption)(nil),                // 13: finconfig.config.v1.SelectOption
-	(*ValidationRule)(nil),              // 14: finconfig.config.v1.ValidationRule
-	(*AutoFillRule)(nil),                // 15: finconfig.config.v1.AutoFillRule
-	(*PageInteractionField)(nil),        // 16: finconfig.config.v1.PageInteractionField
-	(*PageRow)(nil),                     // 17: finconfig.config.v1.PageRow
-	(*ReleaseType)(nil),                 // 18: finconfig.config.v1.ReleaseType
-	(*QueryPageResponse)(nil),           // 19: finconfig.config.v1.QueryPageResponse
-	(*RefreshTarget)(nil),               // 20: finconfig.config.v1.RefreshTarget
-	(*NotifyRequest)(nil),               // 21: finconfig.config.v1.NotifyRequest
-	(*NotifyResponse)(nil),              // 22: finconfig.config.v1.NotifyResponse
-	(*GetSnapshotStatusRequest)(nil),    // 23: finconfig.config.v1.GetSnapshotStatusRequest
-	(*GetSnapshotStatusResponse)(nil),   // 24: finconfig.config.v1.GetSnapshotStatusResponse
-	(*GetCollectionStatusRequest)(nil),  // 25: finconfig.config.v1.GetCollectionStatusRequest
-	(*GetCollectionStatusResponse)(nil), // 26: finconfig.config.v1.GetCollectionStatusResponse
-	nil,                                 // 27: finconfig.config.v1.ValidationRule.ParamsEntry
-	nil,                                 // 28: finconfig.config.v1.PageRow.ValuesEntry
-	(*v1.Digest)(nil),                   // 29: finconfig.common.v1.Digest
-	(*v1.Scope)(nil),                    // 30: finconfig.common.v1.Scope
-	(*v1.SnapshotIdentity)(nil),         // 31: finconfig.common.v1.SnapshotIdentity
-	(*timestamppb.Timestamp)(nil),       // 32: google.protobuf.Timestamp
-	(v1.FieldType)(0),                   // 33: finconfig.common.v1.FieldType
-	(v1.FilterOperator)(0),              // 34: finconfig.common.v1.FilterOperator
-	(v1.QueryPageType)(0),               // 35: finconfig.common.v1.QueryPageType
-	(*v1.PageRequest)(nil),              // 36: finconfig.common.v1.PageRequest
-	(v1.UiControlType)(0),               // 37: finconfig.common.v1.UiControlType
-	(*v1.PageResponse)(nil),             // 38: finconfig.common.v1.PageResponse
+	(*CollectionData)(nil),              // 3: finconfig.config.v1.CollectionData
+	(*SnapshotRecord)(nil),              // 4: finconfig.config.v1.SnapshotRecord
+	(*GetSnapshotResponse)(nil),         // 5: finconfig.config.v1.GetSnapshotResponse
+	(*DiffVersionsRequest)(nil),         // 6: finconfig.config.v1.DiffVersionsRequest
+	(*DiffVersionsResponse)(nil),        // 7: finconfig.config.v1.DiffVersionsResponse
+	(*GetCollectionsRequest)(nil),       // 8: finconfig.config.v1.GetCollectionsRequest
+	(*GetCollectionsResponse)(nil),      // 9: finconfig.config.v1.GetCollectionsResponse
+	(*WatchRequest)(nil),                // 10: finconfig.config.v1.WatchRequest
+	(*WatchResponse)(nil),               // 11: finconfig.config.v1.WatchResponse
+	(*ScalarValue)(nil),                 // 12: finconfig.config.v1.ScalarValue
+	(*FilterCondition)(nil),             // 13: finconfig.config.v1.FilterCondition
+	(*QueryPageRequest)(nil),            // 14: finconfig.config.v1.QueryPageRequest
+	(*SelectOption)(nil),                // 15: finconfig.config.v1.SelectOption
+	(*ValidationRule)(nil),              // 16: finconfig.config.v1.ValidationRule
+	(*AutoFillRule)(nil),                // 17: finconfig.config.v1.AutoFillRule
+	(*PageInteractionField)(nil),        // 18: finconfig.config.v1.PageInteractionField
+	(*PageRow)(nil),                     // 19: finconfig.config.v1.PageRow
+	(*ReleaseType)(nil),                 // 20: finconfig.config.v1.ReleaseType
+	(*QueryPageResponse)(nil),           // 21: finconfig.config.v1.QueryPageResponse
+	(*RefreshTarget)(nil),               // 22: finconfig.config.v1.RefreshTarget
+	(*NotifyRequest)(nil),               // 23: finconfig.config.v1.NotifyRequest
+	(*NotifyResponse)(nil),              // 24: finconfig.config.v1.NotifyResponse
+	(*GetSnapshotStatusRequest)(nil),    // 25: finconfig.config.v1.GetSnapshotStatusRequest
+	(*GetSnapshotStatusResponse)(nil),   // 26: finconfig.config.v1.GetSnapshotStatusResponse
+	(*GetCollectionStatusRequest)(nil),  // 27: finconfig.config.v1.GetCollectionStatusRequest
+	(*GetCollectionStatusResponse)(nil), // 28: finconfig.config.v1.GetCollectionStatusResponse
+	nil,                                 // 29: finconfig.config.v1.SnapshotRecord.ValuesEntry
+	nil,                                 // 30: finconfig.config.v1.ValidationRule.ParamsEntry
+	nil,                                 // 31: finconfig.config.v1.PageRow.ValuesEntry
+	(*v1.Digest)(nil),                   // 32: finconfig.common.v1.Digest
+	(*v1.Scope)(nil),                    // 33: finconfig.common.v1.Scope
+	(*v1.SnapshotIdentity)(nil),         // 34: finconfig.common.v1.SnapshotIdentity
+	(*timestamppb.Timestamp)(nil),       // 35: google.protobuf.Timestamp
+	(v1.FieldType)(0),                   // 36: finconfig.common.v1.FieldType
+	(v1.FilterOperator)(0),              // 37: finconfig.common.v1.FilterOperator
+	(v1.QueryPageType)(0),               // 38: finconfig.common.v1.QueryPageType
+	(*v1.PageRequest)(nil),              // 39: finconfig.common.v1.PageRequest
+	(v1.UiControlType)(0),               // 40: finconfig.common.v1.UiControlType
+	(*v1.PageResponse)(nil),             // 41: finconfig.common.v1.PageResponse
 }
 var file_finconfig_config_v1_config_proto_depIdxs = []int32{
-	29, // 0: finconfig.config.v1.VersionView.base_digest:type_name -> finconfig.common.v1.Digest
-	29, // 1: finconfig.config.v1.VersionView.overlay_digest:type_name -> finconfig.common.v1.Digest
-	29, // 2: finconfig.config.v1.VersionView.effective_digest:type_name -> finconfig.common.v1.Digest
-	30, // 3: finconfig.config.v1.GetSnapshotRequest.scope:type_name -> finconfig.common.v1.Scope
+	32, // 0: finconfig.config.v1.VersionView.base_digest:type_name -> finconfig.common.v1.Digest
+	32, // 1: finconfig.config.v1.VersionView.overlay_digest:type_name -> finconfig.common.v1.Digest
+	32, // 2: finconfig.config.v1.VersionView.effective_digest:type_name -> finconfig.common.v1.Digest
+	33, // 3: finconfig.config.v1.GetSnapshotRequest.scope:type_name -> finconfig.common.v1.Scope
 	0,  // 4: finconfig.config.v1.GetSnapshotRequest.known_versions:type_name -> finconfig.config.v1.VersionView
 	0,  // 5: finconfig.config.v1.CollectionPayload.version:type_name -> finconfig.config.v1.VersionView
-	31, // 6: finconfig.config.v1.GetSnapshotResponse.snapshot:type_name -> finconfig.common.v1.SnapshotIdentity
-	30, // 7: finconfig.config.v1.GetSnapshotResponse.scope:type_name -> finconfig.common.v1.Scope
-	2,  // 8: finconfig.config.v1.GetSnapshotResponse.collections:type_name -> finconfig.config.v1.CollectionPayload
-	30, // 9: finconfig.config.v1.DiffVersionsRequest.scope:type_name -> finconfig.common.v1.Scope
-	0,  // 10: finconfig.config.v1.DiffVersionsRequest.known_versions:type_name -> finconfig.config.v1.VersionView
-	31, // 11: finconfig.config.v1.DiffVersionsResponse.snapshot:type_name -> finconfig.common.v1.SnapshotIdentity
-	30, // 12: finconfig.config.v1.GetCollectionsRequest.scope:type_name -> finconfig.common.v1.Scope
-	31, // 13: finconfig.config.v1.GetCollectionsResponse.snapshot:type_name -> finconfig.common.v1.SnapshotIdentity
-	2,  // 14: finconfig.config.v1.GetCollectionsResponse.collections:type_name -> finconfig.config.v1.CollectionPayload
-	30, // 15: finconfig.config.v1.WatchRequest.scope:type_name -> finconfig.common.v1.Scope
-	31, // 16: finconfig.config.v1.WatchResponse.snapshot:type_name -> finconfig.common.v1.SnapshotIdentity
-	0,  // 17: finconfig.config.v1.WatchResponse.versions:type_name -> finconfig.config.v1.VersionView
-	32, // 18: finconfig.config.v1.WatchResponse.occurred_at:type_name -> google.protobuf.Timestamp
-	33, // 19: finconfig.config.v1.ScalarValue.type:type_name -> finconfig.common.v1.FieldType
-	34, // 20: finconfig.config.v1.FilterCondition.operator:type_name -> finconfig.common.v1.FilterOperator
-	10, // 21: finconfig.config.v1.FilterCondition.value:type_name -> finconfig.config.v1.ScalarValue
-	10, // 22: finconfig.config.v1.FilterCondition.lower:type_name -> finconfig.config.v1.ScalarValue
-	10, // 23: finconfig.config.v1.FilterCondition.upper:type_name -> finconfig.config.v1.ScalarValue
-	10, // 24: finconfig.config.v1.FilterCondition.set:type_name -> finconfig.config.v1.ScalarValue
-	30, // 25: finconfig.config.v1.QueryPageRequest.scope:type_name -> finconfig.common.v1.Scope
-	35, // 26: finconfig.config.v1.QueryPageRequest.query_type:type_name -> finconfig.common.v1.QueryPageType
-	11, // 27: finconfig.config.v1.QueryPageRequest.conditions:type_name -> finconfig.config.v1.FilterCondition
-	36, // 28: finconfig.config.v1.QueryPageRequest.page:type_name -> finconfig.common.v1.PageRequest
-	27, // 29: finconfig.config.v1.ValidationRule.params:type_name -> finconfig.config.v1.ValidationRule.ParamsEntry
-	33, // 30: finconfig.config.v1.PageInteractionField.type:type_name -> finconfig.common.v1.FieldType
-	37, // 31: finconfig.config.v1.PageInteractionField.ui_control:type_name -> finconfig.common.v1.UiControlType
-	15, // 32: finconfig.config.v1.PageInteractionField.auto_fill:type_name -> finconfig.config.v1.AutoFillRule
-	34, // 33: finconfig.config.v1.PageInteractionField.allowed_filter_operators:type_name -> finconfig.common.v1.FilterOperator
-	34, // 34: finconfig.config.v1.PageInteractionField.default_filter_operator:type_name -> finconfig.common.v1.FilterOperator
-	14, // 35: finconfig.config.v1.PageInteractionField.validation_rules:type_name -> finconfig.config.v1.ValidationRule
-	13, // 36: finconfig.config.v1.PageInteractionField.options:type_name -> finconfig.config.v1.SelectOption
-	28, // 37: finconfig.config.v1.PageRow.values:type_name -> finconfig.config.v1.PageRow.ValuesEntry
-	35, // 38: finconfig.config.v1.QueryPageResponse.query_type:type_name -> finconfig.common.v1.QueryPageType
-	17, // 39: finconfig.config.v1.QueryPageResponse.rows:type_name -> finconfig.config.v1.PageRow
-	16, // 40: finconfig.config.v1.QueryPageResponse.interaction_fields:type_name -> finconfig.config.v1.PageInteractionField
-	18, // 41: finconfig.config.v1.QueryPageResponse.release_types:type_name -> finconfig.config.v1.ReleaseType
-	38, // 42: finconfig.config.v1.QueryPageResponse.page:type_name -> finconfig.common.v1.PageResponse
-	31, // 43: finconfig.config.v1.QueryPageResponse.snapshot:type_name -> finconfig.common.v1.SnapshotIdentity
-	20, // 44: finconfig.config.v1.NotifyRequest.targets:type_name -> finconfig.config.v1.RefreshTarget
-	30, // 45: finconfig.config.v1.NotifyRequest.scope:type_name -> finconfig.common.v1.Scope
-	31, // 46: finconfig.config.v1.NotifyResponse.snapshot:type_name -> finconfig.common.v1.SnapshotIdentity
-	31, // 47: finconfig.config.v1.GetSnapshotStatusResponse.snapshot:type_name -> finconfig.common.v1.SnapshotIdentity
-	0,  // 48: finconfig.config.v1.GetCollectionStatusResponse.version:type_name -> finconfig.config.v1.VersionView
-	1,  // 49: finconfig.config.v1.ConfigService.GetSnapshot:input_type -> finconfig.config.v1.GetSnapshotRequest
-	4,  // 50: finconfig.config.v1.ConfigService.DiffVersions:input_type -> finconfig.config.v1.DiffVersionsRequest
-	6,  // 51: finconfig.config.v1.ConfigService.GetCollections:input_type -> finconfig.config.v1.GetCollectionsRequest
-	8,  // 52: finconfig.config.v1.ConfigService.Watch:input_type -> finconfig.config.v1.WatchRequest
-	12, // 53: finconfig.config.v1.PageQueryService.QueryPage:input_type -> finconfig.config.v1.QueryPageRequest
-	21, // 54: finconfig.config.v1.RefreshService.Notify:input_type -> finconfig.config.v1.NotifyRequest
-	23, // 55: finconfig.config.v1.DiagnosticsService.GetSnapshotStatus:input_type -> finconfig.config.v1.GetSnapshotStatusRequest
-	25, // 56: finconfig.config.v1.DiagnosticsService.GetCollectionStatus:input_type -> finconfig.config.v1.GetCollectionStatusRequest
-	3,  // 57: finconfig.config.v1.ConfigService.GetSnapshot:output_type -> finconfig.config.v1.GetSnapshotResponse
-	5,  // 58: finconfig.config.v1.ConfigService.DiffVersions:output_type -> finconfig.config.v1.DiffVersionsResponse
-	7,  // 59: finconfig.config.v1.ConfigService.GetCollections:output_type -> finconfig.config.v1.GetCollectionsResponse
-	9,  // 60: finconfig.config.v1.ConfigService.Watch:output_type -> finconfig.config.v1.WatchResponse
-	19, // 61: finconfig.config.v1.PageQueryService.QueryPage:output_type -> finconfig.config.v1.QueryPageResponse
-	22, // 62: finconfig.config.v1.RefreshService.Notify:output_type -> finconfig.config.v1.NotifyResponse
-	24, // 63: finconfig.config.v1.DiagnosticsService.GetSnapshotStatus:output_type -> finconfig.config.v1.GetSnapshotStatusResponse
-	26, // 64: finconfig.config.v1.DiagnosticsService.GetCollectionStatus:output_type -> finconfig.config.v1.GetCollectionStatusResponse
-	57, // [57:65] is the sub-list for method output_type
-	49, // [49:57] is the sub-list for method input_type
-	49, // [49:49] is the sub-list for extension type_name
-	49, // [49:49] is the sub-list for extension extendee
-	0,  // [0:49] is the sub-list for field type_name
+	4,  // 6: finconfig.config.v1.CollectionData.records:type_name -> finconfig.config.v1.SnapshotRecord
+	29, // 7: finconfig.config.v1.SnapshotRecord.values:type_name -> finconfig.config.v1.SnapshotRecord.ValuesEntry
+	34, // 8: finconfig.config.v1.GetSnapshotResponse.snapshot:type_name -> finconfig.common.v1.SnapshotIdentity
+	33, // 9: finconfig.config.v1.GetSnapshotResponse.scope:type_name -> finconfig.common.v1.Scope
+	2,  // 10: finconfig.config.v1.GetSnapshotResponse.collections:type_name -> finconfig.config.v1.CollectionPayload
+	33, // 11: finconfig.config.v1.DiffVersionsRequest.scope:type_name -> finconfig.common.v1.Scope
+	0,  // 12: finconfig.config.v1.DiffVersionsRequest.known_versions:type_name -> finconfig.config.v1.VersionView
+	34, // 13: finconfig.config.v1.DiffVersionsResponse.snapshot:type_name -> finconfig.common.v1.SnapshotIdentity
+	33, // 14: finconfig.config.v1.GetCollectionsRequest.scope:type_name -> finconfig.common.v1.Scope
+	34, // 15: finconfig.config.v1.GetCollectionsResponse.snapshot:type_name -> finconfig.common.v1.SnapshotIdentity
+	2,  // 16: finconfig.config.v1.GetCollectionsResponse.collections:type_name -> finconfig.config.v1.CollectionPayload
+	33, // 17: finconfig.config.v1.WatchRequest.scope:type_name -> finconfig.common.v1.Scope
+	34, // 18: finconfig.config.v1.WatchResponse.snapshot:type_name -> finconfig.common.v1.SnapshotIdentity
+	0,  // 19: finconfig.config.v1.WatchResponse.versions:type_name -> finconfig.config.v1.VersionView
+	35, // 20: finconfig.config.v1.WatchResponse.occurred_at:type_name -> google.protobuf.Timestamp
+	36, // 21: finconfig.config.v1.ScalarValue.type:type_name -> finconfig.common.v1.FieldType
+	37, // 22: finconfig.config.v1.FilterCondition.operator:type_name -> finconfig.common.v1.FilterOperator
+	12, // 23: finconfig.config.v1.FilterCondition.value:type_name -> finconfig.config.v1.ScalarValue
+	12, // 24: finconfig.config.v1.FilterCondition.lower:type_name -> finconfig.config.v1.ScalarValue
+	12, // 25: finconfig.config.v1.FilterCondition.upper:type_name -> finconfig.config.v1.ScalarValue
+	12, // 26: finconfig.config.v1.FilterCondition.set:type_name -> finconfig.config.v1.ScalarValue
+	33, // 27: finconfig.config.v1.QueryPageRequest.scope:type_name -> finconfig.common.v1.Scope
+	38, // 28: finconfig.config.v1.QueryPageRequest.query_type:type_name -> finconfig.common.v1.QueryPageType
+	13, // 29: finconfig.config.v1.QueryPageRequest.conditions:type_name -> finconfig.config.v1.FilterCondition
+	39, // 30: finconfig.config.v1.QueryPageRequest.page:type_name -> finconfig.common.v1.PageRequest
+	30, // 31: finconfig.config.v1.ValidationRule.params:type_name -> finconfig.config.v1.ValidationRule.ParamsEntry
+	36, // 32: finconfig.config.v1.PageInteractionField.type:type_name -> finconfig.common.v1.FieldType
+	40, // 33: finconfig.config.v1.PageInteractionField.ui_control:type_name -> finconfig.common.v1.UiControlType
+	17, // 34: finconfig.config.v1.PageInteractionField.auto_fill:type_name -> finconfig.config.v1.AutoFillRule
+	37, // 35: finconfig.config.v1.PageInteractionField.allowed_filter_operators:type_name -> finconfig.common.v1.FilterOperator
+	37, // 36: finconfig.config.v1.PageInteractionField.default_filter_operator:type_name -> finconfig.common.v1.FilterOperator
+	16, // 37: finconfig.config.v1.PageInteractionField.validation_rules:type_name -> finconfig.config.v1.ValidationRule
+	15, // 38: finconfig.config.v1.PageInteractionField.options:type_name -> finconfig.config.v1.SelectOption
+	31, // 39: finconfig.config.v1.PageRow.values:type_name -> finconfig.config.v1.PageRow.ValuesEntry
+	38, // 40: finconfig.config.v1.QueryPageResponse.query_type:type_name -> finconfig.common.v1.QueryPageType
+	19, // 41: finconfig.config.v1.QueryPageResponse.rows:type_name -> finconfig.config.v1.PageRow
+	18, // 42: finconfig.config.v1.QueryPageResponse.interaction_fields:type_name -> finconfig.config.v1.PageInteractionField
+	20, // 43: finconfig.config.v1.QueryPageResponse.release_types:type_name -> finconfig.config.v1.ReleaseType
+	41, // 44: finconfig.config.v1.QueryPageResponse.page:type_name -> finconfig.common.v1.PageResponse
+	34, // 45: finconfig.config.v1.QueryPageResponse.snapshot:type_name -> finconfig.common.v1.SnapshotIdentity
+	22, // 46: finconfig.config.v1.NotifyRequest.targets:type_name -> finconfig.config.v1.RefreshTarget
+	33, // 47: finconfig.config.v1.NotifyRequest.scope:type_name -> finconfig.common.v1.Scope
+	34, // 48: finconfig.config.v1.NotifyResponse.snapshot:type_name -> finconfig.common.v1.SnapshotIdentity
+	34, // 49: finconfig.config.v1.GetSnapshotStatusResponse.snapshot:type_name -> finconfig.common.v1.SnapshotIdentity
+	0,  // 50: finconfig.config.v1.GetCollectionStatusResponse.version:type_name -> finconfig.config.v1.VersionView
+	1,  // 51: finconfig.config.v1.ConfigService.GetSnapshot:input_type -> finconfig.config.v1.GetSnapshotRequest
+	6,  // 52: finconfig.config.v1.ConfigService.DiffVersions:input_type -> finconfig.config.v1.DiffVersionsRequest
+	8,  // 53: finconfig.config.v1.ConfigService.GetCollections:input_type -> finconfig.config.v1.GetCollectionsRequest
+	10, // 54: finconfig.config.v1.ConfigService.Watch:input_type -> finconfig.config.v1.WatchRequest
+	14, // 55: finconfig.config.v1.PageQueryService.QueryPage:input_type -> finconfig.config.v1.QueryPageRequest
+	23, // 56: finconfig.config.v1.RefreshService.Notify:input_type -> finconfig.config.v1.NotifyRequest
+	25, // 57: finconfig.config.v1.DiagnosticsService.GetSnapshotStatus:input_type -> finconfig.config.v1.GetSnapshotStatusRequest
+	27, // 58: finconfig.config.v1.DiagnosticsService.GetCollectionStatus:input_type -> finconfig.config.v1.GetCollectionStatusRequest
+	5,  // 59: finconfig.config.v1.ConfigService.GetSnapshot:output_type -> finconfig.config.v1.GetSnapshotResponse
+	7,  // 60: finconfig.config.v1.ConfigService.DiffVersions:output_type -> finconfig.config.v1.DiffVersionsResponse
+	9,  // 61: finconfig.config.v1.ConfigService.GetCollections:output_type -> finconfig.config.v1.GetCollectionsResponse
+	11, // 62: finconfig.config.v1.ConfigService.Watch:output_type -> finconfig.config.v1.WatchResponse
+	21, // 63: finconfig.config.v1.PageQueryService.QueryPage:output_type -> finconfig.config.v1.QueryPageResponse
+	24, // 64: finconfig.config.v1.RefreshService.Notify:output_type -> finconfig.config.v1.NotifyResponse
+	26, // 65: finconfig.config.v1.DiagnosticsService.GetSnapshotStatus:output_type -> finconfig.config.v1.GetSnapshotStatusResponse
+	28, // 66: finconfig.config.v1.DiagnosticsService.GetCollectionStatus:output_type -> finconfig.config.v1.GetCollectionStatusResponse
+	59, // [59:67] is the sub-list for method output_type
+	51, // [51:59] is the sub-list for method input_type
+	51, // [51:51] is the sub-list for extension type_name
+	51, // [51:51] is the sub-list for extension extendee
+	0,  // [0:51] is the sub-list for field type_name
 }
 
 func init() { file_finconfig_config_v1_config_proto_init() }
@@ -2316,19 +2437,19 @@ func file_finconfig_config_v1_config_proto_init() {
 	if File_finconfig_config_v1_config_proto != nil {
 		return
 	}
-	file_finconfig_config_v1_config_proto_msgTypes[6].OneofWrappers = []any{}
-	file_finconfig_config_v1_config_proto_msgTypes[11].OneofWrappers = []any{}
-	file_finconfig_config_v1_config_proto_msgTypes[12].OneofWrappers = []any{}
-	file_finconfig_config_v1_config_proto_msgTypes[16].OneofWrappers = []any{}
+	file_finconfig_config_v1_config_proto_msgTypes[8].OneofWrappers = []any{}
+	file_finconfig_config_v1_config_proto_msgTypes[13].OneofWrappers = []any{}
+	file_finconfig_config_v1_config_proto_msgTypes[14].OneofWrappers = []any{}
 	file_finconfig_config_v1_config_proto_msgTypes[18].OneofWrappers = []any{}
-	file_finconfig_config_v1_config_proto_msgTypes[26].OneofWrappers = []any{}
+	file_finconfig_config_v1_config_proto_msgTypes[20].OneofWrappers = []any{}
+	file_finconfig_config_v1_config_proto_msgTypes[28].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_finconfig_config_v1_config_proto_rawDesc), len(file_finconfig_config_v1_config_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   29,
+			NumMessages:   32,
 			NumExtensions: 0,
 			NumServices:   4,
 		},

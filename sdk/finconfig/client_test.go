@@ -1,0 +1,155 @@
+package finconfig_test
+
+import (
+	"context"
+	"errors"
+	"testing"
+
+	catalog "github.com/asherzj/financial_configuration_center/internal/catalog/domain"
+	"github.com/asherzj/financial_configuration_center/sdk/finconfig"
+)
+
+func TestClientRefreshPublishesImmutableSnapshotAndRetainsLastKnownGood(t *testing.T) {
+	t.Parallel()
+
+	record := finconfig.Record{Key: "WyJ2aXNhLWNuIl0", Revision: 8, Values: map[string]string{"route_code": "visa-cn", "priority": "7"}}
+	digest := digestFor(t, record)
+	transport := &stubTransport{response: finconfig.SnapshotResponse{
+		Identity:    finconfig.SnapshotIdentity{ServerEpoch: "epoch-1", ServerInstanceID: "server-1", SnapshotInstance: "instance-1", Generation: 1},
+		Environment: "production",
+		Collections: []finconfig.CollectionPayload{{Name: "payment_routes", Revision: 8, Digest: digest, Records: []finconfig.Record{record}}},
+	}}
+	client, err := finconfig.New(finconfig.Config{ConsumerID: "payment-service", ClientID: "pod-1", Environment: "production", Transport: transport})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if err := client.Refresh(context.Background()); err != nil {
+		t.Fatalf("Refresh: %v", err)
+	}
+	got, ok := client.GetByKey("payment_routes", record.Key)
+	if !ok || got.Values["priority"] != "7" {
+		t.Fatalf("GetByKey = %+v, %t", got, ok)
+	}
+	got.Values["priority"] = "mutated"
+	again, _ := client.GetByKey("payment_routes", record.Key)
+	if again.Values["priority"] != "7" {
+		t.Fatal("SDK snapshot was mutable through a query")
+	}
+	if len(transport.lastRequest.KnownVersions) != 0 {
+		t.Fatalf("first refresh sent known versions: %+v", transport.lastRequest)
+	}
+
+	transport.err = errors.New("config server unavailable")
+	if err := client.Refresh(context.Background()); err == nil {
+		t.Fatal("transport failure succeeded")
+	}
+	again, ok = client.GetByKey("payment_routes", record.Key)
+	if !ok || again.Values["priority"] != "7" || client.Identity().Generation != 1 {
+		t.Fatalf("transport failure discarded last-known-good: %+v %+v", again, client.Identity())
+	}
+}
+
+func TestClientRejectsInvalidCandidateAndCallbackFailureBeforeSwap(t *testing.T) {
+	t.Parallel()
+
+	record := finconfig.Record{Key: "key", Revision: 1, Values: map[string]string{"code": "a"}}
+	transport := &stubTransport{response: finconfig.SnapshotResponse{
+		Identity:    finconfig.SnapshotIdentity{ServerEpoch: "epoch", ServerInstanceID: "server", SnapshotInstance: "instance", Generation: 1},
+		Environment: "production",
+		Collections: []finconfig.CollectionPayload{{Name: "routes", Revision: 1, Digest: digestFor(t, record), Records: []finconfig.Record{record}}},
+	}}
+	client, err := finconfig.New(finconfig.Config{ConsumerID: "consumer", ClientID: "client", Environment: "production", Transport: transport})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := client.Refresh(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	client.SetBeforePublish(func(finconfig.ChangeSet) error { return errors.New("consumer validation rejected") })
+	transport.response.Identity.Generation = 2
+	transport.response.Collections[0].Revision = 2
+	transport.response.Collections[0].Records[0].Revision = 2
+	transport.response.Collections[0].Records[0].Values["code"] = "b"
+	transport.response.Collections[0].Digest = digestFor(t, transport.response.Collections[0].Records[0])
+	if err := client.Refresh(context.Background()); err == nil {
+		t.Fatal("callback failure succeeded")
+	}
+	got, _ := client.GetByKey("routes", "key")
+	if got.Values["code"] != "a" || client.Identity().Generation != 1 {
+		t.Fatalf("callback failure replaced last-known-good: %+v %+v", got, client.Identity())
+	}
+
+	client.SetBeforePublish(nil)
+	transport.response.Collections[0].Digest = "bad"
+	if err := client.Refresh(context.Background()); err == nil {
+		t.Fatal("invalid digest succeeded")
+	}
+	got, _ = client.GetByKey("routes", "key")
+	if got.Values["code"] != "a" {
+		t.Fatal("invalid candidate replaced last-known-good")
+	}
+}
+
+func TestClientMergesIncrementalCollectionsAndDeletesRevokedOnes(t *testing.T) {
+	t.Parallel()
+
+	route := finconfig.Record{Key: "route", Revision: 1, Values: map[string]string{"code": "a"}}
+	bank := finconfig.Record{Key: "bank", Revision: 1, Values: map[string]string{"code": "b"}}
+	transport := &stubTransport{response: finconfig.SnapshotResponse{
+		Identity: finconfig.SnapshotIdentity{ServerEpoch: "epoch", ServerInstanceID: "server", SnapshotInstance: "instance", Generation: 1}, Environment: "production",
+		Collections: []finconfig.CollectionPayload{
+			{Name: "routes", Revision: 1, Digest: digestFor(t, route), Records: []finconfig.Record{route}},
+			{Name: "banks", Revision: 1, Digest: digestFor(t, bank), Records: []finconfig.Record{bank}},
+		},
+	}}
+	client, err := finconfig.New(finconfig.Config{ConsumerID: "consumer", ClientID: "client", Environment: "production", Transport: transport})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := client.Refresh(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	route.Revision = 2
+	route.Values["code"] = "updated"
+	transport.response = finconfig.SnapshotResponse{
+		Identity: finconfig.SnapshotIdentity{ServerEpoch: "epoch", ServerInstanceID: "server", SnapshotInstance: "instance", Generation: 2}, Environment: "production",
+		Collections:        []finconfig.CollectionPayload{{Name: "routes", Revision: 2, Digest: digestFor(t, route), Records: []finconfig.Record{route}}},
+		DeletedCollections: []string{"banks"},
+	}
+	if err := client.Refresh(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := client.GetByKey("routes", "route"); got.Values["code"] != "updated" {
+		t.Fatalf("modified collection was not replaced: %+v", got)
+	}
+	if _, ok := client.GetByKey("banks", "bank"); ok {
+		t.Fatal("deleted collection remains visible")
+	}
+}
+
+type stubTransport struct {
+	response    finconfig.SnapshotResponse
+	err         error
+	lastRequest finconfig.SnapshotRequest
+}
+
+func (transport *stubTransport) GetSnapshot(_ context.Context, request finconfig.SnapshotRequest) (finconfig.SnapshotResponse, error) {
+	transport.lastRequest = request
+	if transport.err != nil {
+		return finconfig.SnapshotResponse{}, transport.err
+	}
+	return transport.response, nil
+}
+
+func digestFor(t *testing.T, records ...finconfig.Record) string {
+	t.Helper()
+	domainRecords := make([]catalog.ConfigurationRecord, len(records))
+	for index, record := range records {
+		domainRecords[index] = catalog.ConfigurationRecord{RecordKey: record.Key, Data: record.Values}
+	}
+	digest, err := catalog.ComputeBaseDigest(domainRecords)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return digest.Value
+}

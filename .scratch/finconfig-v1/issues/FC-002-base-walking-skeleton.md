@@ -1,6 +1,6 @@
 # FC-002 Base-only walking skeleton
 
-- Status: ready
+- Status: in-progress
 - Blocked by: FC-001 (done)
 - Spec: acceptance scenarios 1, 2
 

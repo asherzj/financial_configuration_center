@@ -1,0 +1,288 @@
+// Package finconfig provides an immutable last-known-good configuration client.
+package finconfig
+
+import (
+	"context"
+	"encoding/hex"
+	"errors"
+	"fmt"
+	"sort"
+	"strings"
+	"sync"
+	"sync/atomic"
+
+	catalog "github.com/asherzj/financial_configuration_center/internal/catalog/domain"
+)
+
+type SnapshotIdentity struct {
+	ServerEpoch      string
+	ServerInstanceID string
+	SnapshotInstance string
+	Generation       uint64
+}
+
+type Version struct {
+	Collection string
+	Revision   catalog.ConfigRevision
+	Digest     string
+}
+
+type SnapshotRequest struct {
+	ConsumerID    string
+	ClientID      string
+	Environment   string
+	KnownVersions []Version
+}
+
+type Record struct {
+	Key      string
+	Revision catalog.ConfigRevision
+	Values   map[string]string
+}
+
+type CollectionPayload struct {
+	Name     string
+	Revision catalog.ConfigRevision
+	Digest   string
+	Records  []Record
+}
+
+type SnapshotResponse struct {
+	Identity           SnapshotIdentity
+	Environment        string
+	Collections        []CollectionPayload
+	DeletedCollections []string
+}
+
+type Transport interface {
+	GetSnapshot(context.Context, SnapshotRequest) (SnapshotResponse, error)
+}
+
+type Config struct {
+	ConsumerID  string
+	ClientID    string
+	Environment string
+	Transport   Transport
+}
+
+type ChangeSet struct {
+	Before      SnapshotIdentity
+	After       SnapshotIdentity
+	Collections []string
+}
+
+type collectionSnapshot struct {
+	revision catalog.ConfigRevision
+	digest   string
+	records  map[string]Record
+}
+
+type clientSnapshot struct {
+	identity    SnapshotIdentity
+	environment string
+	collections map[string]collectionSnapshot
+}
+
+type Client struct {
+	consumerID  string
+	clientID    string
+	environment string
+	transport   Transport
+	refreshMu   sync.Mutex
+	callbackMu  sync.RWMutex
+	callback    func(ChangeSet) error
+	current     atomic.Pointer[clientSnapshot]
+}
+
+func New(config Config) (*Client, error) {
+	config.ConsumerID = strings.TrimSpace(config.ConsumerID)
+	config.ClientID = strings.TrimSpace(config.ClientID)
+	config.Environment = strings.TrimSpace(config.Environment)
+	if config.ConsumerID == "" || config.ClientID == "" || config.Environment == "" || config.Transport == nil {
+		return nil, errors.New("new FinConfig client: consumer, client, environment, and transport are required")
+	}
+	client := &Client{
+		consumerID: config.ConsumerID, clientID: config.ClientID,
+		environment: config.Environment, transport: config.Transport,
+	}
+	client.current.Store(&clientSnapshot{environment: config.Environment, collections: map[string]collectionSnapshot{}})
+	return client, nil
+}
+
+// Refresh validates a complete candidate and invokes consumer validation before
+// one atomic swap. Any failure retains the prior snapshot.
+func (client *Client) Refresh(ctx context.Context) error {
+	client.refreshMu.Lock()
+	defer client.refreshMu.Unlock()
+
+	before := client.current.Load()
+	request := SnapshotRequest{
+		ConsumerID: client.consumerID, ClientID: client.clientID, Environment: client.environment,
+		KnownVersions: knownVersions(before),
+	}
+	response, err := client.transport.GetSnapshot(ctx, request)
+	if err != nil {
+		return fmt.Errorf("FinConfig refresh transport: %w", err)
+	}
+	if before.identity.Generation != 0 && !sameInstance(response.Identity, before.identity) && len(request.KnownVersions) > 0 {
+		request.KnownVersions = nil
+		response, err = client.transport.GetSnapshot(ctx, request)
+		if err != nil {
+			return fmt.Errorf("FinConfig full refresh after snapshot identity change: %w", err)
+		}
+	}
+	candidate, err := buildCandidate(response, before)
+	if err != nil {
+		return err
+	}
+	changes := ChangeSet{Before: before.identity, After: candidate.identity, Collections: changedCollections(before, candidate)}
+	client.callbackMu.RLock()
+	callback := client.callback
+	client.callbackMu.RUnlock()
+	if callback != nil {
+		if err := callback(changes); err != nil {
+			return fmt.Errorf("FinConfig before-publish callback: %w", err)
+		}
+	}
+	client.current.Store(candidate)
+	return nil
+}
+
+func (client *Client) SetBeforePublish(callback func(ChangeSet) error) {
+	client.callbackMu.Lock()
+	defer client.callbackMu.Unlock()
+	client.callback = callback
+}
+
+func (client *Client) Identity() SnapshotIdentity { return client.current.Load().identity }
+
+func (client *Client) GetByKey(collection, key string) (Record, bool) {
+	current := client.current.Load()
+	view, exists := current.collections[collection]
+	if !exists {
+		return Record{}, false
+	}
+	record, exists := view.records[key]
+	if !exists {
+		return Record{}, false
+	}
+	return cloneRecord(record), true
+}
+
+func buildCandidate(response SnapshotResponse, before *clientSnapshot) (*clientSnapshot, error) {
+	identity := response.Identity
+	if strings.TrimSpace(identity.ServerEpoch) == "" || strings.TrimSpace(identity.ServerInstanceID) == "" || strings.TrimSpace(identity.SnapshotInstance) == "" || identity.Generation == 0 {
+		return nil, errors.New("FinConfig candidate: complete nonzero snapshot identity is required")
+	}
+	if response.Environment != before.environment {
+		return nil, fmt.Errorf("FinConfig candidate: environment %q does not match %q", response.Environment, before.environment)
+	}
+	if sameInstance(identity, before.identity) && identity.Generation < before.identity.Generation {
+		return nil, fmt.Errorf("FinConfig candidate: generation regressed from %d to %d", before.identity.Generation, identity.Generation)
+	}
+	reset := before.identity.Generation == 0 || !sameInstance(identity, before.identity)
+	candidate := &clientSnapshot{identity: identity, environment: response.Environment, collections: make(map[string]collectionSnapshot, len(before.collections)+len(response.Collections))}
+	if !reset {
+		for name, collection := range before.collections {
+			candidate.collections[name] = collection
+		}
+	}
+	deleted := make(map[string]struct{}, len(response.DeletedCollections))
+	for _, name := range response.DeletedCollections {
+		if strings.TrimSpace(name) == "" {
+			return nil, errors.New("FinConfig candidate: deleted collection name is required")
+		}
+		if _, duplicate := deleted[name]; duplicate {
+			return nil, fmt.Errorf("FinConfig candidate: duplicate deleted collection %q", name)
+		}
+		deleted[name] = struct{}{}
+		delete(candidate.collections, name)
+	}
+	payloadSeen := make(map[string]struct{}, len(response.Collections))
+	for _, payload := range response.Collections {
+		if strings.TrimSpace(payload.Name) == "" || payload.Revision == 0 {
+			return nil, errors.New("FinConfig candidate: collection name and revision are required")
+		}
+		if _, duplicate := deleted[payload.Name]; duplicate {
+			return nil, fmt.Errorf("FinConfig candidate: collection %q is both changed and deleted", payload.Name)
+		}
+		if _, duplicate := payloadSeen[payload.Name]; duplicate {
+			return nil, fmt.Errorf("FinConfig candidate: duplicate collection %q", payload.Name)
+		}
+		payloadSeen[payload.Name] = struct{}{}
+		if !validSHA256(payload.Digest) {
+			return nil, fmt.Errorf("FinConfig candidate: collection %q has invalid digest", payload.Name)
+		}
+		view := collectionSnapshot{revision: payload.Revision, digest: payload.Digest, records: make(map[string]Record, len(payload.Records))}
+		domainRecords := make([]catalog.ConfigurationRecord, len(payload.Records))
+		for index, source := range payload.Records {
+			if source.Key == "" || source.Revision == 0 || source.Revision > payload.Revision {
+				return nil, fmt.Errorf("FinConfig candidate: collection %q has invalid record identity or revision", payload.Name)
+			}
+			if _, duplicate := view.records[source.Key]; duplicate {
+				return nil, fmt.Errorf("FinConfig candidate: collection %q repeats record %q", payload.Name, source.Key)
+			}
+			record := cloneRecord(source)
+			view.records[record.Key] = record
+			domainRecords[index] = catalog.ConfigurationRecord{RecordKey: record.Key, Data: record.Values}
+		}
+		digest, err := catalog.ComputeBaseDigest(domainRecords)
+		if err != nil {
+			return nil, fmt.Errorf("FinConfig candidate: collection %q digest input: %w", payload.Name, err)
+		}
+		if digest.Value != payload.Digest {
+			return nil, fmt.Errorf("FinConfig candidate: collection %q digest mismatch", payload.Name)
+		}
+		candidate.collections[payload.Name] = view
+	}
+	return candidate, nil
+}
+
+func knownVersions(snapshot *clientSnapshot) []Version {
+	versions := make([]Version, 0, len(snapshot.collections))
+	for name, collection := range snapshot.collections {
+		versions = append(versions, Version{Collection: name, Revision: collection.revision, Digest: collection.digest})
+	}
+	sort.Slice(versions, func(left, right int) bool { return versions[left].Collection < versions[right].Collection })
+	return versions
+}
+
+func changedCollections(before, after *clientSnapshot) []string {
+	changed := make([]string, 0, len(before.collections)+len(after.collections))
+	seen := make(map[string]struct{}, len(before.collections)+len(after.collections))
+	for name, current := range after.collections {
+		previous, existed := before.collections[name]
+		if !existed || previous.revision != current.revision || previous.digest != current.digest {
+			changed = append(changed, name)
+		}
+		seen[name] = struct{}{}
+	}
+	for name := range before.collections {
+		if _, exists := seen[name]; !exists {
+			changed = append(changed, name)
+		}
+	}
+	sort.Strings(changed)
+	return changed
+}
+
+func sameInstance(left, right SnapshotIdentity) bool {
+	return left.ServerEpoch == right.ServerEpoch && left.ServerInstanceID == right.ServerInstanceID && left.SnapshotInstance == right.SnapshotInstance
+}
+
+func validSHA256(value string) bool {
+	if len(value) != 64 || strings.ToLower(value) != value {
+		return false
+	}
+	decoded, err := hex.DecodeString(value)
+	return err == nil && len(decoded) == 32
+}
+
+func cloneRecord(record Record) Record {
+	source := record.Values
+	record.Values = make(map[string]string, len(source))
+	for key, value := range source {
+		record.Values[key] = value
+	}
+	return record
+}

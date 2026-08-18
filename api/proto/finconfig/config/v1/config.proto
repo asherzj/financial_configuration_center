@@ -51,6 +51,18 @@ message CollectionPayload {
   int64 change_cursor = 6;
 }
 
+// CollectionData is the deterministic uncompressed protobuf body carried by
+// CollectionPayload.data when codec is "PROTOBUF" and format_version is 1.
+message CollectionData {
+  repeated SnapshotRecord records = 1;
+}
+
+message SnapshotRecord {
+  string record_key = 1;
+  int64 record_revision = 2;
+  map<string, string> values = 3;
+}
+
 message GetSnapshotResponse {
   finconfig.common.v1.SnapshotIdentity snapshot = 1;
   finconfig.common.v1.Scope scope = 2;

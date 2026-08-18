@@ -1,0 +1,509 @@
+package mysqlstore
+
+import (
+	"context"
+	"database/sql"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"time"
+
+	catalog "github.com/asherzj/financial_configuration_center/internal/catalog/domain"
+	platformmysql "github.com/asherzj/financial_configuration_center/internal/platform/mysql"
+	"github.com/asherzj/financial_configuration_center/internal/release/application"
+	release "github.com/asherzj/financial_configuration_center/internal/release/domain"
+	"gorm.io/gorm"
+)
+
+type Store struct{ database *platformmysql.Database }
+
+func New(database *platformmysql.Database) (*Store, error) {
+	if database == nil {
+		return nil, errors.New("new release MySQL store: database is required")
+	}
+	return &Store{database: database}, nil
+}
+
+func (store *Store) WithinTransaction(ctx context.Context, work func(application.Transaction) error) error {
+	if work == nil {
+		return errors.New("release MySQL transaction callback is required")
+	}
+	return store.database.WithinTransaction(ctx, &sql.TxOptions{Isolation: sql.LevelRepeatableRead}, func(db *gorm.DB) error {
+		return work(&transaction{db: db})
+	})
+}
+
+type transaction struct{ db *gorm.DB }
+
+func (transaction *transaction) LoadCatalog(ctx context.Context, modelCode string) (application.CatalogBundle, error) {
+	type row struct {
+		CollectionName        string
+		CollectionDescription string
+		Fields                []byte
+		KeyFields             []byte
+		SDKDeliveryEnabled    bool
+		SchemaVersion         uint64
+		CollectionStatus      string
+		ModelCode             string
+		ModelName             string
+		ModelDefinition       []byte
+		ModelEnabled          bool
+		ModelRevision         uint64
+		TemplateCode          string
+		TemplateVersion       uint64
+		ReleaseTypeCode       string
+		FinalEffect           string
+	}
+	var loaded row
+	result := transaction.db.WithContext(ctx).Raw(`
+		SELECT
+			c.name AS collection_name, c.description AS collection_description,
+			c.fields, c.key_fields, c.sdk_delivery_enabled, c.schema_version,
+			c.status AS collection_status,
+			m.code AS model_code, m.name AS model_name, m.definition AS model_definition,
+			m.enabled AS model_enabled, m.config_revision AS model_revision,
+			t.code AS template_code, t.version AS template_version,
+			t.release_type_code, t.final_effect
+		FROM configuration_models m
+		JOIN configuration_collections c ON c.name = m.collection_name
+		JOIN release_templates t ON t.model_code = m.code AND t.active_slot = 'A'
+		WHERE m.code = ? AND t.final_effect = 'BASE_FINAL'
+		FOR SHARE
+	`, modelCode).Scan(&loaded)
+	if result.Error != nil {
+		return application.CatalogBundle{}, result.Error
+	}
+	if result.RowsAffected != 1 {
+		return application.CatalogBundle{}, fmt.Errorf("enabled model %q with one active BASE_FINAL template was not found", modelCode)
+	}
+	if loaded.CollectionStatus != "ENABLED" || !loaded.ModelEnabled {
+		return application.CatalogBundle{}, fmt.Errorf("model %q or its collection is disabled", modelCode)
+	}
+	var fields []catalog.FieldDefinition
+	var keyFields []string
+	if err := json.Unmarshal(loaded.Fields, &fields); err != nil {
+		return application.CatalogBundle{}, fmt.Errorf("decode collection fields: %w", err)
+	}
+	if err := json.Unmarshal(loaded.KeyFields, &keyFields); err != nil {
+		return application.CatalogBundle{}, fmt.Errorf("decode collection key fields: %w", err)
+	}
+	definition, err := catalog.CompileCollection(catalog.CollectionSpec{
+		Name: loaded.CollectionName, Description: loaded.CollectionDescription, Fields: fields,
+		KeyFields: keyFields, SDKDeliveryEnabled: loaded.SDKDeliveryEnabled, SchemaVersion: int64(loaded.SchemaVersion),
+	})
+	if err != nil {
+		return application.CatalogBundle{}, fmt.Errorf("compile persisted collection: %w", err)
+	}
+	var modelSpec catalog.ModelSpec
+	if err := json.Unmarshal(loaded.ModelDefinition, &modelSpec); err != nil {
+		return application.CatalogBundle{}, fmt.Errorf("decode model definition: %w", err)
+	}
+	modelSpec.Code = loaded.ModelCode
+	modelSpec.Name = loaded.ModelName
+	modelSpec.Collection = loaded.CollectionName
+	modelSpec.ConfigRevision = catalog.ConfigRevision(loaded.ModelRevision)
+	model, err := catalog.CompileModel(definition, modelSpec)
+	if err != nil {
+		return application.CatalogBundle{}, fmt.Errorf("compile persisted model: %w", err)
+	}
+	return application.CatalogBundle{
+		Definition: definition,
+		Model:      model,
+		Template: application.TemplateRef{
+			Code: loaded.TemplateCode, Version: loaded.TemplateVersion, ReleaseTypeCode: loaded.ReleaseTypeCode,
+		},
+	}, nil
+}
+
+func (transaction *transaction) LoadBaseAuthority(ctx context.Context, collection, environment string, recordKeys []string) (release.BaseAuthority, error) {
+	var revision uint64
+	result := transaction.db.WithContext(ctx).Raw(`
+		SELECT config_revision FROM configuration_versions
+		WHERE collection_name = ? AND environment = ?
+		FOR UPDATE
+	`, collection, environment).Scan(&revision)
+	if result.Error != nil {
+		return release.BaseAuthority{}, result.Error
+	}
+	if result.RowsAffected != 1 || revision == 0 {
+		return release.BaseAuthority{}, fmt.Errorf("collection version %s/%s was not found", collection, environment)
+	}
+	authority := release.BaseAuthority{CollectionRevision: catalog.ConfigRevision(revision), Records: make(map[string]*catalog.ConfigurationRecord, len(recordKeys))}
+	if len(recordKeys) == 0 {
+		return authority, nil
+	}
+	type recordRow struct {
+		RecordKey      string
+		Data           []byte
+		ConfigRevision uint64
+	}
+	var rows []recordRow
+	result = transaction.db.WithContext(ctx).Raw(`
+		SELECT record_key, data, config_revision
+		FROM configuration_records
+		WHERE collection_name = ? AND environment = ? AND record_key IN ?
+		FOR UPDATE
+	`, collection, environment, recordKeys).Scan(&rows)
+	if result.Error != nil {
+		return release.BaseAuthority{}, result.Error
+	}
+	for _, row := range rows {
+		var data map[string]string
+		if err := json.Unmarshal(row.Data, &data); err != nil {
+			return release.BaseAuthority{}, fmt.Errorf("decode base record %q: %w", row.RecordKey, err)
+		}
+		record := catalog.ConfigurationRecord{Collection: collection, Environment: environment, RecordKey: row.RecordKey, Data: data, ConfigRevision: catalog.ConfigRevision(row.ConfigRevision)}
+		authority.Records[row.RecordKey] = &record
+	}
+	return authority, nil
+}
+
+func (transaction *transaction) InsertOrder(ctx context.Context, order *release.Order) error {
+	state := order.State()
+	templateSnapshot := []byte(`{"finalEffect":"BASE_FINAL","steps":["BASE_APPLY","COMPLETE"]}`)
+	batchType := "SINGLE"
+	if len(state.Items) > 1 {
+		batchType = "BATCH"
+	}
+	result := transaction.db.WithContext(ctx).Exec(`
+		INSERT INTO release_orders (
+			id, release_number, idempotency_key, request_digest, model_code,
+			template_code, template_version, release_type_code, region, environment, stage,
+			status, current_step_code, template_snapshot, description, authorized_roles,
+			batch_type, compensates_order_id, entity_revision,
+			created_at, created_by, updated_at, updated_by, completed_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '', JSON_ARRAY(), ?, NULL, ?, ?, ?, ?, ?, NULL)
+	`, state.ID, state.ReleaseNumber, state.IdempotencyKey, state.RequestDigest, state.ModelCode,
+		state.TemplateCode, state.TemplateVersion, state.ReleaseTypeCode,
+		state.Scope.Region, state.Scope.Environment, state.Scope.Stage,
+		state.Status, stepCode(state.Steps[state.CurrentStep].Type), templateSnapshot, batchType, state.Revision,
+		state.CreatedAt, state.CreatedBy, state.UpdatedAt, state.UpdatedBy)
+	if result.Error != nil {
+		return result.Error
+	}
+	for position, item := range state.Items {
+		after, err := marshalRecordData(item.After)
+		if err != nil {
+			return err
+		}
+		if err := transaction.db.WithContext(ctx).Exec(`
+			INSERT INTO release_order_items (
+				id, release_order_id, position, action, collection_name, record_key,
+				target, target_description, base_before, effective_before, after_data,
+				expected_record_revision, expected_collection_revision, preserve_sensitive_fields,
+				status, active_conflict_key, entity_revision,
+				created_at, created_by, updated_at, updated_by
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?, ?, ?, JSON_ARRAY(), ?, ?, 1, ?, ?, ?, ?)
+		`, item.ID, state.ID, position, item.Action, item.Collection, item.RecordKey,
+			item.RecordKey, item.RecordKey, after, item.ExpectedRecordRevision, item.ExpectedCollectionRevision,
+			item.Status, nullableString(item.ActiveConflictKey), state.CreatedAt, state.CreatedBy, state.UpdatedAt, state.UpdatedBy).Error; err != nil {
+			return err
+		}
+	}
+	for sequence, step := range state.Steps {
+		if err := transaction.db.WithContext(ctx).Exec(`
+			INSERT INTO release_step_states (
+				release_order_id, step_code, step_type, sequence_no, status, context,
+				approval, effect, compare_result, execute_count, executed_at, executed_by,
+				rolled_back_at, rolled_back_by, error_code, error_message, entity_revision,
+				created_at, created_by, updated_at, updated_by
+			) VALUES (?, ?, ?, ?, ?, JSON_OBJECT(), NULL, NULL, NULL, 0, NULL, NULL, NULL, NULL, NULL, NULL, 1, ?, ?, ?, ?)
+		`, state.ID, stepCode(step.Type), step.Type, sequence, step.Status,
+			state.CreatedAt, state.CreatedBy, state.UpdatedAt, state.UpdatedBy).Error; err != nil {
+			return err
+		}
+	}
+	return transaction.insertAudit(ctx, state.CreatedAt, state.CreatedBy, "RELEASE_CREATED", "RELEASE_ORDER", state.ID, state.Scope, state.ID)
+}
+
+func (transaction *transaction) LoadOrderForUpdate(ctx context.Context, orderID string) (*release.Order, error) {
+	type orderRow struct {
+		ID, ReleaseNumber, IdempotencyKey, RequestDigest, ModelCode string
+		TemplateCode, ReleaseTypeCode                               string
+		TemplateVersion                                             uint64
+		Region, Environment, Stage                                  string
+		Status, CurrentStepCode                                     string
+		EntityRevision                                              uint64
+		CreatedAt, UpdatedAt                                        time.Time
+		CreatedBy, UpdatedBy                                        string
+		CompletedAt                                                 *time.Time
+	}
+	var loaded orderRow
+	result := transaction.db.WithContext(ctx).Raw(`
+		SELECT id, release_number, idempotency_key, request_digest, model_code,
+			template_code, template_version, release_type_code, region, environment, stage,
+			status, current_step_code, entity_revision, created_at, created_by,
+			updated_at, updated_by, completed_at
+		FROM release_orders WHERE id = ? FOR UPDATE
+	`, orderID).Scan(&loaded)
+	if result.Error != nil {
+		return nil, result.Error
+	}
+	if result.RowsAffected != 1 {
+		return nil, fmt.Errorf("release order %q was not found", orderID)
+	}
+	type itemRow struct {
+		ID, Action, CollectionName, RecordKey, Status      string
+		BaseBefore, EffectiveBefore, AfterData             []byte
+		ExpectedRecordRevision, ExpectedCollectionRevision uint64
+		ActiveConflictKey                                  *string
+	}
+	var itemRows []itemRow
+	if err := transaction.db.WithContext(ctx).Raw(`
+		SELECT id, action, collection_name, record_key, base_before, effective_before,
+			after_data, expected_record_revision, expected_collection_revision,
+			status, active_conflict_key
+		FROM release_order_items WHERE release_order_id = ? ORDER BY position
+	`, orderID).Scan(&itemRows).Error; err != nil {
+		return nil, err
+	}
+	items := make([]release.Item, len(itemRows))
+	for index, row := range itemRows {
+		baseBefore, err := unmarshalRecord(row.BaseBefore, row.CollectionName, loaded.Environment, row.RecordKey, 0)
+		if err != nil {
+			return nil, err
+		}
+		effectiveBefore, err := unmarshalRecord(row.EffectiveBefore, row.CollectionName, loaded.Environment, row.RecordKey, 0)
+		if err != nil {
+			return nil, err
+		}
+		after, err := unmarshalRecord(row.AfterData, row.CollectionName, loaded.Environment, row.RecordKey, 0)
+		if err != nil {
+			return nil, err
+		}
+		active := ""
+		if row.ActiveConflictKey != nil {
+			active = *row.ActiveConflictKey
+		}
+		items[index] = release.Item{
+			ID: row.ID, Action: release.ChangeAction(row.Action), Collection: row.CollectionName, RecordKey: row.RecordKey,
+			BaseBefore: baseBefore, EffectiveBefore: effectiveBefore, After: after,
+			ExpectedRecordRevision: catalog.ConfigRevision(row.ExpectedRecordRevision), ExpectedCollectionRevision: catalog.ConfigRevision(row.ExpectedCollectionRevision),
+			Status: release.ItemStatus(row.Status), ActiveConflictKey: active,
+		}
+	}
+	type stepRow struct {
+		StepCode, StepType, Status, ExecutedBy string
+		ExecutedAt                             *time.Time
+	}
+	var stepRows []stepRow
+	if err := transaction.db.WithContext(ctx).Raw(`
+		SELECT step_code, step_type, status, executed_at, COALESCE(executed_by, '') AS executed_by
+		FROM release_step_states WHERE release_order_id = ? ORDER BY sequence_no
+	`, orderID).Scan(&stepRows).Error; err != nil {
+		return nil, err
+	}
+	steps := make([]release.StepState, len(stepRows))
+	currentStep := -1
+	for index, row := range stepRows {
+		steps[index] = release.StepState{Type: release.StepType(row.StepType), Status: release.StepStatus(row.Status), ExecutedAt: row.ExecutedAt, ExecutedBy: row.ExecutedBy}
+		if row.StepCode == loaded.CurrentStepCode {
+			currentStep = index
+		}
+	}
+	return release.RestoreOrder(release.OrderState{
+		ID: loaded.ID, ReleaseNumber: loaded.ReleaseNumber, IdempotencyKey: loaded.IdempotencyKey,
+		RequestDigest: loaded.RequestDigest, ModelCode: loaded.ModelCode, TemplateCode: loaded.TemplateCode,
+		TemplateVersion: loaded.TemplateVersion, ReleaseTypeCode: loaded.ReleaseTypeCode,
+		Scope:     release.Scope{Region: loaded.Region, Environment: loaded.Environment, Stage: loaded.Stage},
+		CreatedBy: loaded.CreatedBy, CreatedAt: loaded.CreatedAt, UpdatedBy: loaded.UpdatedBy, UpdatedAt: loaded.UpdatedAt,
+		CompletedAt: loaded.CompletedAt, Status: release.OrderStatus(loaded.Status), Revision: release.EntityRevision(loaded.EntityRevision),
+		CurrentStep: currentStep, Steps: steps, Items: items,
+	})
+}
+
+func (transaction *transaction) AllocateConfigRevision(ctx context.Context) (catalog.ConfigRevision, error) {
+	var current uint64
+	result := transaction.db.WithContext(ctx).Raw(`
+		SELECT current_revision FROM configuration_revision_counters
+		WHERE counter_name = 'global' FOR UPDATE
+	`).Scan(&current)
+	if result.Error != nil {
+		return 0, result.Error
+	}
+	if result.RowsAffected != 1 {
+		return 0, errors.New("global config revision counter was not found")
+	}
+	next := current + 1
+	if err := transaction.db.WithContext(ctx).Exec(`
+		UPDATE configuration_revision_counters SET current_revision = ?, updated_at = UTC_TIMESTAMP(6)
+		WHERE counter_name = 'global' AND current_revision = ?
+	`, next, current).Error; err != nil {
+		return 0, err
+	}
+	return catalog.ConfigRevision(next), nil
+}
+
+func (transaction *transaction) ApplyBaseEffect(ctx context.Context, orderID string, effect release.BaseEffect, revision catalog.ConfigRevision) error {
+	for _, change := range effect.Changes {
+		if change.Action != release.ChangeAdd {
+			return fmt.Errorf("base effect action %q is not implemented", change.Action)
+		}
+		data, err := json.Marshal(change.After.Data)
+		if err != nil {
+			return err
+		}
+		if err := transaction.db.WithContext(ctx).Exec(`
+			INSERT INTO configuration_records (
+				collection_name, environment, record_key, data, config_revision,
+				created_at, created_by, updated_at, updated_by
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+		`, effect.Collection, effect.Environment, change.After.RecordKey, data, revision,
+			effect.ExecutedAt, effect.ExecutedBy, effect.ExecutedAt, effect.ExecutedBy).Error; err != nil {
+			return err
+		}
+		if err := transaction.db.WithContext(ctx).Exec(`
+			INSERT INTO configuration_change_log (
+				collection_name, kind, region, environment, stage, record_key, action,
+				before_data, after_data, config_revision, release_order_id, created_at
+			) SELECT ?, 'BASE_RECORD', region, environment, stage, ?, 'ADD', NULL, ?, ?, id, ?
+			FROM release_orders WHERE id = ?
+		`, effect.Collection, change.After.RecordKey, data, revision, effect.ExecutedAt, orderID).Error; err != nil {
+			return err
+		}
+	}
+
+	type recordRow struct {
+		RecordKey string
+		Data      []byte
+	}
+	var rows []recordRow
+	if err := transaction.db.WithContext(ctx).Raw(`
+		SELECT record_key, data FROM configuration_records
+		WHERE collection_name = ? AND environment = ? ORDER BY record_key
+	`, effect.Collection, effect.Environment).Scan(&rows).Error; err != nil {
+		return err
+	}
+	records := make([]catalog.ConfigurationRecord, len(rows))
+	for index, row := range rows {
+		var data map[string]string
+		if err := json.Unmarshal(row.Data, &data); err != nil {
+			return err
+		}
+		records[index] = catalog.ConfigurationRecord{RecordKey: row.RecordKey, Data: data}
+	}
+	digest, err := catalog.ComputeBaseDigest(records)
+	if err != nil {
+		return err
+	}
+	result := transaction.db.WithContext(ctx).Exec(`
+		UPDATE configuration_versions
+		SET config_revision = ?, base_digest = ?, release_order_id = ?, updated_at = ?
+		WHERE collection_name = ? AND environment = ? AND config_revision = ?
+	`, revision, digest.Value, orderID, effect.ExecutedAt, effect.Collection, effect.Environment, effect.PreviousRevision)
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected != 1 {
+		return fmt.Errorf("%w: collection version changed while applying base effect", release.ErrAborted)
+	}
+	payload, _ := json.Marshal(map[string]any{
+		"schemaVersion": 1, "collection": effect.Collection, "environment": effect.Environment,
+		"configRevision": revision, "releaseOrderId": orderID,
+	})
+	if err := transaction.db.WithContext(ctx).Exec(`
+		INSERT INTO outbox_events (
+			id, aggregate_type, aggregate_id, event_type, payload_version, payload,
+			idempotency_key, status, lease_revision, attempts, next_attempt_at,
+			created_at, updated_at
+		) VALUES (UUID(), 'RELEASE_ORDER', ?, 'CONFIGURATION_CHANGED', 1, ?, ?, 'PENDING', 1, 0, ?, ?, ?)
+	`, orderID, payload, fmt.Sprintf("configuration-changed:%s:%d", orderID, revision), effect.ExecutedAt, effect.ExecutedAt, effect.ExecutedAt).Error; err != nil {
+		return err
+	}
+	if err := transaction.db.WithContext(ctx).Exec(`
+		INSERT INTO release_operation_logs (
+			id, release_order_id, release_item_id, step_code, action, result,
+			actor_subject, actor_name, message, error_code, error_detail, trace_id, created_at
+		) VALUES (UUID(), ?, NULL, 'base-apply', 'EXECUTE', 'SUCCEEDED', ?, ?, 'BASE_APPLY executed', NULL, NULL, '', ?)
+	`, orderID, effect.ExecutedBy, effect.ExecutedBy, effect.ExecutedAt).Error; err != nil {
+		return err
+	}
+	return transaction.insertAudit(ctx, effect.ExecutedAt, effect.ExecutedBy, "BASE_APPLY", "RELEASE_ORDER", orderID, release.Scope{Environment: effect.Environment}, orderID)
+}
+
+func (transaction *transaction) SaveOrder(ctx context.Context, order *release.Order) error {
+	state := order.State()
+	if state.Revision <= 1 {
+		return errors.New("save release order requires an incremented entity revision")
+	}
+	result := transaction.db.WithContext(ctx).Exec(`
+		UPDATE release_orders
+		SET status = ?, current_step_code = ?, entity_revision = ?, updated_at = ?, updated_by = ?, completed_at = ?
+		WHERE id = ? AND entity_revision = ?
+	`, state.Status, stepCode(state.Steps[state.CurrentStep].Type), state.Revision, state.UpdatedAt, state.UpdatedBy, state.CompletedAt, state.ID, state.Revision-1)
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected != 1 {
+		return fmt.Errorf("%w: order entity revision changed", release.ErrAborted)
+	}
+	for _, item := range state.Items {
+		if err := transaction.db.WithContext(ctx).Exec(`
+			UPDATE release_order_items
+			SET status = ?, active_conflict_key = ?, entity_revision = entity_revision + 1,
+				updated_at = ?, updated_by = ?
+			WHERE id = ? AND release_order_id = ?
+		`, item.Status, nullableString(item.ActiveConflictKey), state.UpdatedAt, state.UpdatedBy, item.ID, state.ID).Error; err != nil {
+			return err
+		}
+	}
+	for _, step := range state.Steps {
+		if err := transaction.db.WithContext(ctx).Exec(`
+			UPDATE release_step_states
+			SET status = ?, executed_at = ?, executed_by = ?, entity_revision = entity_revision + 1,
+				updated_at = ?, updated_by = ?
+			WHERE release_order_id = ? AND step_code = ?
+		`, step.Status, step.ExecutedAt, nullableString(step.ExecutedBy), state.UpdatedAt, state.UpdatedBy, state.ID, stepCode(step.Type)).Error; err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (transaction *transaction) insertAudit(ctx context.Context, at time.Time, actor, action, resourceType, resourceID string, scope release.Scope, requestID string) error {
+	return transaction.db.WithContext(ctx).Exec(`
+		INSERT INTO audit_records (
+			occurred_at, principal_subject, principal_display_name, action,
+			resource_type, resource_id, region, environment, stage, result,
+			before_data, after_data, metadata, request_id, trace_id
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'SUCCEEDED', NULL, NULL, JSON_OBJECT(), ?, '')
+	`, at, actor, actor, action, resourceType, resourceID, scope.Region, scope.Environment, scope.Stage, requestID).Error
+}
+
+func stepCode(stepType release.StepType) string {
+	switch stepType {
+	case release.StepBaseApply:
+		return "base-apply"
+	case release.StepComplete:
+		return "complete"
+	default:
+		return string(stepType)
+	}
+}
+
+func marshalRecordData(record *catalog.ConfigurationRecord) ([]byte, error) {
+	if record == nil {
+		return nil, nil
+	}
+	return json.Marshal(record.Data)
+}
+
+func unmarshalRecord(data []byte, collection, environment, recordKey string, revision catalog.ConfigRevision) (*catalog.ConfigurationRecord, error) {
+	if len(data) == 0 {
+		return nil, nil
+	}
+	var values map[string]string
+	if err := json.Unmarshal(data, &values); err != nil {
+		return nil, err
+	}
+	return &catalog.ConfigurationRecord{Collection: collection, Environment: environment, RecordKey: recordKey, Data: values, ConfigRevision: revision}, nil
+}
+
+func nullableString(value string) any {
+	if value == "" {
+		return nil
+	}
+	return value
+}
+
+var _ application.UnitOfWork = (*Store)(nil)
