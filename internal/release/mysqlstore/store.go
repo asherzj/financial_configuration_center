@@ -374,7 +374,10 @@ func (transaction *transaction) InsertOrder(ctx context.Context, order *release.
 		}
 	}
 	for sequence, step := range state.Steps {
-		stepContext, err := json.Marshal(map[string]any{"requiredRoles": step.RequiredRoles, "selfApprovalPolicy": step.SelfApprovalPolicy})
+		stepContext, err := json.Marshal(map[string]any{
+			"requiredRoles": step.RequiredRoles, "selfApprovalPolicy": step.SelfApprovalPolicy,
+			"rolloutRanges": step.RolloutRanges,
+		})
 		if err != nil {
 			return err
 		}
@@ -479,6 +482,7 @@ func (transaction *transaction) LoadOrderForUpdate(ctx context.Context, orderID 
 		var contextValue struct {
 			RequiredRoles      []string                   `json:"requiredRoles"`
 			SelfApprovalPolicy release.SelfApprovalPolicy `json:"selfApprovalPolicy"`
+			RolloutRanges      []overlay.BucketRange      `json:"rolloutRanges"`
 		}
 		if err := json.Unmarshal(row.Context, &contextValue); err != nil {
 			return nil, fmt.Errorf("decode step %q context: %w", row.StepCode, err)
@@ -503,7 +507,8 @@ func (transaction *transaction) LoadOrderForUpdate(ctx context.Context, orderID 
 		steps[index] = release.StepState{
 			Code: row.StepCode, Type: release.StepType(row.StepType), Status: release.StepStatus(row.Status),
 			RequiredRoles: contextValue.RequiredRoles, SelfApprovalPolicy: contextValue.SelfApprovalPolicy,
-			Approval: approval, Effect: effect, ExecutedAt: row.ExecutedAt, ExecutedBy: row.ExecutedBy,
+			RolloutRanges: contextValue.RolloutRanges,
+			Approval:      approval, Effect: effect, ExecutedAt: row.ExecutedAt, ExecutedBy: row.ExecutedBy,
 			RolledBackAt: row.RolledBackAt, RolledBackBy: row.RolledBackBy,
 		}
 		if row.StepCode == loaded.CurrentStepCode {
@@ -929,6 +934,7 @@ func marshalTemplateSnapshot(steps []release.StepState) ([]byte, error) {
 		Type               release.StepType           `json:"type"`
 		RequiredRoles      []string                   `json:"requiredRoles,omitempty"`
 		SelfApprovalPolicy release.SelfApprovalPolicy `json:"selfApprovalPolicy,omitempty"`
+		RolloutRanges      []overlay.BucketRange      `json:"rolloutRanges,omitempty"`
 	}
 	finalEffect := release.FinalEffectBase
 	for _, step := range steps {
@@ -941,7 +947,10 @@ func marshalTemplateSnapshot(steps []release.StepState) ([]byte, error) {
 		Steps       []definition        `json:"steps"`
 	}{FinalEffect: finalEffect, Steps: make([]definition, len(steps))}
 	for index, step := range steps {
-		document.Steps[index] = definition{Code: persistedStepCode(step), Type: step.Type, RequiredRoles: append([]string(nil), step.RequiredRoles...), SelfApprovalPolicy: step.SelfApprovalPolicy}
+		document.Steps[index] = definition{
+			Code: persistedStepCode(step), Type: step.Type, RequiredRoles: append([]string(nil), step.RequiredRoles...),
+			SelfApprovalPolicy: step.SelfApprovalPolicy, RolloutRanges: append([]overlay.BucketRange(nil), step.RolloutRanges...),
+		}
 	}
 	return json.Marshal(document)
 }

@@ -3,6 +3,7 @@ package domain_test
 import (
 	"testing"
 
+	overlay "github.com/asherzj/financial_configuration_center/internal/overlay/domain"
 	release "github.com/asherzj/financial_configuration_center/internal/release/domain"
 )
 
@@ -43,6 +44,50 @@ func TestCompileOverlayFinalTemplateUsesTypedOverlayApply(t *testing.T) {
 	steps := template.Steps()
 	if template.FinalEffect() != release.FinalEffectOverlay || len(steps) != 2 || steps[0].OverlayApply == nil || steps[0].Type != release.StepOverlayApply {
 		t.Fatalf("compiled overlay template = effect %s steps %+v", template.FinalEffect(), steps)
+	}
+}
+
+func TestCompileBaseFinalTemplateUsesTypedMonotonicPercentageSteps(t *testing.T) {
+	t.Parallel()
+	template, err := release.CompileTemplate([]byte(`{
+		"steps":[
+			{"code":"percent-10","type":"PERCENT_ROLLOUT","params":{"ranges":[{"start":0,"end":9}]}},
+			{"code":"percent-50","type":"PERCENT_ROLLOUT","params":{"ranges":[{"start":25,"end":49},{"start":10,"end":24}]}},
+			{"code":"compare","type":"COMPARE","params":{"mode":"EFFECTIVE","previewBucket":25}},
+			{"code":"promote","type":"BASE_APPLY","params":{"cleanupScopeOverlay":true}},
+			{"code":"complete","type":"COMPLETE","params":{}}
+		]
+	}`), release.FinalEffectBase)
+	if err != nil {
+		t.Fatal(err)
+	}
+	steps := template.Steps()
+	if len(steps) != 5 || steps[0].PercentRollout == nil || steps[1].PercentRollout == nil {
+		t.Fatalf("compiled percentage steps = %+v", steps)
+	}
+	if got := steps[1].PercentRollout.Ranges; len(got) != 1 || got[0] != (overlay.BucketRange{Start: 10, End: 49}) {
+		t.Fatalf("canonical second step ranges = %+v", got)
+	}
+	steps[0].PercentRollout.Ranges[0].End = 99
+	if template.Steps()[0].PercentRollout.Ranges[0].End != 9 {
+		t.Fatal("compiled template leaked mutable percentage ranges")
+	}
+}
+
+func TestCompileTemplateRejectsUnsafePercentageRanges(t *testing.T) {
+	t.Parallel()
+	tests := map[string]string{
+		"empty":                 `{"steps":[{"code":"percent","type":"PERCENT_ROLLOUT","params":{"ranges":[]}},{"code":"apply","type":"BASE_APPLY","params":{"cleanupScopeOverlay":true}},{"code":"complete","type":"COMPLETE","params":{}}]}`,
+		"overlap between steps": `{"steps":[{"code":"first","type":"PERCENT_ROLLOUT","params":{"ranges":[{"start":0,"end":20}]}},{"code":"second","type":"PERCENT_ROLLOUT","params":{"ranges":[{"start":20,"end":40}]}},{"code":"apply","type":"BASE_APPLY","params":{"cleanupScopeOverlay":true}},{"code":"complete","type":"COMPLETE","params":{}}]}`,
+		"outside protocol":      `{"steps":[{"code":"percent","type":"PERCENT_ROLLOUT","params":{"ranges":[{"start":0,"end":100}]}},{"code":"apply","type":"BASE_APPLY","params":{"cleanupScopeOverlay":true}},{"code":"complete","type":"COMPLETE","params":{}}]}`,
+	}
+	for name, document := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			if _, err := release.CompileTemplate([]byte(document), release.FinalEffectBase); err == nil {
+				t.Fatal("unsafe percentage template compiled")
+			}
+		})
 	}
 }
 

@@ -43,11 +43,12 @@ const (
 type StepType string
 
 const (
-	StepManualReview StepType = "MANUAL_REVIEW"
-	StepOverlayApply StepType = "OVERLAY_APPLY"
-	StepBaseApply    StepType = "BASE_APPLY"
-	StepCompare      StepType = "COMPARE"
-	StepComplete     StepType = "COMPLETE"
+	StepManualReview   StepType = "MANUAL_REVIEW"
+	StepOverlayApply   StepType = "OVERLAY_APPLY"
+	StepPercentRollout StepType = "PERCENT_ROLLOUT"
+	StepBaseApply      StepType = "BASE_APPLY"
+	StepCompare        StepType = "COMPARE"
+	StepComplete       StepType = "COMPLETE"
 )
 
 type StepStatus string
@@ -166,6 +167,7 @@ type StepState struct {
 	Status             StepStatus
 	RequiredRoles      []string
 	SelfApprovalPolicy SelfApprovalPolicy
+	RolloutRanges      []overlay.BucketRange
 	Approval           *ApprovalState
 	Effect             *StepEffectEnvelope
 	ExecutedAt         *time.Time
@@ -306,9 +308,15 @@ func NewBaseFinalOrder(spec BaseFinalOrderSpec) (*Order, error) {
 	}
 	steps := make([]StepState, len(definitions))
 	for index, definition := range definitions {
-		steps[index] = StepState{Code: definition.Code, Type: definition.Type, Status: StepPending, RequiredRoles: append([]string(nil), definition.RequiredRoles...)}
+		steps[index] = StepState{
+			Code: definition.Code, Type: definition.Type, Status: StepPending,
+			RequiredRoles: append([]string(nil), definition.RequiredRoles...),
+		}
 		if definition.ManualReview != nil {
 			steps[index].SelfApprovalPolicy = definition.ManualReview.SelfApprovalPolicy
+		}
+		if definition.PercentRollout != nil {
+			steps[index].RolloutRanges = append([]overlay.BucketRange(nil), definition.PercentRollout.Ranges...)
 		}
 	}
 	return &Order{
@@ -909,6 +917,7 @@ func cloneOverlayEffectPointer(effect *OverlayEffect) *OverlayEffect {
 
 func cloneStep(step StepState) StepState {
 	step.RequiredRoles = append([]string(nil), step.RequiredRoles...)
+	step.RolloutRanges = append([]overlay.BucketRange(nil), step.RolloutRanges...)
 	if step.Approval != nil {
 		approval := *step.Approval
 		if approval.DecidedAt != nil {

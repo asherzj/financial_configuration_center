@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"io"
 	"strings"
+
+	overlay "github.com/asherzj/financial_configuration_center/internal/overlay/domain"
 )
 
 type FinalEffect string
@@ -33,19 +35,24 @@ type BaseApplyParams struct {
 
 type OverlayApplyParams struct{}
 
+type PercentRolloutParams struct {
+	Ranges []overlay.BucketRange
+}
+
 type CompareParams struct {
 	Mode          string
 	PreviewBucket *int
 }
 
 type StepDefinition struct {
-	Code          string
-	Type          StepType
-	RequiredRoles []string
-	ManualReview  *ManualReviewParams
-	OverlayApply  *OverlayApplyParams
-	BaseApply     *BaseApplyParams
-	Compare       *CompareParams
+	Code           string
+	Type           StepType
+	RequiredRoles  []string
+	ManualReview   *ManualReviewParams
+	OverlayApply   *OverlayApplyParams
+	PercentRollout *PercentRolloutParams
+	BaseApply      *BaseApplyParams
+	Compare        *CompareParams
 }
 
 type CompiledTemplate struct {
@@ -68,7 +75,9 @@ func CompileTemplate(document []byte, finalEffect FinalEffect) (CompiledTemplate
 	}
 	steps := make([]StepDefinition, len(root.Steps))
 	seenCodes := make(map[string]struct{}, len(root.Steps))
-	baseCount, overlayCount, completeCount := 0, 0, 0
+	baseCount, overlayCount, percentCount, completeCount := 0, 0, 0, 0
+	var rolloutUnion []overlay.BucketRange
+	seenBaseApply := false
 	for index, raw := range root.Steps {
 		var envelope struct {
 			Code          string          `json:"code"`
@@ -108,6 +117,7 @@ func CompileTemplate(document []byte, finalEffect FinalEffect) (CompiledTemplate
 			step.ManualReview = &ManualReviewParams{SelfApprovalPolicy: params.SelfApprovalPolicy}
 		case StepBaseApply:
 			baseCount++
+			seenBaseApply = true
 			var params struct {
 				CleanupScopeOverlay bool `json:"cleanupScopeOverlay"`
 			}
@@ -125,6 +135,26 @@ func CompileTemplate(document []byte, finalEffect FinalEffect) (CompiledTemplate
 				return CompiledTemplate{}, fmt.Errorf("compile template step %q params: %w", envelope.Code, err)
 			}
 			step.OverlayApply = &OverlayApplyParams{}
+		case StepPercentRollout:
+			percentCount++
+			if seenBaseApply {
+				return CompiledTemplate{}, fmt.Errorf("compile template step %q: percentage rollout must precede BASE_APPLY", envelope.Code)
+			}
+			var params struct {
+				Ranges []overlay.BucketRange `json:"ranges"`
+			}
+			if err := decodeStrict(envelope.Params, &params); err != nil {
+				return CompiledTemplate{}, fmt.Errorf("compile template step %q params: %w", envelope.Code, err)
+			}
+			canonical, err := overlay.ExpandRolloutRanges(nil, params.Ranges)
+			if err != nil {
+				return CompiledTemplate{}, fmt.Errorf("compile template step %q: %w", envelope.Code, err)
+			}
+			rolloutUnion, err = overlay.ExpandRolloutRanges(rolloutUnion, canonical)
+			if err != nil {
+				return CompiledTemplate{}, fmt.Errorf("compile template step %q: %w", envelope.Code, err)
+			}
+			step.PercentRollout = &PercentRolloutParams{Ranges: canonical}
 		case StepCompare:
 			var params struct {
 				Mode          string `json:"mode"`
@@ -157,8 +187,8 @@ func CompileTemplate(document []byte, finalEffect FinalEffect) (CompiledTemplate
 	if finalEffect == FinalEffectBase && (baseCount != 1 || overlayCount != 0) {
 		return CompiledTemplate{}, errors.New("compile BASE_FINAL template: exactly one BASE_APPLY and no OVERLAY_APPLY are required")
 	}
-	if finalEffect == FinalEffectOverlay && (overlayCount != 1 || baseCount != 0) {
-		return CompiledTemplate{}, errors.New("compile OVERLAY_FINAL template: exactly one OVERLAY_APPLY and no BASE_APPLY are required")
+	if finalEffect == FinalEffectOverlay && (overlayCount != 1 || baseCount != 0 || percentCount != 0) {
+		return CompiledTemplate{}, errors.New("compile OVERLAY_FINAL template: exactly one OVERLAY_APPLY and no BASE_APPLY or PERCENT_ROLLOUT are required")
 	}
 	return CompiledTemplate{finalEffect: finalEffect, steps: steps}, nil
 }
@@ -217,6 +247,11 @@ func cloneStepDefinition(step StepDefinition) StepDefinition {
 	if step.OverlayApply != nil {
 		params := *step.OverlayApply
 		step.OverlayApply = &params
+	}
+	if step.PercentRollout != nil {
+		params := *step.PercentRollout
+		params.Ranges = append([]overlay.BucketRange(nil), step.PercentRollout.Ranges...)
+		step.PercentRollout = &params
 	}
 	if step.Compare != nil {
 		params := *step.Compare
