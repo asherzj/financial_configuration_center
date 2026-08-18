@@ -521,6 +521,68 @@ func TestRealMySQLOverlayApplyAndRollbackTransaction(t *testing.T) {
 	assertCount(t, raw, `SELECT COUNT(*) FROM outbox_events WHERE aggregate_id = '`+created.ID+`'`, 2)
 }
 
+func TestRealMySQLPercentageRolloutTransaction(t *testing.T) {
+	dsn := isolatedDatabase(t)
+	ctx := context.Background()
+	database, err := platformmysql.Open(ctx, platformmysql.Config{DSN: dsn, MaxOpenConns: 4, MaxIdleConns: 2, ConnMaxLifetime: time.Minute, ConnMaxIdleTime: time.Minute})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = database.Close() })
+	raw, err := sql.Open("mysql", dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = raw.Close() })
+	now := time.Date(2026, 8, 19, 16, 0, 0, 0, time.UTC)
+	if _, err := raw.Exec(`
+		INSERT INTO release_templates (
+			code, version, model_code, release_type_code, active_slot, final_effect,
+			template, created_at, created_by
+		) VALUES (
+			'percent-final', 1, 'payment-route-admin', 'percentage', 'A', 'BASE_FINAL',
+			JSON_OBJECT('steps', JSON_ARRAY(
+				JSON_OBJECT('code', 'percent-10', 'type', 'PERCENT_ROLLOUT', 'params', JSON_OBJECT('ranges', JSON_ARRAY(JSON_OBJECT('start', 0, 'end', 9)))),
+				JSON_OBJECT('code', 'promote', 'type', 'BASE_APPLY', 'params', JSON_OBJECT('cleanupScopeOverlay', TRUE)),
+				JSON_OBJECT('code', 'complete', 'type', 'COMPLETE', 'params', JSON_OBJECT())
+			)), ?, 'seed'
+		)
+	`, now); err != nil {
+		t.Fatal(err)
+	}
+	store, err := mysqlstore.New(database)
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := application.NewService(store, &numberedIDs{next: 1200, releaseNumber: "REL-20260819-1200"}, fixedClock{now: now})
+	created, err := service.CreateRelease(ctx, application.CreateReleaseCommand{
+		IdempotencyKey: "percent-create", ModelCode: "payment-route-admin", ReleaseTypeCode: "percentage",
+		Scope: release.Scope{Region: "cn", Environment: "production", Stage: "blue"}, Actor: "operator@example.com",
+		Items: []application.ReleaseDraft{{Action: release.ChangeAdd, After: map[string]string{"route_code": "visa", "priority": "9"}, ExpectedCollectionRevision: 7}},
+	})
+	if err != nil {
+		t.Fatalf("CreateRelease: %v", err)
+	}
+	executed, err := service.Act(ctx, application.ActCommand{
+		OrderID: created.ID, ActionRequestID: "50000000-0000-4000-8000-000000000001",
+		ExpectedRevision: 1, ExpectedCurrentStep: "percent-10", Action: application.ActionExecute, Actor: "operator@example.com",
+	})
+	if err != nil {
+		t.Fatalf("execute percentage: %v", err)
+	}
+	assertCount(t, raw, `SELECT COUNT(*) FROM configuration_overlays WHERE release_order_id = '`+created.ID+`' AND stage = 'blue' AND JSON_EXTRACT(rollout_ranges, '$[0].start') = 0 AND JSON_EXTRACT(rollout_ranges, '$[0].end') = 9`, 1)
+	assertCount(t, raw, `SELECT COUNT(*) FROM configuration_versions WHERE collection_name = 'payment_routes' AND environment = 'production' AND config_revision = 8`, 1)
+	assertCount(t, raw, `SELECT COUNT(*) FROM release_step_states WHERE release_order_id = '`+created.ID+`' AND JSON_EXTRACT(effect, '$.percent.appliedRevision') = 8`, 1)
+	assertCount(t, raw, `SELECT COUNT(*) FROM audit_records WHERE resource_id = '`+created.ID+`' AND action = 'PERCENT_ROLLOUT'`, 1)
+	advanced, err := service.Act(ctx, application.ActCommand{
+		OrderID: created.ID, ActionRequestID: "50000000-0000-4000-8000-000000000002",
+		ExpectedRevision: executed.Revision, ExpectedCurrentStep: "percent-10", Action: application.ActionAdvance, Actor: "operator@example.com",
+	})
+	if err != nil || advanced.CurrentStep != release.StepBaseApply || advanced.CurrentStepCode != "promote" {
+		t.Fatalf("reload and advance percentage order: view=%+v error=%v", advanced, err)
+	}
+}
+
 func TestRealMySQLHTTPWalkingSkeleton(t *testing.T) {
 	dsn := isolatedDatabase(t)
 	ctx := context.Background()

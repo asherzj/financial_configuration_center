@@ -141,6 +141,49 @@ func TestOverlayFinalApplicationAppliesAndRollsBackAtomically(t *testing.T) {
 	}
 }
 
+func TestPercentageRolloutApplicationPersistsTemporaryRule(t *testing.T) {
+	t.Parallel()
+	definition, model := compiledCatalog(t)
+	store := newFakeUnitOfWork(definition, model)
+	template, err := release.CompileTemplate([]byte(`{"steps":[
+		{"code":"percent-10","type":"PERCENT_ROLLOUT","params":{"ranges":[{"start":0,"end":9}]}},
+		{"code":"promote","type":"BASE_APPLY","params":{"cleanupScopeOverlay":true}},
+		{"code":"complete","type":"COMPLETE","params":{}}
+	]}`), release.FinalEffectBase)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store.template = application.TemplateRef{Code: "percent-final", Version: 1, ReleaseTypeCode: "percentage", Definition: template}
+	service := application.NewService(store, &sequenceIDs{values: []string{"percent-order", "percent-item"}}, fixedClock{now: time.Date(2026, 8, 19, 15, 0, 0, 0, time.UTC)})
+
+	created, err := service.CreateRelease(context.Background(), application.CreateReleaseCommand{
+		IdempotencyKey: "create-percent", ModelCode: model.Code(), ReleaseTypeCode: "percentage",
+		Scope: release.Scope{Region: "cn", Environment: "production", Stage: "blue"}, Actor: "operator",
+		Items: []application.ReleaseDraft{{
+			Action: release.ChangeAdd, After: map[string]string{"route_code": "visa", "priority": "9"},
+			ExpectedCollectionRevision: 7,
+		}},
+	})
+	if err != nil {
+		t.Fatalf("CreateRelease: %v", err)
+	}
+	if created.CurrentStep != release.StepPercentRollout || !created.CanExecute {
+		t.Fatalf("created percentage order = %+v", created)
+	}
+	executed, err := service.Act(context.Background(), application.ActCommand{
+		OrderID: created.ID, ActionRequestID: "execute-percent", ExpectedRevision: 1,
+		ExpectedCurrentStep: "percent-10", Action: application.ActionExecute, Actor: "operator",
+	})
+	if err != nil {
+		t.Fatalf("execute percentage: %v", err)
+	}
+	key, _ := catalog.EncodeKey([]string{"route_code"}, map[string]string{"route_code": "visa"})
+	rule := store.overlays["production"]["blue"][key]
+	if executed.CurrentStepStatus != release.StepExecuted || rule == nil || rule.ReleaseOrderID != created.ID || !reflect.DeepEqual(rule.RolloutRanges, []overlay.BucketRange{{Start: 0, End: 9}}) || store.revisions["production"] != 8 || store.outboxEvents != 1 {
+		t.Fatalf("percentage facts: view=%+v rule=%+v revision=%d outbox=%d", executed, rule, store.revisions["production"], store.outboxEvents)
+	}
+}
+
 func TestCreateBaseFinalRejectsStalePageRevision(t *testing.T) {
 	t.Parallel()
 
@@ -431,6 +474,31 @@ func (transaction *fakeTransaction) ApplyOverlayEffect(_ context.Context, _ stri
 		stages[effect.Scope.Stage][change.RecordKey] = &cloned
 	}
 	transaction.revisions[effect.Scope.Environment] = effect.AppliedRevision
+	transaction.outboxEvents++
+	return nil
+}
+
+func (transaction *fakeTransaction) ApplyPercentEffect(_ context.Context, _ string, effect release.PercentEffect) error {
+	return transaction.applyRuleChanges(effect.Scope, effect.PreviousRevision, effect.AppliedRevision, effect.Changes)
+}
+
+func (transaction *fakeTransaction) applyRuleChanges(scope release.Scope, previousRevision, appliedRevision catalog.ConfigRevision, changes []release.OverlayRuleChange) error {
+	if transaction.revisions[scope.Environment] != previousRevision {
+		return release.ErrAborted
+	}
+	stages := transaction.overlays[scope.Environment]
+	if stages[scope.Stage] == nil {
+		stages[scope.Stage] = make(map[string]*overlay.Rule)
+	}
+	for _, change := range changes {
+		if change.NewRule == nil {
+			delete(stages[scope.Stage], change.RecordKey)
+			continue
+		}
+		cloned := cloneOverlayRule(*change.NewRule)
+		stages[scope.Stage][change.RecordKey] = &cloned
+	}
+	transaction.revisions[scope.Environment] = appliedRevision
 	transaction.outboxEvents++
 	return nil
 }

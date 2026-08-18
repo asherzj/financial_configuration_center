@@ -315,7 +315,7 @@ func setCapabilities(view *application.OrderView) {
 		view.CanApprove, view.CanReject = true, true
 	case view.CurrentStepStatus == release.StepApproved || view.CurrentStepStatus == release.StepExecuted:
 		view.CanAdvance = view.CurrentStep != release.StepComplete
-	case (view.CurrentStep == release.StepBaseApply || view.CurrentStep == release.StepComplete) && view.CurrentStepStatus == release.StepPending:
+	case (view.CurrentStep == release.StepBaseApply || view.CurrentStep == release.StepPercentRollout || view.CurrentStep == release.StepComplete) && view.CurrentStepStatus == release.StepPending:
 		view.CanExecute = true
 	}
 }
@@ -500,7 +500,9 @@ func (transaction *transaction) LoadOrderForUpdate(ctx context.Context, orderID 
 			if err := json.Unmarshal(row.Effect, effect); err != nil {
 				return nil, fmt.Errorf("decode step %q effect: %w", row.StepCode, err)
 			}
-			if effect.EffectVersion != 1 || effect.Overlay == nil || effect.Overlay.EffectVersion != 1 {
+			validOverlay := effect.EffectVersion == 1 && effect.Overlay != nil && effect.Percent == nil && effect.Overlay.EffectVersion == 1
+			validPercent := effect.EffectVersion == 1 && effect.Percent != nil && effect.Overlay == nil && effect.Percent.EffectVersion == 1
+			if !validOverlay && !validPercent {
 				return nil, fmt.Errorf("decode step %q effect: unsupported effect envelope", row.StepCode)
 			}
 		}
@@ -655,6 +657,21 @@ func (transaction *transaction) ApplyOverlayEffect(ctx context.Context, orderID 
 	if effect.EffectVersion != 1 || effect.AppliedRevision <= effect.PreviousRevision || len(effect.Changes) == 0 {
 		return fmt.Errorf("invalid overlay effect")
 	}
+	return transaction.applyOverlayRuleChanges(ctx, orderID, effect, "OVERLAY_APPLY")
+}
+
+func (transaction *transaction) ApplyPercentEffect(ctx context.Context, orderID string, effect release.PercentEffect) error {
+	if effect.EffectVersion != 1 || effect.AppliedRevision <= effect.PreviousRevision || len(effect.AddedRanges) == 0 || len(effect.Changes) == 0 {
+		return fmt.Errorf("invalid percentage effect")
+	}
+	return transaction.applyOverlayRuleChanges(ctx, orderID, release.OverlayEffect{
+		EffectVersion: effect.EffectVersion, Collection: effect.Collection, Scope: effect.Scope,
+		PreviousRevision: effect.PreviousRevision, AppliedRevision: effect.AppliedRevision,
+		Changes: effect.Changes, ExecutedAt: effect.ExecutedAt, ExecutedBy: effect.ExecutedBy,
+	}, "PERCENT_ROLLOUT")
+}
+
+func (transaction *transaction) applyOverlayRuleChanges(ctx context.Context, orderID string, effect release.OverlayEffect, auditAction string) error {
 	for _, change := range effect.Changes {
 		if change.NewRule == nil {
 			if err := transaction.db.WithContext(ctx).Exec(`
@@ -725,7 +742,7 @@ func (transaction *transaction) ApplyOverlayEffect(ctx context.Context, orderID 
 		effect.ExecutedAt, effect.ExecutedAt, effect.ExecutedAt).Error; err != nil {
 		return err
 	}
-	return transaction.insertAudit(ctx, effect.ExecutedAt, effect.ExecutedBy, "OVERLAY_APPLY", "RELEASE_ORDER", orderID, effect.Scope, orderID)
+	return transaction.insertAudit(ctx, effect.ExecutedAt, effect.ExecutedBy, auditAction, "RELEASE_ORDER", orderID, effect.Scope, orderID)
 }
 
 func (transaction *transaction) upsertOverlayRule(ctx context.Context, rule overlay.Rule) error {

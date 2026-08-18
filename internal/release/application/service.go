@@ -53,6 +53,7 @@ type Transaction interface {
 	AllocateConfigRevision(context.Context) (catalog.ConfigRevision, error)
 	ApplyBaseEffect(context.Context, string, release.BaseEffect, catalog.ConfigRevision) error
 	ApplyOverlayEffect(context.Context, string, release.OverlayEffect) error
+	ApplyPercentEffect(context.Context, string, release.PercentEffect) error
 	SaveOrder(context.Context, *release.Order) error
 	RecordAction(context.Context, ActionRecord) error
 	InsertActionResult(context.Context, string, string, string, OrderView, time.Time) error
@@ -643,6 +644,22 @@ func (service *Service) Act(ctx context.Context, command ActCommand) (OrderView,
 				if err := transaction.ApplyOverlayEffect(ctx, order.ID(), effect); err != nil {
 					return fmt.Errorf("apply overlay effect: %w", err)
 				}
+			case release.StepPercentRollout:
+				authority, err := loadOverlayAuthority(ctx, transaction, order)
+				if err != nil {
+					return err
+				}
+				revision, err := transaction.AllocateConfigRevision(ctx)
+				if err != nil {
+					return fmt.Errorf("allocate config revision: %w", err)
+				}
+				effect, err := order.ExecutePercentRollout(authority, revision, command.Actor, now)
+				if err != nil {
+					return err
+				}
+				if err := transaction.ApplyPercentEffect(ctx, order.ID(), effect); err != nil {
+					return fmt.Errorf("apply percentage effect: %w", err)
+				}
 			case release.StepComplete:
 				if err := order.Complete(command.ExpectedRevision, command.Actor, now); err != nil {
 					return err
@@ -792,7 +809,7 @@ func applyCapabilities(view *OrderView) {
 	case view.CurrentStepStatus == release.StepApproved || view.CurrentStepStatus == release.StepExecuted:
 		view.CanAdvance = view.CurrentStep != release.StepComplete
 		view.CanRollback = view.CurrentStep == release.StepOverlayApply && view.CurrentStepStatus == release.StepExecuted
-	case (view.CurrentStep == release.StepBaseApply || view.CurrentStep == release.StepOverlayApply || view.CurrentStep == release.StepComplete) && view.CurrentStepStatus == release.StepPending:
+	case (view.CurrentStep == release.StepBaseApply || view.CurrentStep == release.StepOverlayApply || view.CurrentStep == release.StepPercentRollout || view.CurrentStep == release.StepComplete) && view.CurrentStepStatus == release.StepPending:
 		view.CanExecute = true
 	}
 }

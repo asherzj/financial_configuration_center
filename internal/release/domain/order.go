@@ -199,9 +199,22 @@ type OverlayEffect struct {
 	ExecutedBy       string                 `json:"executedBy"`
 }
 
+type PercentEffect struct {
+	EffectVersion    int32                  `json:"effectVersion"`
+	Collection       string                 `json:"collection"`
+	Scope            Scope                  `json:"scope"`
+	PreviousRevision catalog.ConfigRevision `json:"previousRevision"`
+	AppliedRevision  catalog.ConfigRevision `json:"appliedRevision"`
+	AddedRanges      []overlay.BucketRange  `json:"addedRanges"`
+	Changes          []OverlayRuleChange    `json:"changes"`
+	ExecutedAt       time.Time              `json:"executedAt"`
+	ExecutedBy       string                 `json:"executedBy"`
+}
+
 type StepEffectEnvelope struct {
 	EffectVersion int32          `json:"effectVersion"`
 	Overlay       *OverlayEffect `json:"overlay,omitempty"`
+	Percent       *PercentEffect `json:"percent,omitempty"`
 }
 
 type BaseAuthority struct {
@@ -611,6 +624,88 @@ func (order *Order) ExecuteOverlay(authority OverlayAuthority, newRevision catal
 	return *cloneOverlayEffectPointer(&effect), nil
 }
 
+func (order *Order) ExecutePercentRollout(authority OverlayAuthority, newRevision catalog.ConfigRevision, actor string, at time.Time) (PercentEffect, error) {
+	if err := order.requireCurrent(StepPercentRollout, StepPending); err != nil {
+		return PercentEffect{}, err
+	}
+	step := &order.steps[order.currentStep]
+	if order.scope.Stage == "" || strings.TrimSpace(actor) == "" || at.IsZero() || newRevision <= authority.CollectionRevision || len(step.RolloutRanges) == 0 {
+		return PercentEffect{}, fmt.Errorf("%w: percentage rollout requires full scope, ranges, actor, time, and a new revision", ErrInvalid)
+	}
+	expectedRevision := order.items[0].ExpectedCollectionRevision
+	for index := order.currentStep - 1; index >= 0; index-- {
+		if effect := order.steps[index].Effect; effect != nil && effect.Percent != nil {
+			expectedRevision = effect.Percent.AppliedRevision
+			break
+		}
+	}
+	if authority.CollectionRevision != expectedRevision {
+		return PercentEffect{}, fmt.Errorf("%w: collection revision is %d, expected %d", ErrAborted, authority.CollectionRevision, expectedRevision)
+	}
+
+	executionAt := at.UTC()
+	changes := make([]OverlayRuleChange, len(order.items))
+	for index, item := range order.items {
+		base := authority.BaseRecords[item.RecordKey]
+		if item.ExpectedRecordRevision == 0 {
+			if base != nil {
+				return PercentEffect{}, fmt.Errorf("%w: base record %q now exists", ErrAborted, item.RecordKey)
+			}
+		} else if base == nil || base.ConfigRevision != item.ExpectedRecordRevision {
+			return PercentEffect{}, fmt.Errorf("%w: base record %q revision changed", ErrAborted, item.RecordKey)
+		}
+		previous := cloneOverlayRulePointer(authority.Rules[item.RecordKey])
+		if previous != nil {
+			if previous.Collection != item.Collection || previous.RecordKey != item.RecordKey || previous.Scope != overlayScope(order.scope) {
+				return PercentEffect{}, fmt.Errorf("%w: current rollout rule identity is inconsistent", ErrInvalid)
+			}
+			if previous.ReleaseOrderID != order.id {
+				return PercentEffect{}, fmt.Errorf("%w: rollout rule %q belongs to another order", ErrAborted, item.RecordKey)
+			}
+		}
+		currentRanges := []overlay.BucketRange(nil)
+		if previous != nil {
+			currentRanges = previous.RolloutRanges
+		}
+		ranges, err := overlay.ExpandRolloutRanges(currentRanges, step.RolloutRanges)
+		if err != nil {
+			return PercentEffect{}, fmt.Errorf("%w: expand item %q ranges: %v", ErrInvalid, item.RecordKey, err)
+		}
+		ruleID := item.ID
+		createdAt, createdBy := executionAt, actor
+		if previous != nil {
+			ruleID, createdAt, createdBy = previous.ID, previous.CreatedAt, previous.CreatedBy
+		}
+		activation := newRevision
+		compiled, err := overlay.CompileRule(overlay.RuleSpec{
+			ID: ruleID, Collection: item.Collection, Scope: overlayScope(order.scope), RecordKey: item.RecordKey,
+			Base: base, Desired: item.After, RolloutRanges: ranges, ConfigRevision: newRevision,
+			ReleaseOrderID: order.id, ActivatedRevision: &activation, ActivatedAt: &executionAt,
+			CreatedAt: createdAt, CreatedBy: createdBy, UpdatedAt: executionAt, UpdatedBy: actor,
+		})
+		if err != nil {
+			return PercentEffect{}, fmt.Errorf("%w: compile rollout item %q: %v", ErrInvalid, item.RecordKey, err)
+		}
+		if previous != nil && (previous.Action != compiled.Action || !equalData(previous.Content, compiled.Content)) {
+			return PercentEffect{}, fmt.Errorf("%w: order-owned rollout rule %q drifted", ErrAborted, item.RecordKey)
+		}
+		changes[index] = OverlayRuleChange{RecordKey: item.RecordKey, PreviousRule: previous, NewRule: cloneOverlayRulePointer(&compiled)}
+	}
+
+	effect := PercentEffect{
+		EffectVersion: 1, Collection: order.items[0].Collection, Scope: order.scope,
+		PreviousRevision: authority.CollectionRevision, AppliedRevision: newRevision,
+		AddedRanges: append([]overlay.BucketRange(nil), step.RolloutRanges...), Changes: changes,
+		ExecutedAt: executionAt, ExecutedBy: actor,
+	}
+	step.Status = StepExecuted
+	step.ExecutedAt = timePointer(executionAt)
+	step.ExecutedBy = actor
+	step.Effect = &StepEffectEnvelope{EffectVersion: 1, Percent: clonePercentEffectPointer(&effect)}
+	order.bump(actor, executionAt)
+	return *clonePercentEffectPointer(&effect), nil
+}
+
 func (order *Order) RollbackOverlay(expected EntityRevision, currentCollectionRevision, newRevision catalog.ConfigRevision, actor string, at time.Time) (OverlayEffect, error) {
 	if order.revision != expected {
 		return OverlayEffect{}, fmt.Errorf("%w: order revision is %d, expected %d", ErrAborted, order.revision, expected)
@@ -915,6 +1010,21 @@ func cloneOverlayEffectPointer(effect *OverlayEffect) *OverlayEffect {
 	return &cloned
 }
 
+func clonePercentEffectPointer(effect *PercentEffect) *PercentEffect {
+	if effect == nil {
+		return nil
+	}
+	cloned := *effect
+	cloned.AddedRanges = append([]overlay.BucketRange(nil), effect.AddedRanges...)
+	cloned.Changes = make([]OverlayRuleChange, len(effect.Changes))
+	for index, change := range effect.Changes {
+		cloned.Changes[index] = OverlayRuleChange{
+			RecordKey: change.RecordKey, PreviousRule: cloneOverlayRulePointer(change.PreviousRule), NewRule: cloneOverlayRulePointer(change.NewRule),
+		}
+	}
+	return &cloned
+}
+
 func cloneStep(step StepState) StepState {
 	step.RequiredRoles = append([]string(nil), step.RequiredRoles...)
 	step.RolloutRanges = append([]overlay.BucketRange(nil), step.RolloutRanges...)
@@ -934,9 +1044,22 @@ func cloneStep(step StepState) StepState {
 	if step.Effect != nil {
 		effect := *step.Effect
 		effect.Overlay = cloneOverlayEffectPointer(step.Effect.Overlay)
+		effect.Percent = clonePercentEffectPointer(step.Effect.Percent)
 		step.Effect = &effect
 	}
 	return step
+}
+
+func equalData(left, right map[string]string) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for key, value := range left {
+		if right[key] != value {
+			return false
+		}
+	}
+	return true
 }
 
 func hasRequiredRole(actual, required []string) bool {
