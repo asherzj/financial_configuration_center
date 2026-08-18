@@ -7,11 +7,14 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"runtime"
+	"sync"
 	"testing"
 	"time"
 
@@ -29,6 +32,110 @@ import (
 	"github.com/asherzj/financial_configuration_center/sdk/finconfig"
 	drivermysql "github.com/go-sql-driver/mysql"
 )
+
+func TestRealMySQLReleaseConcurrencyAndIdempotency(t *testing.T) {
+	dsn := isolatedDatabase(t)
+	ctx := context.Background()
+	database, err := platformmysql.Open(ctx, platformmysql.Config{DSN: dsn, MaxOpenConns: 12, MaxIdleConns: 12, ConnMaxLifetime: time.Minute, ConnMaxIdleTime: time.Minute})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = database.Close() })
+	store, err := mysqlstore.New(database)
+	if err != nil {
+		t.Fatal(err)
+	}
+	clock := fixedClock{now: time.Date(2026, 8, 19, 8, 0, 0, 0, time.UTC)}
+	service := application.NewService(store, &numberedIDs{next: 100, releaseNumber: "REL-20260819-0100"}, clock)
+	create := baseCreate("create-visa", "actor", "production", "visa", 7)
+	created, err := service.CreateBaseFinal(ctx, create)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if replayed, err := service.CreateBaseFinal(ctx, create); err != nil || replayed != created {
+		t.Fatalf("create replay = %+v, %v; want %+v", replayed, err, created)
+	}
+	changed := create
+	changed.Items = []application.AddDraft{{Data: map[string]string{"route_code": "visa", "priority": "2"}, ExpectedCollectionRevision: 7}}
+	if _, err := service.CreateBaseFinal(ctx, changed); !errors.Is(err, release.ErrIdempotencyKeyReused) {
+		t.Fatalf("changed create replay = %v", err)
+	}
+
+	action := application.ActCommand{OrderID: created.ID, ActionRequestID: "action-visa", ExpectedRevision: 1, ExpectedCurrentStep: release.StepBaseApply, Action: application.ActionExecute, Actor: "actor"}
+	type actionResult struct {
+		view application.OrderView
+		err  error
+	}
+	actions := make(chan actionResult, 2)
+	var wait sync.WaitGroup
+	for range 2 {
+		wait.Add(1)
+		go func() {
+			defer wait.Done()
+			view, actionErr := service.Act(ctx, action)
+			actions <- actionResult{view: view, err: actionErr}
+		}()
+	}
+	wait.Wait()
+	close(actions)
+	var first application.OrderView
+	for result := range actions {
+		if result.err != nil {
+			t.Fatalf("concurrent action replay: %v", result.err)
+		}
+		if first.ID == "" {
+			first = result.view
+		} else if result.view != first {
+			t.Fatalf("action results differ: %+v and %+v", first, result.view)
+		}
+	}
+	if _, err := service.Act(ctx, application.ActCommand{OrderID: created.ID, ActionRequestID: "new-stale-action", ExpectedRevision: 1, ExpectedCurrentStep: release.StepBaseApply, Action: application.ActionExecute, Actor: "actor"}); !errors.Is(err, release.ErrAborted) {
+		t.Fatalf("new stale action = %v", err)
+	}
+
+	assertDatabaseCount(t, dsn, `SELECT COUNT(*) FROM configuration_records WHERE environment = 'production' AND record_key IS NOT NULL`, 1)
+	assertDatabaseCount(t, dsn, `SELECT COUNT(*) FROM outbox_events`, 1)
+	assertDatabaseCount(t, dsn, `SELECT COUNT(*) FROM release_action_requests WHERE release_order_id = '`+created.ID+`'`, 1)
+
+	sameTarget := baseCreate("", "", "production", "mastercard", 8)
+	conflictResults := concurrentCreates(ctx,
+		application.NewService(store, &numberedIDs{next: 200, releaseNumber: "REL-20260819-0200"}, clock), withRequestIdentity(sameTarget, "create-mastercard-a", "actor-a"),
+		application.NewService(store, &numberedIDs{next: 300, releaseNumber: "REL-20260819-0300"}, clock), withRequestIdentity(sameTarget, "create-mastercard-b", "actor-b"),
+	)
+	var succeeded, conflicted int
+	for _, result := range conflictResults {
+		switch {
+		case result.err == nil:
+			succeeded++
+		case errors.Is(result.err, release.ErrActiveConflict):
+			conflicted++
+		default:
+			t.Fatalf("same-target create = %v", result.err)
+		}
+	}
+	if succeeded != 1 || conflicted != 1 {
+		t.Fatalf("same-target outcomes: success=%d conflict=%d", succeeded, conflicted)
+	}
+
+	environmentResults := concurrentCreates(ctx,
+		application.NewService(store, &numberedIDs{next: 400, releaseNumber: "REL-20260819-0400"}, clock), baseCreate("create-amex-prod", "actor-prod", "production", "amex", 8),
+		application.NewService(store, &numberedIDs{next: 500, releaseNumber: "REL-20260819-0500"}, clock), baseCreate("create-amex-stage", "actor-stage", "staging", "amex", 7),
+	)
+	for _, result := range environmentResults {
+		if result.err != nil {
+			t.Fatalf("different-environment create: %v", result.err)
+		}
+	}
+
+	replayCommand := baseCreate("create-discover", "actor-replay", "production", "discover", 8)
+	replayResults := concurrentCreates(ctx,
+		application.NewService(store, &numberedIDs{next: 600, releaseNumber: "REL-20260819-0600"}, clock), replayCommand,
+		application.NewService(store, &numberedIDs{next: 700, releaseNumber: "REL-20260819-0700"}, clock), replayCommand,
+	)
+	if replayResults[0].err != nil || replayResults[1].err != nil || replayResults[0].view.ID != replayResults[1].view.ID {
+		t.Fatalf("concurrent create replay = %+v", replayResults)
+	}
+}
 
 func TestRealMySQLHTTPWalkingSkeleton(t *testing.T) {
 	dsn := isolatedDatabase(t)
@@ -341,6 +448,60 @@ func assertCount(t *testing.T, db *sql.DB, query string, want int) {
 	}
 }
 
+type createResult struct {
+	view application.OrderView
+	err  error
+}
+
+func concurrentCreates(ctx context.Context, firstService *application.Service, firstCommand application.CreateBaseFinalCommand, secondService *application.Service, secondCommand application.CreateBaseFinalCommand) []createResult {
+	start := make(chan struct{})
+	results := make(chan createResult, 2)
+	var wait sync.WaitGroup
+	for _, input := range []struct {
+		service *application.Service
+		command application.CreateBaseFinalCommand
+	}{{firstService, firstCommand}, {secondService, secondCommand}} {
+		wait.Add(1)
+		go func() {
+			defer wait.Done()
+			<-start
+			view, err := input.service.CreateBaseFinal(ctx, input.command)
+			results <- createResult{view: view, err: err}
+		}()
+	}
+	close(start)
+	wait.Wait()
+	close(results)
+	collected := make([]createResult, 0, 2)
+	for result := range results {
+		collected = append(collected, result)
+	}
+	return collected
+}
+
+func baseCreate(idempotencyKey, actor, environment, route string, collectionRevision catalog.ConfigRevision) application.CreateBaseFinalCommand {
+	return application.CreateBaseFinalCommand{
+		IdempotencyKey: idempotencyKey, ModelCode: "payment-route-admin", Scope: release.Scope{Region: "cn", Environment: environment}, Actor: actor,
+		Items: []application.AddDraft{{Data: map[string]string{"route_code": route, "priority": "1"}, ExpectedCollectionRevision: collectionRevision}},
+	}
+}
+
+func withRequestIdentity(command application.CreateBaseFinalCommand, idempotencyKey, actor string) application.CreateBaseFinalCommand {
+	command.IdempotencyKey = idempotencyKey
+	command.Actor = actor
+	return command
+}
+
+func assertDatabaseCount(t *testing.T, dsn, query string, want int) {
+	t.Helper()
+	database, err := sql.Open("mysql", dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	assertCount(t, database, query, want)
+}
+
 type fixedClock struct{ now time.Time }
 
 func (clock fixedClock) Now() time.Time { return clock.now }
@@ -357,6 +518,18 @@ func (ids *ids) NewID() string {
 }
 
 func (*ids) NewReleaseNumber(time.Time) string { return "REL-20260819-0001" }
+
+type numberedIDs struct {
+	next          uint64
+	releaseNumber string
+}
+
+func (ids *numberedIDs) NewID() string {
+	ids.next++
+	return fmt.Sprintf("00000000-0000-4000-8000-%012d", ids.next)
+}
+
+func (ids *numberedIDs) NewReleaseNumber(time.Time) string { return ids.releaseNumber }
 
 type httpActor struct{}
 

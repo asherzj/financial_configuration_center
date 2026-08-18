@@ -1,6 +1,6 @@
 # FC-003 Concurrency and durability
 
-- Status: blocked
+- Status: in-progress
 - Blocked by: FC-002
 - Spec: acceptance scenarios 3, 4, 5, 13
 

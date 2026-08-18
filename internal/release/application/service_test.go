@@ -95,6 +95,57 @@ func TestCreateBaseFinalRejectsStalePageRevision(t *testing.T) {
 	}
 }
 
+func TestCreateAndActionRequestsAreReplaySafe(t *testing.T) {
+	t.Parallel()
+
+	definition, model := compiledCatalog(t)
+	store := newFakeUnitOfWork(definition, model)
+	service := application.NewService(store, &sequenceIDs{values: []string{"order-1", "item-1", "order-2", "item-2"}}, fixedClock{now: time.Now().UTC()})
+	create := application.CreateBaseFinalCommand{
+		IdempotencyKey: "create-request", ModelCode: model.Code(), Scope: release.Scope{Region: "cn", Environment: "production"}, Actor: "actor",
+		Items: []application.AddDraft{{Data: map[string]string{"route_code": "visa", "priority": "1"}, ExpectedCollectionRevision: 7}},
+	}
+	created, err := service.CreateBaseFinal(context.Background(), create)
+	if err != nil {
+		t.Fatal(err)
+	}
+	replayedCreate, err := service.CreateBaseFinal(context.Background(), create)
+	if err != nil {
+		t.Fatalf("replay create: %v", err)
+	}
+	if replayedCreate != created || len(store.orders) != 1 {
+		t.Fatalf("create replay = %+v, orders = %d; want %+v, 1", replayedCreate, len(store.orders), created)
+	}
+	changedCreate := create
+	changedCreate.Items = []application.AddDraft{{Data: map[string]string{"route_code": "visa", "priority": "2"}, ExpectedCollectionRevision: 7}}
+	if _, err := service.CreateBaseFinal(context.Background(), changedCreate); !errors.Is(err, release.ErrIdempotencyKeyReused) {
+		t.Fatalf("changed request with reused create key = %v, want ErrIdempotencyKeyReused", err)
+	}
+
+	action := application.ActCommand{OrderID: created.ID, ActionRequestID: "action-request", ExpectedRevision: 1, ExpectedCurrentStep: release.StepBaseApply, Action: application.ActionExecute, Actor: "actor"}
+	executed, err := service.Act(context.Background(), action)
+	if err != nil {
+		t.Fatal(err)
+	}
+	replayedAction, err := service.Act(context.Background(), action)
+	if err != nil {
+		t.Fatalf("replay action: %v", err)
+	}
+	if replayedAction != executed || store.outboxEvents != 1 {
+		t.Fatalf("action replay = %+v, outbox = %d; want %+v, 1", replayedAction, store.outboxEvents, executed)
+	}
+
+	action.Action = application.ActionAdvance
+	if _, err := service.Act(context.Background(), action); !errors.Is(err, release.ErrIdempotencyKeyReused) {
+		t.Fatalf("changed request with reused action ID = %v, want ErrIdempotencyKeyReused", err)
+	}
+	action.ActionRequestID = "new-stale-action"
+	action.Action = application.ActionExecute
+	if _, err := service.Act(context.Background(), action); !errors.Is(err, release.ErrAborted) {
+		t.Fatalf("new action with stale authority = %v, want ErrAborted", err)
+	}
+}
+
 type fixedClock struct{ now time.Time }
 
 func (clock fixedClock) Now() time.Time { return clock.now }
@@ -113,13 +164,15 @@ func (ids *sequenceIDs) NewID() string {
 func (ids *sequenceIDs) NewReleaseNumber(time.Time) string { return "REL-20260819-0001" }
 
 type fakeUnitOfWork struct {
-	definition   catalog.CollectionDefinition
-	model        catalog.CompiledModel
-	revisions    map[string]catalog.ConfigRevision
-	records      map[string]map[string]catalog.ConfigurationRecord
-	orders       map[string]*release.Order
-	global       catalog.ConfigRevision
-	outboxEvents int
+	definition    catalog.CollectionDefinition
+	model         catalog.CompiledModel
+	revisions     map[string]catalog.ConfigRevision
+	records       map[string]map[string]catalog.ConfigurationRecord
+	orders        map[string]*release.Order
+	createResults map[string]application.StoredRequestResult
+	actionResults map[string]application.StoredRequestResult
+	global        catalog.ConfigRevision
+	outboxEvents  int
 }
 
 func newFakeUnitOfWork(definition catalog.CollectionDefinition, model catalog.CompiledModel) *fakeUnitOfWork {
@@ -131,8 +184,10 @@ func newFakeUnitOfWork(definition catalog.CollectionDefinition, model catalog.Co
 			"production": {},
 			"staging":    {},
 		},
-		orders: make(map[string]*release.Order),
-		global: 7,
+		orders:        make(map[string]*release.Order),
+		createResults: make(map[string]application.StoredRequestResult),
+		actionResults: make(map[string]application.StoredRequestResult),
+		global:        7,
 	}
 }
 
@@ -162,11 +217,18 @@ func (transaction *fakeTransaction) LoadBaseAuthority(_ context.Context, collect
 	return authority, nil
 }
 
+func (transaction *fakeTransaction) FindCreateResult(_ context.Context, actor, idempotencyKey string) (application.StoredRequestResult, bool, error) {
+	result, found := transaction.createResults[actor+"\x00"+idempotencyKey]
+	return result, found, nil
+}
+
 func (transaction *fakeTransaction) InsertOrder(_ context.Context, order *release.Order) error {
 	if _, exists := transaction.orders[order.ID()]; exists {
 		return fmt.Errorf("duplicate order")
 	}
 	transaction.orders[order.ID()] = order.Clone()
+	state := order.State()
+	transaction.createResults[state.CreatedBy+"\x00"+state.IdempotencyKey] = application.StoredRequestResult{RequestDigest: state.RequestDigest, Result: application.OrderView{ID: state.ID, Status: state.Status, CurrentStep: state.Steps[state.CurrentStep].Type, Revision: state.Revision}}
 	return nil
 }
 
@@ -176,6 +238,11 @@ func (transaction *fakeTransaction) LoadOrderForUpdate(_ context.Context, orderI
 		return nil, fmt.Errorf("order not found")
 	}
 	return order.Clone(), nil
+}
+
+func (transaction *fakeTransaction) FindActionResult(_ context.Context, orderID, actionRequestID string) (application.StoredRequestResult, bool, error) {
+	result, found := transaction.actionResults[orderID+"\x00"+actionRequestID]
+	return result, found, nil
 }
 
 func (transaction *fakeTransaction) AllocateConfigRevision(context.Context) (catalog.ConfigRevision, error) {
@@ -197,6 +264,11 @@ func (transaction *fakeTransaction) ApplyBaseEffect(_ context.Context, orderID s
 
 func (transaction *fakeTransaction) SaveOrder(_ context.Context, order *release.Order) error {
 	transaction.orders[order.ID()] = order.Clone()
+	return nil
+}
+
+func (transaction *fakeTransaction) InsertActionResult(_ context.Context, orderID, actionRequestID, requestDigest string, result application.OrderView, _ time.Time) error {
+	transaction.actionResults[orderID+"\x00"+actionRequestID] = application.StoredRequestResult{RequestDigest: requestDigest, Result: result}
 	return nil
 }
 

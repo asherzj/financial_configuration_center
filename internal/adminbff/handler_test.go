@@ -78,6 +78,20 @@ func TestBFFRequiresAuthenticationAndStrictJSON(t *testing.T) {
 	}
 }
 
+func TestBFFReturnsStableIdempotencyError(t *testing.T) {
+	t.Parallel()
+	handler, err := adminbff.New(&queryStub{}, &releaseStub{actErr: release.ErrIdempotencyKeyReused}, authenticator{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	response := serveJSON(t, handler, http.MethodPost, "/api/v1/releases/order/actions", "same-id", map[string]any{
+		"action": "EXECUTE", "expectedOrderRevision": 1, "expectedCurrentStep": "BASE_APPLY",
+	})
+	if response.Code != http.StatusConflict || !bytes.Contains(response.Body.Bytes(), []byte(`"code":"IDEMPOTENCY_KEY_REUSED"`)) {
+		t.Fatalf("response = %d %s", response.Code, response.Body.String())
+	}
+}
+
 type authenticator struct{ reject bool }
 
 func (authenticator authenticator) Authenticate(*http.Request) (adminbff.Principal, error) {
@@ -102,6 +116,7 @@ type releaseStub struct {
 	acted      application.OrderView
 	lastCreate application.CreateBaseFinalCommand
 	lastAct    application.ActCommand
+	actErr     error
 }
 
 func (stub *releaseStub) CreateBaseFinal(_ context.Context, command application.CreateBaseFinalCommand) (application.OrderView, error) {
@@ -111,7 +126,7 @@ func (stub *releaseStub) CreateBaseFinal(_ context.Context, command application.
 
 func (stub *releaseStub) Act(_ context.Context, command application.ActCommand) (application.OrderView, error) {
 	stub.lastAct = command
-	return stub.acted, nil
+	return stub.acted, stub.actErr
 }
 
 func serveJSON(t *testing.T, handler http.Handler, method, path, idempotency string, payload any) *httptest.ResponseRecorder {

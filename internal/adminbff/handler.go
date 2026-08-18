@@ -221,6 +221,10 @@ func decodeJSON(writer http.ResponseWriter, request *http.Request, target any) b
 
 func writeDomainError(writer http.ResponseWriter, err error) {
 	switch {
+	case errors.Is(err, release.ErrIdempotencyKeyReused):
+		writeError(writer, http.StatusConflict, "IDEMPOTENCY_KEY_REUSED", err.Error())
+	case errors.Is(err, release.ErrActiveConflict):
+		writeError(writer, http.StatusConflict, "ACTIVE_RELEASE_CONFLICT", err.Error())
 	case errors.Is(err, release.ErrAborted):
 		writeError(writer, http.StatusConflict, "ABORTED", err.Error())
 	case errors.Is(err, release.ErrInvalid):

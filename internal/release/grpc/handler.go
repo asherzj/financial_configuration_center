@@ -131,6 +131,8 @@ func toReleaseStatus(value release.OrderStatus) commonv1.ReleaseStatus {
 
 func mapError(err error) error {
 	switch {
+	case errors.Is(err, release.ErrIdempotencyKeyReused), errors.Is(err, release.ErrActiveConflict):
+		return status.Error(codes.AlreadyExists, err.Error())
 	case errors.Is(err, release.ErrAborted):
 		return status.Error(codes.Aborted, err.Error())
 	case errors.Is(err, release.ErrInvalid):

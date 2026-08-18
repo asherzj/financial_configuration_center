@@ -6,12 +6,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	catalog "github.com/asherzj/financial_configuration_center/internal/catalog/domain"
 	platformmysql "github.com/asherzj/financial_configuration_center/internal/platform/mysql"
 	"github.com/asherzj/financial_configuration_center/internal/release/application"
 	release "github.com/asherzj/financial_configuration_center/internal/release/domain"
+	drivermysql "github.com/go-sql-driver/mysql"
 	"gorm.io/gorm"
 )
 
@@ -28,9 +30,35 @@ func (store *Store) WithinTransaction(ctx context.Context, work func(application
 	if work == nil {
 		return errors.New("release MySQL transaction callback is required")
 	}
-	return store.database.WithinTransaction(ctx, &sql.TxOptions{Isolation: sql.LevelRepeatableRead}, func(db *gorm.DB) error {
+	err := store.database.WithinTransaction(ctx, &sql.TxOptions{Isolation: sql.LevelRepeatableRead}, func(db *gorm.DB) error {
 		return work(&transaction{db: db})
 	})
+	return classifyTransactionError(err)
+}
+
+func classifyTransactionError(err error) error {
+	if err == nil {
+		return nil
+	}
+	var mysqlError *drivermysql.MySQLError
+	if !errors.As(err, &mysqlError) {
+		return err
+	}
+	switch mysqlError.Number {
+	case 1205, 1213:
+		return fmt.Errorf("%w: %v", application.ErrRetryableTransaction, err)
+	case 1062:
+		switch {
+		case strings.Contains(mysqlError.Message, "uq_release_create_idempotency"):
+			return fmt.Errorf("%w: %v", application.ErrCreateRequestRace, err)
+		case strings.Contains(mysqlError.Message, "uq_release_item_active_conflict"):
+			return fmt.Errorf("%w: %v", release.ErrActiveConflict, err)
+		default:
+			return fmt.Errorf("%w: duplicate persisted release fact", release.ErrAborted)
+		}
+	default:
+		return err
+	}
 }
 
 type transaction struct{ db *gorm.DB }
@@ -156,6 +184,32 @@ func (transaction *transaction) LoadBaseAuthority(ctx context.Context, collectio
 		authority.Records[row.RecordKey] = &record
 	}
 	return authority, nil
+}
+
+func (transaction *transaction) FindCreateResult(ctx context.Context, actor, idempotencyKey string) (application.StoredRequestResult, bool, error) {
+	type row struct {
+		ID, RequestDigest, Status, CurrentStepCode string
+		EntityRevision                             uint64
+	}
+	var loaded row
+	result := transaction.db.WithContext(ctx).Raw(`
+		SELECT id, request_digest, status, current_step_code, entity_revision
+		FROM release_orders
+		WHERE created_by = ? AND idempotency_key = ?
+		FOR UPDATE
+	`, actor, idempotencyKey).Scan(&loaded)
+	if result.Error != nil {
+		return application.StoredRequestResult{}, false, result.Error
+	}
+	if result.RowsAffected == 0 {
+		return application.StoredRequestResult{}, false, nil
+	}
+	return application.StoredRequestResult{
+		RequestDigest: loaded.RequestDigest,
+		Result: application.OrderView{
+			ID: loaded.ID, Status: release.OrderStatus(loaded.Status), CurrentStep: parseStepCode(loaded.CurrentStepCode), Revision: release.EntityRevision(loaded.EntityRevision),
+		},
+	}, true, nil
 }
 
 func (transaction *transaction) InsertOrder(ctx context.Context, order *release.Order) error {
@@ -312,6 +366,30 @@ func (transaction *transaction) LoadOrderForUpdate(ctx context.Context, orderID 
 	})
 }
 
+func (transaction *transaction) FindActionResult(ctx context.Context, orderID, actionRequestID string) (application.StoredRequestResult, bool, error) {
+	type row struct {
+		RequestDigest    string
+		ResultProjection []byte
+	}
+	var loaded row
+	result := transaction.db.WithContext(ctx).Raw(`
+		SELECT request_digest, result_projection
+		FROM release_action_requests
+		WHERE release_order_id = ? AND action_request_id = ?
+	`, orderID, actionRequestID).Scan(&loaded)
+	if result.Error != nil {
+		return application.StoredRequestResult{}, false, result.Error
+	}
+	if result.RowsAffected == 0 {
+		return application.StoredRequestResult{}, false, nil
+	}
+	var projection application.OrderView
+	if err := json.Unmarshal(loaded.ResultProjection, &projection); err != nil {
+		return application.StoredRequestResult{}, false, fmt.Errorf("decode action result projection: %w", err)
+	}
+	return application.StoredRequestResult{RequestDigest: loaded.RequestDigest, Result: projection}, true, nil
+}
+
 func (transaction *transaction) AllocateConfigRevision(ctx context.Context) (catalog.ConfigRevision, error) {
 	var current uint64
 	result := transaction.db.WithContext(ctx).Raw(`
@@ -460,6 +538,18 @@ func (transaction *transaction) SaveOrder(ctx context.Context, order *release.Or
 	return nil
 }
 
+func (transaction *transaction) InsertActionResult(ctx context.Context, orderID, actionRequestID, requestDigest string, projection application.OrderView, createdAt time.Time) error {
+	encoded, err := json.Marshal(projection)
+	if err != nil {
+		return fmt.Errorf("encode action result projection: %w", err)
+	}
+	return transaction.db.WithContext(ctx).Exec(`
+		INSERT INTO release_action_requests (
+			release_order_id, action_request_id, request_digest, result_projection, created_at
+		) VALUES (?, ?, ?, ?, ?)
+	`, orderID, actionRequestID, requestDigest, encoded, createdAt).Error
+}
+
 func (transaction *transaction) insertAudit(ctx context.Context, at time.Time, actor, action, resourceType, resourceID string, scope release.Scope, requestID string) error {
 	return transaction.db.WithContext(ctx).Exec(`
 		INSERT INTO audit_records (
@@ -478,6 +568,17 @@ func stepCode(stepType release.StepType) string {
 		return "complete"
 	default:
 		return string(stepType)
+	}
+}
+
+func parseStepCode(code string) release.StepType {
+	switch code {
+	case "base-apply":
+		return release.StepBaseApply
+	case "complete":
+		return release.StepComplete
+	default:
+		return release.StepType(code)
 	}
 }
 

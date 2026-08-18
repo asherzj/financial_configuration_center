@@ -29,14 +29,27 @@ type UnitOfWork interface {
 	WithinTransaction(context.Context, func(Transaction) error) error
 }
 
+var (
+	// ErrRetryableTransaction is returned by persistence adapters for a whole-
+	// transaction deadlock or lock timeout. Release commands are safe to retry
+	// because their create/action request identities are persisted atomically.
+	ErrRetryableTransaction = errors.New("retryable release transaction")
+	// ErrCreateRequestRace asks CreateBaseFinal to start a fresh transaction and
+	// read the winner of a concurrent create-idempotency insert.
+	ErrCreateRequestRace = errors.New("concurrent create request won")
+)
+
 type Transaction interface {
 	LoadCatalog(context.Context, string) (CatalogBundle, error)
 	LoadBaseAuthority(context.Context, string, string, []string) (release.BaseAuthority, error)
+	FindCreateResult(context.Context, string, string) (StoredRequestResult, bool, error)
 	InsertOrder(context.Context, *release.Order) error
 	LoadOrderForUpdate(context.Context, string) (*release.Order, error)
+	FindActionResult(context.Context, string, string) (StoredRequestResult, bool, error)
 	AllocateConfigRevision(context.Context) (catalog.ConfigRevision, error)
 	ApplyBaseEffect(context.Context, string, release.BaseEffect, catalog.ConfigRevision) error
 	SaveOrder(context.Context, *release.Order) error
+	InsertActionResult(context.Context, string, string, string, OrderView, time.Time) error
 }
 
 type CatalogBundle struct {
@@ -82,10 +95,15 @@ type ActCommand struct {
 }
 
 type OrderView struct {
-	ID          string
-	Status      release.OrderStatus
-	CurrentStep release.StepType
-	Revision    release.EntityRevision
+	ID          string                 `json:"id"`
+	Status      release.OrderStatus    `json:"status"`
+	CurrentStep release.StepType       `json:"currentStep"`
+	Revision    release.EntityRevision `json:"revision"`
+}
+
+type StoredRequestResult struct {
+	RequestDigest string
+	Result        OrderView
 }
 
 // Service is the only application entry point that can cause base
@@ -112,7 +130,8 @@ func (service *Service) CreateBaseFinal(ctx context.Context, command CreateBaseF
 	}
 
 	var created *release.Order
-	err := service.unitOfWork.WithinTransaction(ctx, func(transaction Transaction) error {
+	var replayed *OrderView
+	err := service.withinIdempotentTransaction(ctx, func(transaction Transaction) error {
 		bundle, err := transaction.LoadCatalog(ctx, command.ModelCode)
 		if err != nil {
 			return fmt.Errorf("load release catalog: %w", err)
@@ -130,6 +149,22 @@ func (service *Service) CreateBaseFinal(ctx context.Context, command CreateBaseF
 			}
 			records[index] = record
 			recordKeys[index] = record.RecordKey
+		}
+		requestDigest, err := normalizedCreateDigest(command, records)
+		if err != nil {
+			return err
+		}
+		stored, found, err := transaction.FindCreateResult(ctx, command.Actor, command.IdempotencyKey)
+		if err != nil {
+			return fmt.Errorf("find create request: %w", err)
+		}
+		if found {
+			if stored.RequestDigest != requestDigest {
+				return fmt.Errorf("%w: create request", release.ErrIdempotencyKeyReused)
+			}
+			result := stored.Result
+			replayed = &result
+			return nil
 		}
 		authority, err := transaction.LoadBaseAuthority(ctx, bundle.Definition.Name(), strings.TrimSpace(command.Scope.Environment), recordKeys)
 		if err != nil {
@@ -159,10 +194,6 @@ func (service *Service) CreateBaseFinal(ctx context.Context, command CreateBaseF
 			}
 		}
 		now := service.clock.Now().UTC()
-		requestDigest, err := normalizedCreateDigest(command, records)
-		if err != nil {
-			return err
-		}
 		order, err := release.NewBaseFinalOrder(release.BaseFinalOrderSpec{
 			ID:             orderID,
 			ReleaseNumber:  service.ids.NewReleaseNumber(now),
@@ -186,6 +217,9 @@ func (service *Service) CreateBaseFinal(ctx context.Context, command CreateBaseF
 	})
 	if err != nil {
 		return OrderView{}, err
+	}
+	if replayed != nil {
+		return *replayed, nil
 	}
 	return project(created), nil
 }
@@ -221,11 +255,26 @@ func (service *Service) Act(ctx context.Context, command ActCommand) (OrderView,
 	if strings.TrimSpace(command.OrderID) == "" || strings.TrimSpace(command.ActionRequestID) == "" || strings.TrimSpace(command.Actor) == "" || command.ExpectedCurrentStep == "" {
 		return OrderView{}, fmt.Errorf("%w: order, action request, and actor are required", release.ErrInvalid)
 	}
-	var result *release.Order
-	err := service.unitOfWork.WithinTransaction(ctx, func(transaction Transaction) error {
+	requestDigest, err := normalizedActionDigest(command)
+	if err != nil {
+		return OrderView{}, err
+	}
+	var result OrderView
+	err = service.withinIdempotentTransaction(ctx, func(transaction Transaction) error {
 		order, err := transaction.LoadOrderForUpdate(ctx, command.OrderID)
 		if err != nil {
 			return fmt.Errorf("load release order: %w", err)
+		}
+		stored, found, err := transaction.FindActionResult(ctx, command.OrderID, command.ActionRequestID)
+		if err != nil {
+			return fmt.Errorf("find action request: %w", err)
+		}
+		if found {
+			if stored.RequestDigest != requestDigest {
+				return fmt.Errorf("%w: action request", release.ErrIdempotencyKeyReused)
+			}
+			result = stored.Result
+			return nil
 		}
 		if order.Revision() != command.ExpectedRevision {
 			return fmt.Errorf("%w: order revision is %d, expected %d", release.ErrAborted, order.Revision(), command.ExpectedRevision)
@@ -275,13 +324,53 @@ func (service *Service) Act(ctx context.Context, command ActCommand) (OrderView,
 		if err := transaction.SaveOrder(ctx, order); err != nil {
 			return fmt.Errorf("save release order: %w", err)
 		}
-		result = order
+		result = project(order)
+		if err := transaction.InsertActionResult(ctx, command.OrderID, command.ActionRequestID, requestDigest, result, now); err != nil {
+			return fmt.Errorf("insert action request: %w", err)
+		}
 		return nil
 	})
 	if err != nil {
 		return OrderView{}, err
 	}
-	return project(result), nil
+	return result, nil
+}
+
+func normalizedActionDigest(command ActCommand) (string, error) {
+	payload := struct {
+		OrderID             string                 `json:"orderId"`
+		ExpectedRevision    release.EntityRevision `json:"expectedRevision"`
+		ExpectedCurrentStep release.StepType       `json:"expectedCurrentStep"`
+		Action              Action                 `json:"action"`
+		Actor               string                 `json:"actor"`
+	}{command.OrderID, command.ExpectedRevision, command.ExpectedCurrentStep, command.Action, command.Actor}
+	encoded, err := json.Marshal(payload)
+	if err != nil {
+		return "", fmt.Errorf("normalize release action request: %w", err)
+	}
+	sum := sha256.Sum256(encoded)
+	return hex.EncodeToString(sum[:]), nil
+}
+
+func (service *Service) withinIdempotentTransaction(ctx context.Context, work func(Transaction) error) error {
+	var err error
+	for attempt := 0; attempt < 3; attempt++ {
+		err = service.unitOfWork.WithinTransaction(ctx, work)
+		if !errors.Is(err, ErrRetryableTransaction) && !errors.Is(err, ErrCreateRequestRace) {
+			return err
+		}
+		if attempt == 2 {
+			break
+		}
+		timer := time.NewTimer(time.Duration(1<<attempt) * time.Millisecond)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return ctx.Err()
+		case <-timer.C:
+		}
+	}
+	return err
 }
 
 func (service *Service) ready() error {

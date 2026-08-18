@@ -13,8 +13,10 @@ import (
 )
 
 var (
-	ErrInvalid = errors.New("invalid release")
-	ErrAborted = errors.New("release authority is stale")
+	ErrInvalid              = errors.New("invalid release")
+	ErrAborted              = errors.New("release authority is stale")
+	ErrIdempotencyKeyReused = errors.New("idempotency key was reused for a different request")
+	ErrActiveConflict       = errors.New("another release is active for the target")
 )
 
 type EntityRevision uint64

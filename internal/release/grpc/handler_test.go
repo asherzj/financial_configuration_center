@@ -9,6 +9,8 @@ import (
 	releasegrpc "github.com/asherzj/financial_configuration_center/internal/release/grpc"
 	commonv1 "github.com/asherzj/financial_configuration_center/kitex_gen/finconfig/common/v1"
 	controlv1 "github.com/asherzj/financial_configuration_center/kitex_gen/finconfig/control/v1"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 func TestReleaseHandlerMapsCreateAndAction(t *testing.T) {
@@ -42,6 +44,21 @@ func TestReleaseHandlerMapsCreateAndAction(t *testing.T) {
 	}
 }
 
+func TestReleaseHandlerMapsIdempotencyConflict(t *testing.T) {
+	t.Parallel()
+	handler, err := releasegrpc.New(&commandStub{actErr: release.ErrIdempotencyKeyReused}, actorResolver{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = handler.ActOnReleaseOrder(context.Background(), &controlv1.ActOnReleaseOrderRequest{
+		OrderId: "order", ActionRequestId: "action-id", ExpectedOrderRevision: 1,
+		ExpectedCurrentStep: "BASE_APPLY", Action: commonv1.ReleaseAction_RELEASE_ACTION_EXECUTE,
+	})
+	if status.Code(err) != codes.AlreadyExists {
+		t.Fatalf("status = %v, want AlreadyExists", err)
+	}
+}
+
 type actorResolver struct{}
 
 func (actorResolver) Subject(context.Context) (string, error) { return "operator@example.com", nil }
@@ -51,6 +68,7 @@ type commandStub struct {
 	act        application.OrderView
 	lastCreate application.CreateBaseFinalCommand
 	lastAct    application.ActCommand
+	actErr     error
 }
 
 func (stub *commandStub) CreateBaseFinal(_ context.Context, command application.CreateBaseFinalCommand) (application.OrderView, error) {
@@ -60,5 +78,5 @@ func (stub *commandStub) CreateBaseFinal(_ context.Context, command application.
 
 func (stub *commandStub) Act(_ context.Context, command application.ActCommand) (application.OrderView, error) {
 	stub.lastAct = command
-	return stub.act, nil
+	return stub.act, stub.actErr
 }
