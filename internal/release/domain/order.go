@@ -17,6 +17,7 @@ var (
 	ErrAborted              = errors.New("release authority is stale")
 	ErrIdempotencyKeyReused = errors.New("idempotency key was reused for a different request")
 	ErrActiveConflict       = errors.New("another release is active for the target")
+	ErrForbidden            = errors.New("release action is forbidden")
 )
 
 type EntityRevision uint64
@@ -26,6 +27,7 @@ type OrderStatus string
 const (
 	OrderInProgress OrderStatus = "IN_PROGRESS"
 	OrderSucceeded  OrderStatus = "SUCCEEDED"
+	OrderRejected   OrderStatus = "REJECTED"
 )
 
 type ItemStatus string
@@ -47,9 +49,34 @@ const (
 type StepStatus string
 
 const (
-	StepPending  StepStatus = "PENDING"
-	StepExecuted StepStatus = "EXECUTED"
+	StepPending   StepStatus = "PENDING"
+	StepExecuting StepStatus = "EXECUTING"
+	StepExecuted  StepStatus = "EXECUTED"
+	StepApproved  StepStatus = "APPROVED"
+	StepRejected  StepStatus = "REJECTED"
 )
+
+type ApprovalStatus string
+
+const (
+	ApprovalPending  ApprovalStatus = "PENDING"
+	ApprovalApproved ApprovalStatus = "APPROVED"
+	ApprovalRejected ApprovalStatus = "REJECTED"
+)
+
+type Principal struct {
+	Subject string
+	Roles   []string
+}
+
+type ApprovalState struct {
+	Status      ApprovalStatus
+	RequestedAt time.Time
+	RequestedBy string
+	DecidedAt   *time.Time
+	DecidedBy   string
+	Comment     string
+}
 
 type ChangeAction string
 
@@ -81,6 +108,7 @@ type BaseFinalOrderSpec struct {
 	CreatedBy       string
 	CreatedAt       time.Time
 	Items           []BaseFinalItemSpec
+	Template        CompiledTemplate
 }
 
 type Item struct {
@@ -98,10 +126,14 @@ type Item struct {
 }
 
 type StepState struct {
-	Type       StepType
-	Status     StepStatus
-	ExecutedAt *time.Time
-	ExecutedBy string
+	Code               string
+	Type               StepType
+	Status             StepStatus
+	RequiredRoles      []string
+	SelfApprovalPolicy SelfApprovalPolicy
+	Approval           *ApprovalState
+	ExecutedAt         *time.Time
+	ExecutedBy         string
 }
 
 type BaseAuthority struct {
@@ -202,6 +234,17 @@ func NewBaseFinalOrder(spec BaseFinalOrderSpec) (*Order, error) {
 		}
 	}
 	createdAt := spec.CreatedAt.UTC()
+	definitions := spec.Template.Steps()
+	if len(definitions) == 0 {
+		definitions = []StepDefinition{{Code: "base-apply", Type: StepBaseApply}, {Code: "complete", Type: StepComplete}}
+	}
+	steps := make([]StepState, len(definitions))
+	for index, definition := range definitions {
+		steps[index] = StepState{Code: definition.Code, Type: definition.Type, Status: StepPending, RequiredRoles: append([]string(nil), definition.RequiredRoles...)}
+		if definition.ManualReview != nil {
+			steps[index].SelfApprovalPolicy = definition.ManualReview.SelfApprovalPolicy
+		}
+	}
 	return &Order{
 		id:              spec.ID,
 		releaseNumber:   spec.ReleaseNumber,
@@ -218,12 +261,86 @@ func NewBaseFinalOrder(spec BaseFinalOrderSpec) (*Order, error) {
 		updatedAt:       createdAt,
 		status:          OrderInProgress,
 		revision:        1,
-		steps: []StepState{
-			{Type: StepBaseApply, Status: StepPending},
-			{Type: StepComplete, Status: StepPending},
-		},
-		items: items,
+		steps:           steps,
+		items:           items,
 	}, nil
+}
+
+func (order *Order) ExecuteManualReview(expected EntityRevision, actor string, at time.Time) error {
+	if order.revision != expected {
+		return fmt.Errorf("%w: order revision is %d, expected %d", ErrAborted, order.revision, expected)
+	}
+	if err := order.requireCurrent(StepManualReview, StepPending); err != nil {
+		return err
+	}
+	if strings.TrimSpace(actor) == "" || at.IsZero() {
+		return fmt.Errorf("%w: actor and execution time are required", ErrInvalid)
+	}
+	at = at.UTC()
+	step := &order.steps[order.currentStep]
+	step.Status = StepExecuting
+	step.Approval = &ApprovalState{Status: ApprovalPending, RequestedAt: at, RequestedBy: actor}
+	order.bump(actor, at)
+	return nil
+}
+
+func (order *Order) ApproveManualReview(expected EntityRevision, principal Principal, comment string, at time.Time) error {
+	if err := order.authorizeManualDecision(expected, principal, at); err != nil {
+		return err
+	}
+	at = at.UTC()
+	step := &order.steps[order.currentStep]
+	step.Status = StepApproved
+	step.Approval.Status = ApprovalApproved
+	step.Approval.DecidedAt = timePointer(at)
+	step.Approval.DecidedBy = principal.Subject
+	step.Approval.Comment = comment
+	order.bump(principal.Subject, at)
+	return nil
+}
+
+func (order *Order) RejectManualReview(expected EntityRevision, principal Principal, comment string, at time.Time) error {
+	if strings.TrimSpace(comment) == "" {
+		return fmt.Errorf("%w: rejection comment is required", ErrInvalid)
+	}
+	if err := order.authorizeManualDecision(expected, principal, at); err != nil {
+		return err
+	}
+	at = at.UTC()
+	step := &order.steps[order.currentStep]
+	step.Status = StepRejected
+	step.Approval.Status = ApprovalRejected
+	step.Approval.DecidedAt = timePointer(at)
+	step.Approval.DecidedBy = principal.Subject
+	step.Approval.Comment = comment
+	for index := range order.items {
+		order.items[index].ActiveConflictKey = ""
+	}
+	order.status = OrderRejected
+	order.completedAt = timePointer(at)
+	order.bump(principal.Subject, at)
+	return nil
+}
+
+func (order *Order) authorizeManualDecision(expected EntityRevision, principal Principal, at time.Time) error {
+	if order.revision != expected {
+		return fmt.Errorf("%w: order revision is %d, expected %d", ErrAborted, order.revision, expected)
+	}
+	if err := order.requireCurrent(StepManualReview, StepExecuting); err != nil {
+		return err
+	}
+	principal.Subject = strings.TrimSpace(principal.Subject)
+	if principal.Subject == "" || at.IsZero() {
+		return fmt.Errorf("%w: principal and decision time are required", ErrInvalid)
+	}
+	step := order.steps[order.currentStep]
+	if !hasRequiredRole(principal.Roles, step.RequiredRoles) {
+		return fmt.Errorf("%w: principal lacks a required approval role", ErrForbidden)
+	}
+	if step.SelfApprovalPolicy == SelfApprovalDenyProduction && order.scope.Environment == "production" && principal.Subject == order.createdBy {
+		return fmt.Errorf("%w: production release creator cannot self-approve", ErrForbidden)
+	}
+	return nil
 }
 
 func (order *Order) ExecuteBase(authority BaseAuthority, actor string, at time.Time) (BaseEffect, error) {
@@ -263,7 +380,8 @@ func (order *Order) Advance(expected EntityRevision, actor string, at time.Time)
 	if order.revision != expected {
 		return fmt.Errorf("%w: order revision is %d, expected %d", ErrAborted, order.revision, expected)
 	}
-	if order.status != OrderInProgress || order.steps[order.currentStep].Status != StepExecuted || order.currentStep+1 >= len(order.steps) {
+	stepStatus := order.steps[order.currentStep].Status
+	if order.status != OrderInProgress || (stepStatus != StepExecuted && stepStatus != StepApproved) || order.currentStep+1 >= len(order.steps) {
 		return fmt.Errorf("%w: current step cannot advance", ErrInvalid)
 	}
 	order.currentStep++
@@ -446,10 +564,31 @@ func cloneRecord(record catalog.ConfigurationRecord) catalog.ConfigurationRecord
 }
 
 func cloneStep(step StepState) StepState {
+	step.RequiredRoles = append([]string(nil), step.RequiredRoles...)
+	if step.Approval != nil {
+		approval := *step.Approval
+		if approval.DecidedAt != nil {
+			approval.DecidedAt = timePointer(*approval.DecidedAt)
+		}
+		step.Approval = &approval
+	}
 	if step.ExecutedAt != nil {
 		step.ExecutedAt = timePointer(*step.ExecutedAt)
 	}
 	return step
+}
+
+func hasRequiredRole(actual, required []string) bool {
+	roles := make(map[string]struct{}, len(actual))
+	for _, role := range actual {
+		roles[role] = struct{}{}
+	}
+	for _, role := range required {
+		if _, exists := roles[role]; exists {
+			return true
+		}
+	}
+	return false
 }
 
 func timePointer(value time.Time) *time.Time { return &value }

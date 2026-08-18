@@ -1,6 +1,7 @@
 package domain_test
 
 import (
+	"errors"
 	"testing"
 	"time"
 
@@ -93,6 +94,71 @@ func TestBaseFinalExecutionRejectsStaleAuthorityWithoutMutation(t *testing.T) {
 		t.Fatal("ADD over existing record succeeded")
 	}
 	assertOrder(t, order, release.OrderInProgress, release.StepBaseApply, release.StepPending, 1)
+}
+
+func TestManualReviewEnforcesRoleAndProductionSelfApproval(t *testing.T) {
+	t.Parallel()
+	order := newManualOrder(t)
+	now := time.Date(2026, 8, 19, 12, 0, 0, 0, time.UTC)
+	if err := order.ExecuteManualReview(1, "operator", now); err != nil {
+		t.Fatal(err)
+	}
+	if order.CurrentStep().Status != release.StepExecuting || order.CurrentStep().Approval.Status != release.ApprovalPending || order.Revision() != 2 {
+		t.Fatalf("submitted order = %+v revision=%d", order.CurrentStep(), order.Revision())
+	}
+	if err := order.ApproveManualReview(2, release.Principal{Subject: "viewer", Roles: []string{"RELEASE_VIEWER"}}, "", now); !errors.Is(err, release.ErrForbidden) || order.Revision() != 2 {
+		t.Fatalf("unauthorized approval = %v revision=%d", err, order.Revision())
+	}
+	if err := order.ApproveManualReview(2, release.Principal{Subject: "creator", Roles: []string{"RELEASE_APPROVER"}}, "", now); !errors.Is(err, release.ErrForbidden) || order.Revision() != 2 {
+		t.Fatalf("self approval = %v revision=%d", err, order.Revision())
+	}
+	if err := order.ApproveManualReview(2, release.Principal{Subject: "approver", Roles: []string{"RELEASE_APPROVER"}}, "looks good", now); err != nil {
+		t.Fatal(err)
+	}
+	if order.CurrentStep().Status != release.StepApproved || order.CurrentStep().Approval.Status != release.ApprovalApproved || order.Revision() != 3 {
+		t.Fatalf("approved order = %+v revision=%d", order.CurrentStep(), order.Revision())
+	}
+	if err := order.Advance(3, "operator", now); err != nil || order.CurrentStep().Type != release.StepBaseApply {
+		t.Fatalf("advance after approval = %v step=%+v", err, order.CurrentStep())
+	}
+}
+
+func TestManualReviewRejectTerminatesAndReleasesConflicts(t *testing.T) {
+	t.Parallel()
+	order := newManualOrder(t)
+	now := time.Date(2026, 8, 19, 12, 0, 0, 0, time.UTC)
+	if err := order.ExecuteManualReview(1, "operator", now); err != nil {
+		t.Fatal(err)
+	}
+	if err := order.RejectManualReview(2, release.Principal{Subject: "approver", Roles: []string{"RELEASE_APPROVER"}}, "unsafe", now); err != nil {
+		t.Fatal(err)
+	}
+	if order.Status() != release.OrderRejected || order.CurrentStep().Status != release.StepRejected || order.Revision() != 3 || order.Items()[0].ActiveConflictKey != "" {
+		t.Fatalf("rejected order status=%s step=%+v revision=%d item=%+v", order.Status(), order.CurrentStep(), order.Revision(), order.Items()[0])
+	}
+}
+
+func newManualOrder(t *testing.T) *release.Order {
+	t.Helper()
+	template, err := release.CompileTemplate([]byte(`{"steps":[
+		{"code":"review","type":"MANUAL_REVIEW","requiredRoles":["RELEASE_APPROVER"],"params":{"selfApprovalPolicy":"DENY_PRODUCTION"}},
+		{"code":"apply","type":"BASE_APPLY","params":{"cleanupScopeOverlay":true}},
+		{"code":"complete","type":"COMPLETE","params":{}}
+	]}`), release.FinalEffectBase)
+	if err != nil {
+		t.Fatal(err)
+	}
+	record := catalog.ConfigurationRecord{Collection: "routes", Environment: "production", RecordKey: "key", Data: map[string]string{"code": "visa"}}
+	order, err := release.NewBaseFinalOrder(release.BaseFinalOrderSpec{
+		ID: "order", ReleaseNumber: "REL-1", IdempotencyKey: "request", ModelCode: "model",
+		TemplateCode: "approval", TemplateVersion: 1, ReleaseTypeCode: "approval", RequestDigest: "0000000000000000000000000000000000000000000000000000000000000000",
+		Scope: release.Scope{Region: "cn", Environment: "production"}, CreatedBy: "creator", CreatedAt: time.Now().UTC(), Template: template,
+		Items: []release.BaseFinalItemSpec{{ID: "item", After: record, ExpectedCollectionRevision: 7}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return order
 }
 
 func assertOrder(t *testing.T, order *release.Order, status release.OrderStatus, stepType release.StepType, stepStatus release.StepStatus, revision release.EntityRevision) {
