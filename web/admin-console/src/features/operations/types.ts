@@ -82,14 +82,25 @@ export interface CreateReleaseRequest {
 export interface ReleaseDetail {
   order: {
     id: string;
-    status: "IN_PROGRESS" | "SUCCEEDED" | "REJECTED";
+    status: "IN_PROGRESS" | "SUCCEEDED" | "REJECTED" | "ROLLED_BACK";
     currentStep: string;
-    currentStepType: "MANUAL_REVIEW" | "BASE_APPLY" | "COMPARE" | "COMPLETE";
-    currentStepStatus: "PENDING" | "EXECUTING" | "EXECUTED" | "APPROVED" | "REJECTED";
+    currentStepType: "MANUAL_REVIEW" | "OVERLAY_APPLY" | "PERCENT_ROLLOUT" | "BASE_APPLY" | "COMPARE" | "COMPLETE";
+    currentStepStatus: "PENDING" | "EXECUTING" | "EXECUTED" | "APPROVED" | "REJECTED" | "ROLLED_BACK";
     entityRevision: number;
   };
   items: unknown[];
-  steps: Array<{ code: string; type: string; status: string }>;
+  steps: Array<{
+    code: string;
+    type: string;
+    status: string;
+    rolloutRanges?: Array<{ start: number; end: number }>;
+    compareResult?: {
+      expectedDigest: { algorithm: string; value: string };
+      actualDigest: { algorithm: string; value: string };
+      diffKeys: string[];
+      checkedAt: string;
+    };
+  }>;
   allowedActions: ReleaseAction[];
 }
 
@@ -100,6 +111,7 @@ export interface OperationApi {
     modelCode: string;
     scope: Scope;
     queryType: "ALL" | "ONLY_DATA";
+    previewBucket?: number;
   }): Promise<PageResult>;
   createRelease(request: CreateReleaseRequest, idempotencyKey: string): Promise<ReleaseDetail>;
   actOnRelease(

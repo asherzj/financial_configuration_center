@@ -10,6 +10,7 @@ import {
   Input,
   InputNumber,
   Modal,
+  Progress,
   Select,
   Space,
   Spin,
@@ -50,6 +51,8 @@ export function OperationPage({ api = operationApi }: { api?: OperationApi }) {
   const [form] = Form.useForm<Record<string, unknown>>();
   const [activeScope, setActiveScope] = useState<Scope>(defaultScope);
   const [scopeDraft, setScopeDraft] = useState<Scope>(defaultScope);
+  const [activePreviewBucket, setActivePreviewBucket] = useState<number>();
+  const [previewBucketDraft, setPreviewBucketDraft] = useState<number>();
   const [page, setPage] = useState<PageResult>();
   const [drafts, setDrafts] = useState<DraftRow[]>([]);
   const [release, setRelease] = useState<ReleaseDetail>();
@@ -67,7 +70,12 @@ export function OperationPage({ api = operationApi }: { api?: OperationApi }) {
     setLoading(true);
     setError(undefined);
     try {
-      const loaded = await api.queryPage({ modelCode, scope: activeScope, queryType: "ALL" });
+      const loaded = await api.queryPage({
+        modelCode,
+        scope: activeScope,
+        queryType: "ALL",
+        ...(activePreviewBucket === undefined ? {} : { previewBucket: activePreviewBucket }),
+      });
       setPage(loaded);
       setReleaseTypeCode((current) =>
         loaded.releaseTypes.some((releaseType) => releaseType.available && releaseType.code === current)
@@ -79,7 +87,7 @@ export function OperationPage({ api = operationApi }: { api?: OperationApi }) {
     } finally {
       setLoading(false);
     }
-  }, [activeScope, api]);
+  }, [activePreviewBucket, activeScope, api]);
 
   useEffect(() => {
     void load();
@@ -120,6 +128,9 @@ export function OperationPage({ api = operationApi }: { api?: OperationApi }) {
     },
   ];
   const selectedReleaseType = page?.releaseTypes.find((releaseType) => releaseType.code === releaseTypeCode);
+  const rolloutSteps = release?.steps.filter((step) => step.type === "PERCENT_ROLLOUT") ?? [];
+  const rolloutCoverage = coveredBuckets(rolloutSteps.filter((step) => step.status === "EXECUTED" || step.status === "APPROVED"));
+  const compareSteps = release?.steps.filter((step) => step.compareResult !== undefined) ?? [];
 
   const openAdd = () => {
     setEditingRow(undefined);
@@ -176,6 +187,7 @@ export function OperationPage({ api = operationApi }: { api?: OperationApi }) {
     setRelease(undefined);
     setReviewOpen(false);
     setActiveScope({ region, environment, ...(stage ? { stage } : {}) });
+    setActivePreviewBucket(previewBucketDraft);
   };
 
   const createRelease = async () => {
@@ -247,6 +259,7 @@ export function OperationPage({ api = operationApi }: { api?: OperationApi }) {
             <Tag color="blue">Region: {activeScope.region}</Tag>
             <Tag color="green">Environment: {activeScope.environment}</Tag>
             {activeScope.stage ? <Tag color="gold">Stage: {activeScope.stage}</Tag> : null}
+            {activePreviewBucket !== undefined ? <Tag color="purple">Preview Bucket: {activePreviewBucket}</Tag> : null}
             <Tag>Model: {page?.modelName ?? modelCode}</Tag>
           </Space>
         </div>
@@ -276,7 +289,20 @@ export function OperationPage({ api = operationApi }: { api?: OperationApi }) {
             <label htmlFor="scope-stage">Stage</label>
             <Input id="scope-stage" aria-label="Stage" placeholder="可选，例如 blue" value={scopeDraft.stage ?? ""} onChange={(event) => setScopeDraft((current) => ({ ...current, stage: event.target.value }))} />
           </div>
+          <div>
+            <label htmlFor="preview-bucket">预览 Bucket</label>
+            <InputNumber
+              id="preview-bucket"
+              aria-label="预览 Bucket"
+              min={0}
+              max={99}
+              placeholder="可选 0–99"
+              value={previewBucketDraft}
+              onChange={(value) => setPreviewBucketDraft(typeof value === "number" ? value : undefined)}
+            />
+          </div>
           <Button type="primary" onClick={applyScope}>应用范围</Button>
+          <Typography.Text type="secondary">预览桶只影响诊断视图，不改变真实客户端分桶。</Typography.Text>
         </Flex>
       </Card>
       <Card
@@ -385,6 +411,38 @@ export function OperationPage({ api = operationApi }: { api?: OperationApi }) {
                   status: stepVisualStatus(step.status, step.code === release.order.currentStep),
                 }))}
               />
+              {rolloutSteps.length > 0 ? (
+                <Card size="small" title="灰度覆盖">
+                  <Typography.Text strong>灰度覆盖 {rolloutCoverage} / 100</Typography.Text>
+                  <Progress percent={rolloutCoverage} status={rolloutCoverage === 100 ? "success" : "active"} />
+                  <Space wrap>
+                    {rolloutSteps.flatMap((step) => (step.rolloutRanges ?? []).map((range) => (
+                      <Tag key={`${step.code}-${range.start}-${range.end}`} color={step.status === "EXECUTED" ? "blue" : "default"}>
+                        Bucket {range.start}–{range.end}
+                      </Tag>
+                    )))}
+                  </Space>
+                </Card>
+              ) : null}
+              {compareSteps.map((step) => {
+                const comparison = step.compareResult!;
+                const matched = comparison.diffKeys.length === 0 && comparison.expectedDigest.value === comparison.actualDigest.value;
+                return (
+                  <Card key={step.code} size="small" title={`对比验证 · ${step.code}`}>
+                    <Alert type={matched ? "success" : "error"} showIcon title={matched ? "对比一致" : `发现 ${comparison.diffKeys.length} 条差异`} />
+                    <Descriptions column={1} size="small">
+                      <Descriptions.Item label="Expected digest"><Typography.Text code>{comparison.expectedDigest.value}</Typography.Text></Descriptions.Item>
+                      <Descriptions.Item label="Actual digest"><Typography.Text code>{comparison.actualDigest.value}</Typography.Text></Descriptions.Item>
+                      <Descriptions.Item label="检查时间">{comparison.checkedAt}</Descriptions.Item>
+                      {comparison.diffKeys.length > 0 ? (
+                        <Descriptions.Item label="差异记录">
+                          <Space wrap>{comparison.diffKeys.map((key) => <Tag key={key} color="red">{key}</Tag>)}</Space>
+                        </Descriptions.Item>
+                      ) : null}
+                    </Descriptions>
+                  </Card>
+                );
+              })}
               {release.allowedActions.some((action) => action === "APPROVE" || action === "REJECT") ? (
                 <Space orientation="vertical" className="operation-full-width">
                   <label htmlFor="approval-comment">审批意见</label>
@@ -473,6 +531,10 @@ function stepLabel(type: string) {
       return "人工复核";
     case "BASE_APPLY":
       return "基础生效";
+    case "OVERLAY_APPLY":
+      return "范围覆盖";
+    case "PERCENT_ROLLOUT":
+      return "百分比灰度";
     case "COMPARE":
       return "对比验证";
     case "COMPLETE":
@@ -483,8 +545,20 @@ function stepLabel(type: string) {
 }
 
 function stepVisualStatus(status: string, current: boolean): "wait" | "process" | "finish" | "error" {
-  if (status === "REJECTED") return "error";
+  if (status === "REJECTED" || status === "ROLLED_BACK") return "error";
   if (status === "EXECUTED" || status === "APPROVED") return "finish";
   if (current && (status === "PENDING" || status === "EXECUTING")) return "process";
   return "wait";
+}
+
+function coveredBuckets(steps: ReleaseDetail["steps"]): number {
+  const selected = Array.from({ length: 100 }, () => false);
+  for (const step of steps) {
+    for (const range of step.rolloutRanges ?? []) {
+      for (let bucket = Math.max(0, range.start); bucket <= Math.min(99, range.end); bucket += 1) {
+        selected[bucket] = true;
+      }
+    }
+  }
+  return selected.filter(Boolean).length;
 }

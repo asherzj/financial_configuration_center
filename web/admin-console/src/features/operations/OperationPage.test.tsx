@@ -345,4 +345,67 @@ describe("OperationPage", () => {
       }],
     });
   });
+
+  it("queries a preview bucket and displays rollout coverage with compare diagnostics", async () => {
+	const rolloutPage: PageResult = {
+		...page,
+		releaseTypes: [{ code: "percentage", name: "Percentage", templateCode: "percent-final", available: true }],
+	};
+	const rolloutRelease: ReleaseDetail = {
+		order: {
+			id: "rollout-order",
+			status: "IN_PROGRESS",
+			currentStep: "promote",
+			currentStepType: "BASE_APPLY",
+			currentStepStatus: "PENDING",
+			entityRevision: 5,
+		},
+		items: [],
+		steps: [
+			{ code: "percent-10", type: "PERCENT_ROLLOUT", status: "EXECUTED", rolloutRanges: [{ start: 0, end: 9 }] },
+			{
+				code: "compare",
+				type: "COMPARE",
+				status: "EXECUTED",
+				compareResult: {
+					expectedDigest: { algorithm: "SHA-256", value: "expected-digest" },
+					actualDigest: { algorithm: "SHA-256", value: "expected-digest" },
+					diffKeys: [],
+					checkedAt: "2026-08-19T16:00:00Z",
+				},
+			},
+			{ code: "promote", type: "BASE_APPLY", status: "PENDING" },
+		],
+		allowedActions: ["EXECUTE"],
+	};
+	const queryPage = vi.fn().mockResolvedValue(rolloutPage);
+	const api: OperationApi = {
+		queryPage,
+		createRelease: vi.fn().mockResolvedValue(rolloutRelease),
+		actOnRelease: vi.fn().mockResolvedValue(rolloutRelease),
+	};
+
+	render(<OperationPage api={api} />);
+	await screen.findByText("visa-cn");
+	fireEvent.change(screen.getByLabelText("预览 Bucket"), { target: { value: "6" } });
+	fireEvent.click(screen.getByRole("button", { name: "应用范围" }));
+	await waitFor(() => expect(queryPage).toHaveBeenLastCalledWith({
+		modelCode: "payment-route-admin",
+		scope: { region: "cn", environment: "production" },
+		queryType: "ALL",
+		previewBucket: 6,
+	}));
+
+	fireEvent.click(screen.getByRole("button", { name: "新增配置" }));
+	fireEvent.change(screen.getByLabelText("Route code"), { target: { value: "rollout-route" } });
+	fireEvent.change(screen.getByLabelText("Priority"), { target: { value: "9" } });
+	fireEvent.click(screen.getByRole("button", { name: "加入草稿" }));
+	fireEvent.click(await screen.findByRole("button", { name: "审阅并发布" }));
+	fireEvent.click(screen.getByRole("button", { name: "创建发布单" }));
+
+	expect(await screen.findByText("灰度覆盖 10 / 100")).toBeInTheDocument();
+	expect(screen.getByText("Bucket 0–9")).toBeInTheDocument();
+	expect(screen.getByText("对比一致")).toBeInTheDocument();
+	expect(screen.getAllByText("expected-digest")).toHaveLength(2);
+  });
 });
