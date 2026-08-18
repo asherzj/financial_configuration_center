@@ -177,6 +177,9 @@ message PageRow {
   int64 record_revision = 2;
   map<string, string> values = 3;
   repeated string masked_fields = 4;
+  bool base_present = 5;
+  map<string, string> base_values = 6;
+  repeated string changed_fields = 7;
 }
 
 message ReleaseType {

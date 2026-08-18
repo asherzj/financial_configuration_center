@@ -80,13 +80,14 @@ func (handler *Handler) queryPage(writer http.ResponseWriter, request *http.Requ
 	if !decodeJSON(writer, request, &body) {
 		return
 	}
-	if len(body.Conditions) != 0 || body.PreviewBucket != nil {
-		writeError(writer, http.StatusNotImplemented, "NOT_IMPLEMENTED", "filters and preview are not implemented in the base-only slice")
+	if len(body.Conditions) != 0 {
+		writeError(writer, http.StatusNotImplemented, "NOT_IMPLEMENTED", "filters are not implemented")
 		return
 	}
 	queryType := pagequery.QueryType(body.QueryType)
 	result, err := handler.queries.Query(pagequery.Request{
-		ModelCode: body.ModelCode, Environment: body.Scope.Environment, Type: queryType,
+		ModelCode: body.ModelCode, Region: body.Scope.Region, Environment: body.Scope.Environment,
+		Stage: body.Scope.Stage, PreviewBucket: body.PreviewBucket, Type: queryType,
 		Page: pagequery.PageSpec{Number: body.PageNumber, Size: body.PageSize},
 	})
 	if err != nil {
@@ -290,7 +291,11 @@ func releaseDetail(view application.OrderView) map[string]any {
 func queryPageResponse(result pagequery.Result) map[string]any {
 	rows := make([]map[string]any, len(result.Rows))
 	for index, row := range result.Rows {
-		rows[index] = map[string]any{"recordKey": row.RecordKey, "recordRevision": row.RecordRevision, "values": row.Values, "maskedFields": row.MaskedFields}
+		rows[index] = map[string]any{
+			"recordKey": row.RecordKey, "recordRevision": row.RecordRevision, "values": row.Values,
+			"maskedFields": row.MaskedFields, "basePresent": row.BasePresent,
+			"baseValues": row.BaseValues, "changedFields": row.ChangedFields,
+		}
 	}
 	fields := make([]map[string]any, len(result.InteractionFields))
 	for index, field := range result.InteractionFields {

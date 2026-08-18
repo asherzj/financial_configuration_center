@@ -9,6 +9,7 @@ import (
 
 	catalog "github.com/asherzj/financial_configuration_center/internal/catalog/domain"
 	"github.com/asherzj/financial_configuration_center/internal/distribution/snapshot"
+	overlay "github.com/asherzj/financial_configuration_center/internal/overlay/domain"
 )
 
 type SnapshotProvider interface {
@@ -28,10 +29,13 @@ type PageSpec struct {
 }
 
 type Request struct {
-	ModelCode   string
-	Environment string
-	Type        QueryType
-	Page        PageSpec
+	ModelCode     string
+	Region        string
+	Environment   string
+	Stage         string
+	PreviewBucket *int32
+	Type          QueryType
+	Page          PageSpec
 }
 
 type InteractionField struct {
@@ -56,6 +60,9 @@ type Row struct {
 	RecordKey      string
 	RecordRevision catalog.ConfigRevision
 	Values         map[string]string
+	BasePresent    bool
+	BaseValues     map[string]string
+	ChangedFields  []string
 	MaskedFields   []string
 }
 
@@ -93,9 +100,14 @@ func (querier *Querier) Query(request Request) (Result, error) {
 		return Result{}, errors.New("page query: snapshot provider is required")
 	}
 	request.ModelCode = strings.TrimSpace(request.ModelCode)
+	request.Region = strings.TrimSpace(request.Region)
 	request.Environment = strings.TrimSpace(request.Environment)
-	if request.ModelCode == "" || request.Environment == "" {
-		return Result{}, errors.New("page query: model and environment are required")
+	request.Stage = strings.TrimSpace(request.Stage)
+	if request.ModelCode == "" || request.Region == "" || request.Environment == "" {
+		return Result{}, errors.New("page query: model, region, and environment are required")
+	}
+	if request.PreviewBucket != nil && (*request.PreviewBucket < 0 || *request.PreviewBucket > 99) {
+		return Result{}, errors.New("page query: preview bucket must be between 0 and 99")
 	}
 	if request.Type != TypeAll && request.Type != TypeOnlyData {
 		return Result{}, fmt.Errorf("page query: unsupported query type %q", request.Type)
@@ -126,14 +138,35 @@ func (querier *Querier) Query(request Request) (Result, error) {
 	for _, field := range projection {
 		projectionSet[field] = struct{}{}
 	}
-	records := current.Records(model.Collection())
+	baseRecords := current.Records(model.Collection())
+	records, err := overlay.Evaluate(overlay.Query{
+		Collection:    model.Collection(),
+		Scope:         overlay.Scope{Region: request.Region, Environment: request.Environment, Stage: request.Stage},
+		PreviewBucket: request.PreviewBucket,
+	}, baseRecords, current.OverlayRules(model.Collection()))
+	if err != nil {
+		return Result{}, fmt.Errorf("page query: evaluate scope: %w", err)
+	}
+	baseByKey := make(map[string]catalog.ConfigurationRecord, len(baseRecords))
+	for _, record := range baseRecords {
+		baseByKey[record.RecordKey] = record
+	}
 	rows := make([]Row, len(records))
 	modelFields := model.Fields()
 	for index, record := range records {
 		values := make(map[string]string, len(projection))
+		baseValues := make(map[string]string, len(projection))
+		base, basePresent := baseByKey[record.RecordKey]
+		changedFields := make([]string, 0, len(projection))
 		for _, field := range projection {
 			if value, present := record.Data[field]; present {
 				values[field] = value
+			}
+			if value, present := base.Data[field]; basePresent && present {
+				baseValues[field] = value
+			}
+			if !basePresent || values[field] != baseValues[field] {
+				changedFields = append(changedFields, field)
 			}
 		}
 		var masked []string
@@ -145,7 +178,10 @@ func (querier *Querier) Query(request Request) (Result, error) {
 			}
 		}
 		sort.Strings(masked)
-		rows[index] = Row{RecordKey: record.RecordKey, RecordRevision: record.ConfigRevision, Values: values, MaskedFields: masked}
+		rows[index] = Row{
+			RecordKey: record.RecordKey, RecordRevision: record.ConfigRevision, Values: values,
+			BasePresent: basePresent, BaseValues: baseValues, ChangedFields: changedFields, MaskedFields: masked,
+		}
 	}
 	total := int64(len(rows))
 	totalPages := int64(0)

@@ -32,8 +32,8 @@ func (handler *Handler) QueryPage(_ context.Context, request *configv1.QueryPage
 	if request == nil || request.Scope == nil {
 		return nil, status.Error(codes.InvalidArgument, "model_code and scope are required")
 	}
-	if len(request.Conditions) != 0 || request.PreviewBucket != nil {
-		return nil, status.Error(codes.Unimplemented, "filters and preview bucket are not implemented in the base-only slice")
+	if len(request.Conditions) != 0 {
+		return nil, status.Error(codes.Unimplemented, "filters are not implemented")
 	}
 	queryType, err := fromQueryType(request.QueryType)
 	if err != nil {
@@ -44,7 +44,8 @@ func (handler *Handler) QueryPage(_ context.Context, request *configv1.QueryPage
 		page.Number, page.Size = request.Page.Number, request.Page.Size
 	}
 	result, err := handler.application.Query(pagequery.Request{
-		ModelCode: request.ModelCode, Environment: request.Scope.Environment, Type: queryType, Page: page,
+		ModelCode: request.ModelCode, Region: request.Scope.Region, Environment: request.Scope.Environment,
+		Stage: request.Scope.Stage, PreviewBucket: request.PreviewBucket, Type: queryType, Page: page,
 	})
 	if err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())
@@ -70,7 +71,11 @@ func (handler *Handler) QueryPage(_ context.Context, request *configv1.QueryPage
 		if err != nil {
 			return nil, status.Error(codes.Internal, "record revision exceeds RPC range")
 		}
-		response.Rows[index] = &configv1.PageRow{RecordKey: row.RecordKey, RecordRevision: revision, Values: cloneMap(row.Values), MaskedFields: append([]string(nil), row.MaskedFields...)}
+		response.Rows[index] = &configv1.PageRow{
+			RecordKey: row.RecordKey, RecordRevision: revision, Values: cloneMap(row.Values),
+			MaskedFields: append([]string(nil), row.MaskedFields...), BasePresent: row.BasePresent,
+			BaseValues: cloneMap(row.BaseValues), ChangedFields: append([]string(nil), row.ChangedFields...),
+		}
 	}
 	for index, field := range result.InteractionFields {
 		operators := make([]commonv1.FilterOperator, len(field.AllowedFilterOperators))

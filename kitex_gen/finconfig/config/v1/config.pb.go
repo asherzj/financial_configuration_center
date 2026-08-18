@@ -1405,6 +1405,9 @@ type PageRow struct {
 	RecordRevision int64                  `protobuf:"varint,2,opt,name=record_revision,json=recordRevision,proto3" json:"record_revision,omitempty"`
 	Values         map[string]string      `protobuf:"bytes,3,rep,name=values,proto3" json:"values,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
 	MaskedFields   []string               `protobuf:"bytes,4,rep,name=masked_fields,json=maskedFields,proto3" json:"masked_fields,omitempty"`
+	BasePresent    bool                   `protobuf:"varint,5,opt,name=base_present,json=basePresent,proto3" json:"base_present,omitempty"`
+	BaseValues     map[string]string      `protobuf:"bytes,6,rep,name=base_values,json=baseValues,proto3" json:"base_values,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	ChangedFields  []string               `protobuf:"bytes,7,rep,name=changed_fields,json=changedFields,proto3" json:"changed_fields,omitempty"`
 	unknownFields  protoimpl.UnknownFields
 	sizeCache      protoimpl.SizeCache
 }
@@ -1463,6 +1466,27 @@ func (x *PageRow) GetValues() map[string]string {
 func (x *PageRow) GetMaskedFields() []string {
 	if x != nil {
 		return x.MaskedFields
+	}
+	return nil
+}
+
+func (x *PageRow) GetBasePresent() bool {
+	if x != nil {
+		return x.BasePresent
+	}
+	return false
+}
+
+func (x *PageRow) GetBaseValues() map[string]string {
+	if x != nil {
+		return x.BaseValues
+	}
+	return nil
+}
+
+func (x *PageRow) GetChangedFields() []string {
+	if x != nil {
+		return x.ChangedFields
 	}
 	return nil
 }
@@ -2220,14 +2244,21 @@ const file_finconfig_config_v1_config_proto_rawDesc = "" +
 	"\aoptions\x18\x12 \x03(\v2!.finconfig.config.v1.SelectOptionR\aoptionsB\f\n" +
 	"\n" +
 	"_auto_fillB\x10\n" +
-	"\x0e_default_value\"\xf3\x01\n" +
+	"\x0e_default_value\"\xcb\x03\n" +
 	"\aPageRow\x12\x1d\n" +
 	"\n" +
 	"record_key\x18\x01 \x01(\tR\trecordKey\x12'\n" +
 	"\x0frecord_revision\x18\x02 \x01(\x03R\x0erecordRevision\x12@\n" +
 	"\x06values\x18\x03 \x03(\v2(.finconfig.config.v1.PageRow.ValuesEntryR\x06values\x12#\n" +
-	"\rmasked_fields\x18\x04 \x03(\tR\fmaskedFields\x1a9\n" +
+	"\rmasked_fields\x18\x04 \x03(\tR\fmaskedFields\x12!\n" +
+	"\fbase_present\x18\x05 \x01(\bR\vbasePresent\x12M\n" +
+	"\vbase_values\x18\x06 \x03(\v2,.finconfig.config.v1.PageRow.BaseValuesEntryR\n" +
+	"baseValues\x12%\n" +
+	"\x0echanged_fields\x18\a \x03(\tR\rchangedFields\x1a9\n" +
 	"\vValuesEntry\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\x1a=\n" +
+	"\x0fBaseValuesEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xd1\x01\n" +
 	"\vReleaseType\x12\x12\n" +
@@ -2312,7 +2343,7 @@ func file_finconfig_config_v1_config_proto_rawDescGZIP() []byte {
 	return file_finconfig_config_v1_config_proto_rawDescData
 }
 
-var file_finconfig_config_v1_config_proto_msgTypes = make([]protoimpl.MessageInfo, 32)
+var file_finconfig_config_v1_config_proto_msgTypes = make([]protoimpl.MessageInfo, 33)
 var file_finconfig_config_v1_config_proto_goTypes = []any{
 	(*VersionView)(nil),                 // 0: finconfig.config.v1.VersionView
 	(*GetSnapshotRequest)(nil),          // 1: finconfig.config.v1.GetSnapshotRequest
@@ -2346,90 +2377,92 @@ var file_finconfig_config_v1_config_proto_goTypes = []any{
 	nil,                                 // 29: finconfig.config.v1.SnapshotRecord.ValuesEntry
 	nil,                                 // 30: finconfig.config.v1.ValidationRule.ParamsEntry
 	nil,                                 // 31: finconfig.config.v1.PageRow.ValuesEntry
-	(*v1.Digest)(nil),                   // 32: finconfig.common.v1.Digest
-	(*v1.Scope)(nil),                    // 33: finconfig.common.v1.Scope
-	(*v1.SnapshotIdentity)(nil),         // 34: finconfig.common.v1.SnapshotIdentity
-	(*timestamppb.Timestamp)(nil),       // 35: google.protobuf.Timestamp
-	(v1.FieldType)(0),                   // 36: finconfig.common.v1.FieldType
-	(v1.FilterOperator)(0),              // 37: finconfig.common.v1.FilterOperator
-	(v1.QueryPageType)(0),               // 38: finconfig.common.v1.QueryPageType
-	(*v1.PageRequest)(nil),              // 39: finconfig.common.v1.PageRequest
-	(v1.UiControlType)(0),               // 40: finconfig.common.v1.UiControlType
-	(*v1.PageResponse)(nil),             // 41: finconfig.common.v1.PageResponse
+	nil,                                 // 32: finconfig.config.v1.PageRow.BaseValuesEntry
+	(*v1.Digest)(nil),                   // 33: finconfig.common.v1.Digest
+	(*v1.Scope)(nil),                    // 34: finconfig.common.v1.Scope
+	(*v1.SnapshotIdentity)(nil),         // 35: finconfig.common.v1.SnapshotIdentity
+	(*timestamppb.Timestamp)(nil),       // 36: google.protobuf.Timestamp
+	(v1.FieldType)(0),                   // 37: finconfig.common.v1.FieldType
+	(v1.FilterOperator)(0),              // 38: finconfig.common.v1.FilterOperator
+	(v1.QueryPageType)(0),               // 39: finconfig.common.v1.QueryPageType
+	(*v1.PageRequest)(nil),              // 40: finconfig.common.v1.PageRequest
+	(v1.UiControlType)(0),               // 41: finconfig.common.v1.UiControlType
+	(*v1.PageResponse)(nil),             // 42: finconfig.common.v1.PageResponse
 }
 var file_finconfig_config_v1_config_proto_depIdxs = []int32{
-	32, // 0: finconfig.config.v1.VersionView.base_digest:type_name -> finconfig.common.v1.Digest
-	32, // 1: finconfig.config.v1.VersionView.overlay_digest:type_name -> finconfig.common.v1.Digest
-	32, // 2: finconfig.config.v1.VersionView.effective_digest:type_name -> finconfig.common.v1.Digest
-	33, // 3: finconfig.config.v1.GetSnapshotRequest.scope:type_name -> finconfig.common.v1.Scope
+	33, // 0: finconfig.config.v1.VersionView.base_digest:type_name -> finconfig.common.v1.Digest
+	33, // 1: finconfig.config.v1.VersionView.overlay_digest:type_name -> finconfig.common.v1.Digest
+	33, // 2: finconfig.config.v1.VersionView.effective_digest:type_name -> finconfig.common.v1.Digest
+	34, // 3: finconfig.config.v1.GetSnapshotRequest.scope:type_name -> finconfig.common.v1.Scope
 	0,  // 4: finconfig.config.v1.GetSnapshotRequest.known_versions:type_name -> finconfig.config.v1.VersionView
 	0,  // 5: finconfig.config.v1.CollectionPayload.version:type_name -> finconfig.config.v1.VersionView
 	4,  // 6: finconfig.config.v1.CollectionData.records:type_name -> finconfig.config.v1.SnapshotRecord
 	29, // 7: finconfig.config.v1.SnapshotRecord.values:type_name -> finconfig.config.v1.SnapshotRecord.ValuesEntry
-	34, // 8: finconfig.config.v1.GetSnapshotResponse.snapshot:type_name -> finconfig.common.v1.SnapshotIdentity
-	33, // 9: finconfig.config.v1.GetSnapshotResponse.scope:type_name -> finconfig.common.v1.Scope
+	35, // 8: finconfig.config.v1.GetSnapshotResponse.snapshot:type_name -> finconfig.common.v1.SnapshotIdentity
+	34, // 9: finconfig.config.v1.GetSnapshotResponse.scope:type_name -> finconfig.common.v1.Scope
 	2,  // 10: finconfig.config.v1.GetSnapshotResponse.collections:type_name -> finconfig.config.v1.CollectionPayload
-	33, // 11: finconfig.config.v1.DiffVersionsRequest.scope:type_name -> finconfig.common.v1.Scope
+	34, // 11: finconfig.config.v1.DiffVersionsRequest.scope:type_name -> finconfig.common.v1.Scope
 	0,  // 12: finconfig.config.v1.DiffVersionsRequest.known_versions:type_name -> finconfig.config.v1.VersionView
-	34, // 13: finconfig.config.v1.DiffVersionsResponse.snapshot:type_name -> finconfig.common.v1.SnapshotIdentity
-	33, // 14: finconfig.config.v1.GetCollectionsRequest.scope:type_name -> finconfig.common.v1.Scope
-	34, // 15: finconfig.config.v1.GetCollectionsResponse.snapshot:type_name -> finconfig.common.v1.SnapshotIdentity
+	35, // 13: finconfig.config.v1.DiffVersionsResponse.snapshot:type_name -> finconfig.common.v1.SnapshotIdentity
+	34, // 14: finconfig.config.v1.GetCollectionsRequest.scope:type_name -> finconfig.common.v1.Scope
+	35, // 15: finconfig.config.v1.GetCollectionsResponse.snapshot:type_name -> finconfig.common.v1.SnapshotIdentity
 	2,  // 16: finconfig.config.v1.GetCollectionsResponse.collections:type_name -> finconfig.config.v1.CollectionPayload
-	33, // 17: finconfig.config.v1.WatchRequest.scope:type_name -> finconfig.common.v1.Scope
-	34, // 18: finconfig.config.v1.WatchResponse.snapshot:type_name -> finconfig.common.v1.SnapshotIdentity
+	34, // 17: finconfig.config.v1.WatchRequest.scope:type_name -> finconfig.common.v1.Scope
+	35, // 18: finconfig.config.v1.WatchResponse.snapshot:type_name -> finconfig.common.v1.SnapshotIdentity
 	0,  // 19: finconfig.config.v1.WatchResponse.versions:type_name -> finconfig.config.v1.VersionView
-	35, // 20: finconfig.config.v1.WatchResponse.occurred_at:type_name -> google.protobuf.Timestamp
-	36, // 21: finconfig.config.v1.ScalarValue.type:type_name -> finconfig.common.v1.FieldType
-	37, // 22: finconfig.config.v1.FilterCondition.operator:type_name -> finconfig.common.v1.FilterOperator
+	36, // 20: finconfig.config.v1.WatchResponse.occurred_at:type_name -> google.protobuf.Timestamp
+	37, // 21: finconfig.config.v1.ScalarValue.type:type_name -> finconfig.common.v1.FieldType
+	38, // 22: finconfig.config.v1.FilterCondition.operator:type_name -> finconfig.common.v1.FilterOperator
 	12, // 23: finconfig.config.v1.FilterCondition.value:type_name -> finconfig.config.v1.ScalarValue
 	12, // 24: finconfig.config.v1.FilterCondition.lower:type_name -> finconfig.config.v1.ScalarValue
 	12, // 25: finconfig.config.v1.FilterCondition.upper:type_name -> finconfig.config.v1.ScalarValue
 	12, // 26: finconfig.config.v1.FilterCondition.set:type_name -> finconfig.config.v1.ScalarValue
-	33, // 27: finconfig.config.v1.QueryPageRequest.scope:type_name -> finconfig.common.v1.Scope
-	38, // 28: finconfig.config.v1.QueryPageRequest.query_type:type_name -> finconfig.common.v1.QueryPageType
+	34, // 27: finconfig.config.v1.QueryPageRequest.scope:type_name -> finconfig.common.v1.Scope
+	39, // 28: finconfig.config.v1.QueryPageRequest.query_type:type_name -> finconfig.common.v1.QueryPageType
 	13, // 29: finconfig.config.v1.QueryPageRequest.conditions:type_name -> finconfig.config.v1.FilterCondition
-	39, // 30: finconfig.config.v1.QueryPageRequest.page:type_name -> finconfig.common.v1.PageRequest
+	40, // 30: finconfig.config.v1.QueryPageRequest.page:type_name -> finconfig.common.v1.PageRequest
 	30, // 31: finconfig.config.v1.ValidationRule.params:type_name -> finconfig.config.v1.ValidationRule.ParamsEntry
-	36, // 32: finconfig.config.v1.PageInteractionField.type:type_name -> finconfig.common.v1.FieldType
-	40, // 33: finconfig.config.v1.PageInteractionField.ui_control:type_name -> finconfig.common.v1.UiControlType
+	37, // 32: finconfig.config.v1.PageInteractionField.type:type_name -> finconfig.common.v1.FieldType
+	41, // 33: finconfig.config.v1.PageInteractionField.ui_control:type_name -> finconfig.common.v1.UiControlType
 	17, // 34: finconfig.config.v1.PageInteractionField.auto_fill:type_name -> finconfig.config.v1.AutoFillRule
-	37, // 35: finconfig.config.v1.PageInteractionField.allowed_filter_operators:type_name -> finconfig.common.v1.FilterOperator
-	37, // 36: finconfig.config.v1.PageInteractionField.default_filter_operator:type_name -> finconfig.common.v1.FilterOperator
+	38, // 35: finconfig.config.v1.PageInteractionField.allowed_filter_operators:type_name -> finconfig.common.v1.FilterOperator
+	38, // 36: finconfig.config.v1.PageInteractionField.default_filter_operator:type_name -> finconfig.common.v1.FilterOperator
 	16, // 37: finconfig.config.v1.PageInteractionField.validation_rules:type_name -> finconfig.config.v1.ValidationRule
 	15, // 38: finconfig.config.v1.PageInteractionField.options:type_name -> finconfig.config.v1.SelectOption
 	31, // 39: finconfig.config.v1.PageRow.values:type_name -> finconfig.config.v1.PageRow.ValuesEntry
-	38, // 40: finconfig.config.v1.QueryPageResponse.query_type:type_name -> finconfig.common.v1.QueryPageType
-	19, // 41: finconfig.config.v1.QueryPageResponse.rows:type_name -> finconfig.config.v1.PageRow
-	18, // 42: finconfig.config.v1.QueryPageResponse.interaction_fields:type_name -> finconfig.config.v1.PageInteractionField
-	20, // 43: finconfig.config.v1.QueryPageResponse.release_types:type_name -> finconfig.config.v1.ReleaseType
-	41, // 44: finconfig.config.v1.QueryPageResponse.page:type_name -> finconfig.common.v1.PageResponse
-	34, // 45: finconfig.config.v1.QueryPageResponse.snapshot:type_name -> finconfig.common.v1.SnapshotIdentity
-	22, // 46: finconfig.config.v1.NotifyRequest.targets:type_name -> finconfig.config.v1.RefreshTarget
-	33, // 47: finconfig.config.v1.NotifyRequest.scope:type_name -> finconfig.common.v1.Scope
-	34, // 48: finconfig.config.v1.NotifyResponse.snapshot:type_name -> finconfig.common.v1.SnapshotIdentity
-	34, // 49: finconfig.config.v1.GetSnapshotStatusResponse.snapshot:type_name -> finconfig.common.v1.SnapshotIdentity
-	0,  // 50: finconfig.config.v1.GetCollectionStatusResponse.version:type_name -> finconfig.config.v1.VersionView
-	1,  // 51: finconfig.config.v1.ConfigService.GetSnapshot:input_type -> finconfig.config.v1.GetSnapshotRequest
-	6,  // 52: finconfig.config.v1.ConfigService.DiffVersions:input_type -> finconfig.config.v1.DiffVersionsRequest
-	8,  // 53: finconfig.config.v1.ConfigService.GetCollections:input_type -> finconfig.config.v1.GetCollectionsRequest
-	10, // 54: finconfig.config.v1.ConfigService.Watch:input_type -> finconfig.config.v1.WatchRequest
-	14, // 55: finconfig.config.v1.PageQueryService.QueryPage:input_type -> finconfig.config.v1.QueryPageRequest
-	23, // 56: finconfig.config.v1.RefreshService.Notify:input_type -> finconfig.config.v1.NotifyRequest
-	25, // 57: finconfig.config.v1.DiagnosticsService.GetSnapshotStatus:input_type -> finconfig.config.v1.GetSnapshotStatusRequest
-	27, // 58: finconfig.config.v1.DiagnosticsService.GetCollectionStatus:input_type -> finconfig.config.v1.GetCollectionStatusRequest
-	5,  // 59: finconfig.config.v1.ConfigService.GetSnapshot:output_type -> finconfig.config.v1.GetSnapshotResponse
-	7,  // 60: finconfig.config.v1.ConfigService.DiffVersions:output_type -> finconfig.config.v1.DiffVersionsResponse
-	9,  // 61: finconfig.config.v1.ConfigService.GetCollections:output_type -> finconfig.config.v1.GetCollectionsResponse
-	11, // 62: finconfig.config.v1.ConfigService.Watch:output_type -> finconfig.config.v1.WatchResponse
-	21, // 63: finconfig.config.v1.PageQueryService.QueryPage:output_type -> finconfig.config.v1.QueryPageResponse
-	24, // 64: finconfig.config.v1.RefreshService.Notify:output_type -> finconfig.config.v1.NotifyResponse
-	26, // 65: finconfig.config.v1.DiagnosticsService.GetSnapshotStatus:output_type -> finconfig.config.v1.GetSnapshotStatusResponse
-	28, // 66: finconfig.config.v1.DiagnosticsService.GetCollectionStatus:output_type -> finconfig.config.v1.GetCollectionStatusResponse
-	59, // [59:67] is the sub-list for method output_type
-	51, // [51:59] is the sub-list for method input_type
-	51, // [51:51] is the sub-list for extension type_name
-	51, // [51:51] is the sub-list for extension extendee
-	0,  // [0:51] is the sub-list for field type_name
+	32, // 40: finconfig.config.v1.PageRow.base_values:type_name -> finconfig.config.v1.PageRow.BaseValuesEntry
+	39, // 41: finconfig.config.v1.QueryPageResponse.query_type:type_name -> finconfig.common.v1.QueryPageType
+	19, // 42: finconfig.config.v1.QueryPageResponse.rows:type_name -> finconfig.config.v1.PageRow
+	18, // 43: finconfig.config.v1.QueryPageResponse.interaction_fields:type_name -> finconfig.config.v1.PageInteractionField
+	20, // 44: finconfig.config.v1.QueryPageResponse.release_types:type_name -> finconfig.config.v1.ReleaseType
+	42, // 45: finconfig.config.v1.QueryPageResponse.page:type_name -> finconfig.common.v1.PageResponse
+	35, // 46: finconfig.config.v1.QueryPageResponse.snapshot:type_name -> finconfig.common.v1.SnapshotIdentity
+	22, // 47: finconfig.config.v1.NotifyRequest.targets:type_name -> finconfig.config.v1.RefreshTarget
+	34, // 48: finconfig.config.v1.NotifyRequest.scope:type_name -> finconfig.common.v1.Scope
+	35, // 49: finconfig.config.v1.NotifyResponse.snapshot:type_name -> finconfig.common.v1.SnapshotIdentity
+	35, // 50: finconfig.config.v1.GetSnapshotStatusResponse.snapshot:type_name -> finconfig.common.v1.SnapshotIdentity
+	0,  // 51: finconfig.config.v1.GetCollectionStatusResponse.version:type_name -> finconfig.config.v1.VersionView
+	1,  // 52: finconfig.config.v1.ConfigService.GetSnapshot:input_type -> finconfig.config.v1.GetSnapshotRequest
+	6,  // 53: finconfig.config.v1.ConfigService.DiffVersions:input_type -> finconfig.config.v1.DiffVersionsRequest
+	8,  // 54: finconfig.config.v1.ConfigService.GetCollections:input_type -> finconfig.config.v1.GetCollectionsRequest
+	10, // 55: finconfig.config.v1.ConfigService.Watch:input_type -> finconfig.config.v1.WatchRequest
+	14, // 56: finconfig.config.v1.PageQueryService.QueryPage:input_type -> finconfig.config.v1.QueryPageRequest
+	23, // 57: finconfig.config.v1.RefreshService.Notify:input_type -> finconfig.config.v1.NotifyRequest
+	25, // 58: finconfig.config.v1.DiagnosticsService.GetSnapshotStatus:input_type -> finconfig.config.v1.GetSnapshotStatusRequest
+	27, // 59: finconfig.config.v1.DiagnosticsService.GetCollectionStatus:input_type -> finconfig.config.v1.GetCollectionStatusRequest
+	5,  // 60: finconfig.config.v1.ConfigService.GetSnapshot:output_type -> finconfig.config.v1.GetSnapshotResponse
+	7,  // 61: finconfig.config.v1.ConfigService.DiffVersions:output_type -> finconfig.config.v1.DiffVersionsResponse
+	9,  // 62: finconfig.config.v1.ConfigService.GetCollections:output_type -> finconfig.config.v1.GetCollectionsResponse
+	11, // 63: finconfig.config.v1.ConfigService.Watch:output_type -> finconfig.config.v1.WatchResponse
+	21, // 64: finconfig.config.v1.PageQueryService.QueryPage:output_type -> finconfig.config.v1.QueryPageResponse
+	24, // 65: finconfig.config.v1.RefreshService.Notify:output_type -> finconfig.config.v1.NotifyResponse
+	26, // 66: finconfig.config.v1.DiagnosticsService.GetSnapshotStatus:output_type -> finconfig.config.v1.GetSnapshotStatusResponse
+	28, // 67: finconfig.config.v1.DiagnosticsService.GetCollectionStatus:output_type -> finconfig.config.v1.GetCollectionStatusResponse
+	60, // [60:68] is the sub-list for method output_type
+	52, // [52:60] is the sub-list for method input_type
+	52, // [52:52] is the sub-list for extension type_name
+	52, // [52:52] is the sub-list for extension extendee
+	0,  // [0:52] is the sub-list for field type_name
 }
 
 func init() { file_finconfig_config_v1_config_proto_init() }
@@ -2449,7 +2482,7 @@ func file_finconfig_config_v1_config_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_finconfig_config_v1_config_proto_rawDesc), len(file_finconfig_config_v1_config_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   32,
+			NumMessages:   33,
 			NumExtensions: 0,
 			NumServices:   4,
 		},

@@ -30,7 +30,7 @@ func TestBrowserBaseReleaseJourneyRoutes(t *testing.T) {
 	queryResponse := serveJSON(t, handler, http.MethodPost, "/api/v1/query-page", "", map[string]any{
 		"modelCode": "model", "scope": map[string]any{"region": "cn", "environment": "production"}, "queryType": "ALL",
 	})
-	if queryResponse.Code != http.StatusOK || queries.last.Environment != "production" || queries.last.Type != pagequery.TypeAll {
+	if queryResponse.Code != http.StatusOK || queries.last.Region != "cn" || queries.last.Environment != "production" || queries.last.Type != pagequery.TypeAll {
 		t.Fatalf("query response=%d command=%+v body=%s", queryResponse.Code, queries.last, queryResponse.Body.String())
 	}
 	if !bytes.Contains(queryResponse.Body.Bytes(), []byte(`"releaseTypes":[{"available":true,"code":"direct","name":"Direct","templateCode":"base-final"}]`)) {

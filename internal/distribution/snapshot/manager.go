@@ -11,6 +11,7 @@ import (
 	"time"
 
 	catalog "github.com/asherzj/financial_configuration_center/internal/catalog/domain"
+	overlay "github.com/asherzj/financial_configuration_center/internal/overlay/domain"
 )
 
 type Source interface {
@@ -36,10 +37,11 @@ type Identity struct {
 }
 
 type CollectionInput struct {
-	Definition catalog.CollectionDefinition
-	Models     []catalog.CompiledModel
-	Version    catalog.ConfigRevision
-	Records    []catalog.ConfigurationRecord
+	Definition   catalog.CollectionDefinition
+	Models       []catalog.CompiledModel
+	Version      catalog.ConfigRevision
+	Records      []catalog.ConfigurationRecord
+	OverlayRules []overlay.Rule
 }
 
 type RefreshResult struct {
@@ -48,11 +50,12 @@ type RefreshResult struct {
 }
 
 type collectionView struct {
-	definition catalog.CollectionDefinition
-	version    catalog.ConfigRevision
-	digest     catalog.Digest
-	records    map[string]catalog.ConfigurationRecord
-	ordered    []string
+	definition   catalog.CollectionDefinition
+	version      catalog.ConfigRevision
+	digest       catalog.Digest
+	records      map[string]catalog.ConfigurationRecord
+	ordered      []string
+	overlayRules []overlay.Rule
 }
 
 // Snapshot is immutable after construction. Every method returning nested
@@ -196,6 +199,18 @@ func (snapshot *Snapshot) Records(collection string) []catalog.ConfigurationReco
 	return records
 }
 
+func (snapshot *Snapshot) OverlayRules(collection string) []overlay.Rule {
+	view, exists := snapshot.collections[collection]
+	if !exists {
+		return nil
+	}
+	rules := make([]overlay.Rule, len(view.overlayRules))
+	for index, rule := range view.overlayRules {
+		rules[index] = cloneOverlayRule(rule)
+	}
+	return rules
+}
+
 func buildSnapshot(seed IdentitySeed, generation uint64, publishedAt time.Time, environment string, inputs []CollectionInput) (*Snapshot, error) {
 	candidate := &Snapshot{
 		identity: Identity{
@@ -215,10 +230,11 @@ func buildSnapshot(seed IdentitySeed, generation uint64, publishedAt time.Time, 
 			return nil, fmt.Errorf("build snapshot: duplicate collection %q", name)
 		}
 		view := collectionView{
-			definition: input.Definition,
-			version:    input.Version,
-			records:    make(map[string]catalog.ConfigurationRecord, len(input.Records)),
-			ordered:    make([]string, 0, len(input.Records)),
+			definition:   input.Definition,
+			version:      input.Version,
+			records:      make(map[string]catalog.ConfigurationRecord, len(input.Records)),
+			ordered:      make([]string, 0, len(input.Records)),
+			overlayRules: make([]overlay.Rule, len(input.OverlayRules)),
 		}
 		for _, sourceRecord := range input.Records {
 			if sourceRecord.Collection != name || sourceRecord.Environment != environment || sourceRecord.ConfigRevision == 0 || sourceRecord.ConfigRevision > input.Version {
@@ -248,6 +264,12 @@ func buildSnapshot(seed IdentitySeed, generation uint64, publishedAt time.Time, 
 			return nil, fmt.Errorf("build snapshot: collection %q digest: %w", name, err)
 		}
 		view.digest = digest
+		for index, rule := range input.OverlayRules {
+			if rule.Collection != name || rule.Scope.Environment != environment || rule.ConfigRevision == 0 || rule.ConfigRevision > input.Version {
+				return nil, fmt.Errorf("build snapshot: overlay rule %q identity or revision is invalid", rule.ID)
+			}
+			view.overlayRules[index] = cloneOverlayRule(rule)
+		}
 		candidate.collections[name] = view
 
 		for _, model := range input.Models {
@@ -270,4 +292,38 @@ func cloneRecord(record catalog.ConfigurationRecord) catalog.ConfigurationRecord
 		record.Data[key] = value
 	}
 	return record
+}
+
+func cloneOverlayRule(rule overlay.Rule) overlay.Rule {
+	content := rule.Content
+	rule.Content = make(map[string]string, len(content))
+	for key, value := range content {
+		rule.Content[key] = value
+	}
+	rule.RolloutRanges = append([]overlay.BucketRange(nil), rule.RolloutRanges...)
+	if rule.EffectiveFrom != nil {
+		value := *rule.EffectiveFrom
+		rule.EffectiveFrom = &value
+	}
+	if rule.EffectiveUntil != nil {
+		value := *rule.EffectiveUntil
+		rule.EffectiveUntil = &value
+	}
+	if rule.ActivatedRevision != nil {
+		value := *rule.ActivatedRevision
+		rule.ActivatedRevision = &value
+	}
+	if rule.ActivatedAt != nil {
+		value := *rule.ActivatedAt
+		rule.ActivatedAt = &value
+	}
+	if rule.ExpiredRevision != nil {
+		value := *rule.ExpiredRevision
+		rule.ExpiredRevision = &value
+	}
+	if rule.ExpiredAt != nil {
+		value := *rule.ExpiredAt
+		rule.ExpiredAt = &value
+	}
+	return rule
 }

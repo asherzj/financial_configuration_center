@@ -308,11 +308,23 @@ components:
       required: [modelCode, rows, projectionFields, interactionFields, releaseTypes, snapshot]
       properties:
         modelCode: {type: string}
-        rows: {type: array, items: {type: object}}
+        rows: {type: array, items: {$ref: '#/components/schemas/PageRow'}}
         projectionFields: {type: array, items: {type: string}}
         interactionFields: {type: array, items: {type: object}}
         releaseTypes: {type: array, items: {$ref: '#/components/schemas/ReleaseTypeMetadata'}}
         snapshot: {$ref: '#/components/schemas/SnapshotIdentity'}
+    PageRow:
+      type: object
+      additionalProperties: false
+      required: [recordKey, recordRevision, values, maskedFields, basePresent, baseValues, changedFields]
+      properties:
+        recordKey: {type: string}
+        recordRevision: {type: integer, format: int64, minimum: 1}
+        values: {type: object, additionalProperties: {type: string}}
+        maskedFields: {type: array, items: {type: string}}
+        basePresent: {type: boolean}
+        baseValues: {type: object, additionalProperties: {type: string}}
+        changedFields: {type: array, items: {type: string}}
     ReleaseTypeMetadata:
       type: object
       additionalProperties: false

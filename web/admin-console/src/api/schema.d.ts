@@ -324,11 +324,25 @@ export interface components {
         };
         QueryPageResponse: {
             modelCode: string;
-            rows: Record<string, never>[];
+            rows: components["schemas"]["PageRow"][];
             projectionFields: string[];
             interactionFields: Record<string, never>[];
             releaseTypes: components["schemas"]["ReleaseTypeMetadata"][];
             snapshot: components["schemas"]["SnapshotIdentity"];
+        };
+        PageRow: {
+            recordKey: string;
+            /** Format: int64 */
+            recordRevision: number;
+            values: {
+                [key: string]: string;
+            };
+            maskedFields: string[];
+            basePresent: boolean;
+            baseValues: {
+                [key: string]: string;
+            };
+            changedFields: string[];
         };
         ReleaseTypeMetadata: {
             code: string;

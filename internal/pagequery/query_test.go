@@ -7,6 +7,7 @@ import (
 
 	catalog "github.com/asherzj/financial_configuration_center/internal/catalog/domain"
 	"github.com/asherzj/financial_configuration_center/internal/distribution/snapshot"
+	overlay "github.com/asherzj/financial_configuration_center/internal/overlay/domain"
 	"github.com/asherzj/financial_configuration_center/internal/pagequery"
 )
 
@@ -17,7 +18,7 @@ func TestAllReturnsRowsAndModelDrivenInteractionMetadata(t *testing.T) {
 	querier := pagequery.New(manager)
 	one := int32(1)
 	result, err := querier.Query(pagequery.Request{
-		ModelCode: model.Code(), Environment: "production", Type: pagequery.TypeAll,
+		ModelCode: model.Code(), Region: "cn", Environment: "production", Type: pagequery.TypeAll,
 		Page: pagequery.PageSpec{Number: &one, Size: &one},
 	})
 	if err != nil {
@@ -44,7 +45,7 @@ func TestAllReturnsRowsAndModelDrivenInteractionMetadata(t *testing.T) {
 	}
 
 	result.Rows[0].Values["priority"] = "mutated"
-	again, err := querier.Query(pagequery.Request{ModelCode: model.Code(), Environment: "production", Type: pagequery.TypeAll})
+	again, err := querier.Query(pagequery.Request{ModelCode: model.Code(), Region: "cn", Environment: "production", Type: pagequery.TypeAll})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -58,7 +59,7 @@ func TestOnlyDataOmitsInteractionMetadataAndRejectsInvalidPage(t *testing.T) {
 
 	manager, model, _ := querySnapshot(t)
 	querier := pagequery.New(manager)
-	result, err := querier.Query(pagequery.Request{ModelCode: model.Code(), Environment: "production", Type: pagequery.TypeOnlyData})
+	result, err := querier.Query(pagequery.Request{ModelCode: model.Code(), Region: "cn", Environment: "production", Type: pagequery.TypeOnlyData})
 	if err != nil {
 		t.Fatalf("Query ONLY_DATA: %v", err)
 	}
@@ -66,11 +67,50 @@ func TestOnlyDataOmitsInteractionMetadataAndRejectsInvalidPage(t *testing.T) {
 		t.Fatalf("ONLY_DATA response = %+v", result)
 	}
 	zero := int32(0)
-	if _, err := querier.Query(pagequery.Request{ModelCode: model.Code(), Environment: "production", Type: pagequery.TypeOnlyData, Page: pagequery.PageSpec{Number: &zero}}); err == nil {
+	if _, err := querier.Query(pagequery.Request{ModelCode: model.Code(), Region: "cn", Environment: "production", Type: pagequery.TypeOnlyData, Page: pagequery.PageSpec{Number: &zero}}); err == nil {
 		t.Fatal("explicit page zero succeeded")
 	}
-	if _, err := querier.Query(pagequery.Request{ModelCode: model.Code(), Environment: "staging", Type: pagequery.TypeOnlyData}); err == nil {
+	if _, err := querier.Query(pagequery.Request{ModelCode: model.Code(), Region: "cn", Environment: "staging", Type: pagequery.TypeOnlyData}); err == nil {
 		t.Fatal("querying a different environment from the snapshot succeeded")
+	}
+}
+
+func TestQueryPageReturnsScopeEffectiveValuesAndBaseDiff(t *testing.T) {
+	t.Parallel()
+
+	manager, model, keys := querySnapshot(t)
+	activation := catalog.ConfigRevision(9)
+	manager, err := snapshot.NewManager(source{input: []snapshot.CollectionInput{{
+		Definition: mustDefinition(t), Models: []catalog.CompiledModel{model}, Version: 10,
+		Records: []catalog.ConfigurationRecord{
+			mustRecord(t, mustDefinition(t), "production", map[string]string{"route_code": "a", "priority": "1"}, 8),
+			mustRecord(t, mustDefinition(t), "production", map[string]string{"route_code": "b", "priority": "2"}, 8),
+		},
+		OverlayRules: []overlay.Rule{
+			{ID: "blue", Collection: "payment_routes", Scope: overlay.Scope{Region: "cn", Environment: "production", Stage: "blue"}, RecordKey: keys[0], Action: overlay.ActionModify, Content: map[string]string{"route_code": "a", "priority": "7", "enabled": "false"}, ConfigRevision: 9, ActivatedRevision: &activation},
+			{ID: "green", Collection: "payment_routes", Scope: overlay.Scope{Region: "cn", Environment: "production", Stage: "green"}, RecordKey: keys[0], Action: overlay.ActionModify, Content: map[string]string{"route_code": "a", "priority": "9", "enabled": "false"}, ConfigRevision: 10, ActivatedRevision: &activation},
+		},
+	}}}, snapshot.IdentitySeed{ServerEpoch: "epoch", ServerInstanceID: "server", SnapshotInstance: "scoped"}, clock{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manager.Refresh(context.Background(), "production"); err != nil {
+		t.Fatal(err)
+	}
+	querier := pagequery.New(manager)
+	blue, err := querier.Query(pagequery.Request{ModelCode: model.Code(), Region: "cn", Environment: "production", Stage: "blue", Type: pagequery.TypeAll})
+	if err != nil {
+		t.Fatalf("Query blue: %v", err)
+	}
+	green, err := querier.Query(pagequery.Request{ModelCode: model.Code(), Region: "cn", Environment: "production", Stage: "green", Type: pagequery.TypeAll})
+	if err != nil {
+		t.Fatalf("Query green: %v", err)
+	}
+	if blue.Rows[0].Values["priority"] != "7" || green.Rows[0].Values["priority"] != "9" {
+		t.Fatalf("scope effective values: blue=%+v green=%+v", blue.Rows[0], green.Rows[0])
+	}
+	if !blue.Rows[0].BasePresent || blue.Rows[0].BaseValues["priority"] != "1" || len(blue.Rows[0].ChangedFields) != 1 || blue.Rows[0].ChangedFields[0] != "priority" {
+		t.Fatalf("blue base diff = %+v", blue.Rows[0])
 	}
 }
 
@@ -86,18 +126,8 @@ func (clock) Now() time.Time { return time.Date(2026, 8, 19, 5, 0, 0, 0, time.UT
 
 func querySnapshot(t *testing.T) (*snapshot.Manager, catalog.CompiledModel, []string) {
 	t.Helper()
+	definition := mustDefinition(t)
 	defaultEnabled := "false"
-	definition, err := catalog.CompileCollection(catalog.CollectionSpec{
-		Name: "payment_routes", SDKDeliveryEnabled: true, SchemaVersion: 1, KeyFields: []string{"route_code"},
-		Fields: []catalog.FieldDefinition{
-			{Name: "route_code", DisplayName: "Route code", Type: catalog.FieldTypeString, Required: true, DisplayOrder: 0},
-			{Name: "priority", DisplayName: "Priority", Type: catalog.FieldTypeInt64, Required: true, DisplayOrder: 1},
-			{Name: "enabled", DisplayName: "Enabled", Type: catalog.FieldTypeBool, Required: true, DefaultValue: &defaultEnabled, DisplayOrder: 2},
-		},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
 	model, err := catalog.CompileModel(definition, catalog.ModelSpec{
 		Code: "payment-route-admin", Name: "Payment routes", Collection: definition.Name(),
 		Fields: []catalog.ModelField{
@@ -129,4 +159,31 @@ func querySnapshot(t *testing.T) (*snapshot.Manager, catalog.CompiledModel, []st
 		t.Fatal(err)
 	}
 	return manager, model, []string{first.RecordKey, second.RecordKey}
+}
+
+func mustDefinition(t *testing.T) catalog.CollectionDefinition {
+	t.Helper()
+	defaultEnabled := "false"
+	definition, err := catalog.CompileCollection(catalog.CollectionSpec{
+		Name: "payment_routes", SDKDeliveryEnabled: true, SchemaVersion: 1, KeyFields: []string{"route_code"},
+		Fields: []catalog.FieldDefinition{
+			{Name: "route_code", DisplayName: "Route code", Type: catalog.FieldTypeString, Required: true, DisplayOrder: 0},
+			{Name: "priority", DisplayName: "Priority", Type: catalog.FieldTypeInt64, Required: true, DisplayOrder: 1},
+			{Name: "enabled", DisplayName: "Enabled", Type: catalog.FieldTypeBool, Required: true, DefaultValue: &defaultEnabled, DisplayOrder: 2},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return definition
+}
+
+func mustRecord(t *testing.T, definition catalog.CollectionDefinition, environment string, data map[string]string, revision catalog.ConfigRevision) catalog.ConfigurationRecord {
+	t.Helper()
+	record, err := definition.NewRecord(environment, data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	record.ConfigRevision = revision
+	return record
 }

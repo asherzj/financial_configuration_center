@@ -15,9 +15,12 @@ import (
 func TestQueryPageMapsCompleteAllMetadata(t *testing.T) {
 	t.Parallel()
 
-	application := stubQuerier{result: pagequery.Result{
+	application := &stubQuerier{result: pagequery.Result{
 		ModelCode: "model", ModelName: "Model", QueryType: pagequery.TypeAll,
-		Rows:             []pagequery.Row{{RecordKey: "key", RecordRevision: 8, Values: map[string]string{"code": "a"}}},
+		Rows: []pagequery.Row{{
+			RecordKey: "key", RecordRevision: 8, Values: map[string]string{"code": "effective"},
+			BasePresent: true, BaseValues: map[string]string{"code": "base"}, ChangedFields: []string{"code"},
+		}},
 		ProjectionFields: []string{"code"},
 		InteractionFields: []pagequery.InteractionField{{
 			Name: "code", DisplayName: "Code", Type: catalog.FieldTypeString, UIControl: catalog.UIControlInput,
@@ -34,7 +37,8 @@ func TestQueryPageMapsCompleteAllMetadata(t *testing.T) {
 		t.Fatal(err)
 	}
 	response, err := handler.QueryPage(t.Context(), &configv1.QueryPageRequest{
-		ModelCode: "model", Scope: &commonv1.Scope{Environment: "production"}, QueryType: commonv1.QueryPageType_QUERY_PAGE_TYPE_ALL,
+		ModelCode: "model", Scope: &commonv1.Scope{Region: "cn", Environment: "production", Stage: "blue"},
+		QueryType: commonv1.QueryPageType_QUERY_PAGE_TYPE_ALL, PreviewBucket: int32Pointer(42),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -45,10 +49,22 @@ func TestQueryPageMapsCompleteAllMetadata(t *testing.T) {
 	if response.ModelRevision != 7 || response.CollectionRevision != 8 || response.Page.Size != 20 {
 		t.Fatalf("QueryPage authority = %+v", response)
 	}
+	if !response.Rows[0].BasePresent || response.Rows[0].BaseValues["code"] != "base" || len(response.Rows[0].ChangedFields) != 1 {
+		t.Fatalf("QueryPage row diff = %+v", response.Rows[0])
+	}
+	if application.last.Region != "cn" || application.last.Stage != "blue" || application.last.PreviewBucket == nil || *application.last.PreviewBucket != 42 {
+		t.Fatalf("QueryPage scope request = %+v", application.last)
+	}
 }
 
-type stubQuerier struct{ result pagequery.Result }
+type stubQuerier struct {
+	result pagequery.Result
+	last   pagequery.Request
+}
 
-func (querier stubQuerier) Query(pagequery.Request) (pagequery.Result, error) {
+func (querier *stubQuerier) Query(request pagequery.Request) (pagequery.Result, error) {
+	querier.last = request
 	return querier.result, nil
 }
+
+func int32Pointer(value int32) *int32 { return &value }

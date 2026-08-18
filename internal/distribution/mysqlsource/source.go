@@ -6,9 +6,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"time"
 
 	catalog "github.com/asherzj/financial_configuration_center/internal/catalog/domain"
 	"github.com/asherzj/financial_configuration_center/internal/distribution/snapshot"
+	overlay "github.com/asherzj/financial_configuration_center/internal/overlay/domain"
 	platformmysql "github.com/asherzj/financial_configuration_center/internal/platform/mysql"
 	"gorm.io/gorm"
 )
@@ -59,7 +61,14 @@ func (source *Source) LoadEnvironment(ctx context.Context, environment string) (
 			if err != nil {
 				return err
 			}
-			inputs[index] = snapshot.CollectionInput{Definition: definition, Models: models, Version: catalog.ConfigRevision(row.ConfigRevision), Records: records}
+			overlayRules, err := loadOverlayRules(ctx, db, definition.Name(), environment)
+			if err != nil {
+				return err
+			}
+			inputs[index] = snapshot.CollectionInput{
+				Definition: definition, Models: models, Version: catalog.ConfigRevision(row.ConfigRevision),
+				Records: records, OverlayRules: overlayRules,
+			}
 		}
 		return nil
 	})
@@ -236,6 +245,63 @@ func loadRecords(ctx context.Context, db *gorm.DB, collection, environment strin
 		}
 	}
 	return records, nil
+}
+
+func loadOverlayRules(ctx context.Context, db *gorm.DB, collection, environment string) ([]overlay.Rule, error) {
+	type row struct {
+		ID, Region, Stage, RecordKey, Action, ReleaseOrderID string
+		Content, RolloutRanges                               []byte
+		ConfigRevision                                       uint64
+		EffectiveFrom, EffectiveUntil                        *time.Time
+		ActivatedRevision, ExpiredRevision                   *uint64
+		ActivatedAt, ExpiredAt                               *time.Time
+		CreatedAt, UpdatedAt                                 time.Time
+		CreatedBy, UpdatedBy                                 string
+	}
+	var rows []row
+	if err := db.WithContext(ctx).Raw(`
+		SELECT id, region, stage, record_key, action, content, rollout_ranges,
+			config_revision, release_order_id, effective_from, effective_until,
+			activated_revision, activated_at, expired_revision, expired_at,
+			created_at, created_by, updated_at, updated_by
+		FROM configuration_overlays
+		WHERE collection_name = ? AND environment = ?
+		ORDER BY region, stage, record_key
+	`, collection, environment).Scan(&rows).Error; err != nil {
+		return nil, err
+	}
+	rules := make([]overlay.Rule, len(rows))
+	for index, loaded := range rows {
+		var content map[string]string
+		if len(loaded.Content) > 0 {
+			if err := json.Unmarshal(loaded.Content, &content); err != nil {
+				return nil, fmt.Errorf("decode overlay %q content: %w", loaded.ID, err)
+			}
+		}
+		var ranges []overlay.BucketRange
+		if err := json.Unmarshal(loaded.RolloutRanges, &ranges); err != nil {
+			return nil, fmt.Errorf("decode overlay %q ranges: %w", loaded.ID, err)
+		}
+		rule := overlay.Rule{
+			ID: loaded.ID, Collection: collection,
+			Scope:     overlay.Scope{Region: loaded.Region, Environment: environment, Stage: loaded.Stage},
+			RecordKey: loaded.RecordKey, Action: overlay.Action(loaded.Action), Content: content,
+			RolloutRanges: ranges, ConfigRevision: catalog.ConfigRevision(loaded.ConfigRevision),
+			ReleaseOrderID: loaded.ReleaseOrderID, EffectiveFrom: loaded.EffectiveFrom, EffectiveUntil: loaded.EffectiveUntil,
+			ActivatedAt: loaded.ActivatedAt, ExpiredAt: loaded.ExpiredAt,
+			CreatedAt: loaded.CreatedAt, CreatedBy: loaded.CreatedBy, UpdatedAt: loaded.UpdatedAt, UpdatedBy: loaded.UpdatedBy,
+		}
+		if loaded.ActivatedRevision != nil {
+			value := catalog.ConfigRevision(*loaded.ActivatedRevision)
+			rule.ActivatedRevision = &value
+		}
+		if loaded.ExpiredRevision != nil {
+			value := catalog.ConfigRevision(*loaded.ExpiredRevision)
+			rule.ExpiredRevision = &value
+		}
+		rules[index] = rule
+	}
+	return rules, nil
 }
 
 var _ snapshot.Source = (*Source)(nil)

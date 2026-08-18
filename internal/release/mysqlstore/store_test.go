@@ -484,6 +484,24 @@ func TestRealMySQLOverlayApplyAndRollbackTransaction(t *testing.T) {
 	assertCount(t, raw, `SELECT COUNT(*) FROM release_step_states WHERE release_order_id = '`+created.ID+`' AND JSON_EXTRACT(effect, '$.effectVersion') = 1 AND JSON_EXTRACT(effect, '$.overlay.appliedRevision') = 8`, 1)
 	assertCount(t, raw, `SELECT COUNT(*) FROM configuration_change_log WHERE release_order_id = '`+created.ID+`' AND kind = 'OVERLAY'`, 1)
 	assertCount(t, raw, `SELECT COUNT(*) FROM outbox_events WHERE aggregate_id = '`+created.ID+`'`, 1)
+	distributionSource, err := mysqlsource.New(database)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager, err := snapshot.NewManager(distributionSource, snapshot.IdentitySeed{ServerEpoch: "overlay-epoch", ServerInstanceID: "overlay-server", SnapshotInstance: "overlay-snapshot"}, fixedClock{now: now})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manager.Refresh(ctx, "production"); err != nil {
+		t.Fatal(err)
+	}
+	page, err := pagequery.New(manager).Query(pagequery.Request{ModelCode: "payment-route-admin", Region: "cn", Environment: "production", Stage: "blue", Type: pagequery.TypeAll})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(page.Rows) != 1 || page.Rows[0].Values["priority"] != "2" || page.Rows[0].BaseValues["priority"] != "1" {
+		t.Fatalf("scope-aware MySQL page = %+v", page)
+	}
 
 	rolledBack, err := service.Act(ctx, application.ActCommand{
 		OrderID: created.ID, ActionRequestID: "40000000-0000-4000-8000-000000000002",
@@ -676,7 +694,7 @@ func TestRealMySQLBaseFinalTransaction(t *testing.T) {
 	if _, err := productionSnapshots.Refresh(ctx, "production"); err != nil {
 		t.Fatalf("refresh production snapshot: %v", err)
 	}
-	page, err := pagequery.New(productionSnapshots).Query(pagequery.Request{ModelCode: "payment-route-admin", Environment: "production", Type: pagequery.TypeAll})
+	page, err := pagequery.New(productionSnapshots).Query(pagequery.Request{ModelCode: "payment-route-admin", Region: "cn", Environment: "production", Type: pagequery.TypeAll})
 	if err != nil {
 		t.Fatalf("query production page: %v", err)
 	}
@@ -705,7 +723,7 @@ func TestRealMySQLBaseFinalTransaction(t *testing.T) {
 	if _, err := stagingSnapshots.Refresh(ctx, "staging"); err != nil {
 		t.Fatalf("refresh staging snapshot: %v", err)
 	}
-	stagingPage, err := pagequery.New(stagingSnapshots).Query(pagequery.Request{ModelCode: "payment-route-admin", Environment: "staging", Type: pagequery.TypeOnlyData})
+	stagingPage, err := pagequery.New(stagingSnapshots).Query(pagequery.Request{ModelCode: "payment-route-admin", Region: "cn", Environment: "staging", Type: pagequery.TypeOnlyData})
 	if err != nil {
 		t.Fatalf("query staging page: %v", err)
 	}
