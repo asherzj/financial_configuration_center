@@ -305,6 +305,80 @@ func TestReleasePreservesSensitiveAuthorityAndRejectsDisabledSelection(t *testin
 	}
 }
 
+func TestReleaseRejectsStaleCollectionSelectionButKeepsHistoricalValue(t *testing.T) {
+	t.Parallel()
+	providerDefinition, err := catalog.CompileCollection(catalog.CollectionSpec{
+		Name: "providers", KeyFields: []string{"code"}, SchemaVersion: 1,
+		Fields: []catalog.FieldDefinition{
+			{Name: "code", DisplayName: "Code", Type: catalog.FieldTypeString, Required: true, DisplayOrder: 0},
+			{Name: "label", DisplayName: "Label", Type: catalog.FieldTypeString, Required: true, DisplayOrder: 1},
+			{Name: "enabled", DisplayName: "Enabled", Type: catalog.FieldTypeBool, Required: true, DisplayOrder: 2},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	credentialDefinition, err := catalog.CompileCollection(catalog.CollectionSpec{
+		Name: "credentials", KeyFields: []string{"name"}, SchemaVersion: 1,
+		Fields: []catalog.FieldDefinition{
+			{Name: "name", DisplayName: "Name", Type: catalog.FieldTypeString, Required: true, DisplayOrder: 0},
+			{Name: "provider", DisplayName: "Provider", Type: catalog.FieldTypeString, Required: true, DisplayOrder: 1},
+			{Name: "note", DisplayName: "Note", Type: catalog.FieldTypeString, Required: true, DisplayOrder: 2},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	model, err := catalog.CompileModel(credentialDefinition, catalog.ModelSpec{
+		Code: "credential-admin", Name: "Credentials", Collection: credentialDefinition.Name(),
+		Fields: []catalog.ModelField{
+			{Name: "name", Type: catalog.FieldTypeString, Required: true, Editable: true, Queryable: true, UIControl: catalog.UIControlInput, AllowedFilterOperators: []catalog.FilterOperator{catalog.FilterExact}},
+			{Name: "provider", Type: catalog.FieldTypeString, Required: true, Editable: true, Queryable: true, UIControl: catalog.UIControlSelect, AllowedFilterOperators: []catalog.FilterOperator{catalog.FilterExact}, OptionSource: &catalog.OptionSourceDefinition{
+				Kind: catalog.OptionSourceCollection, Collection: "providers", ValueField: "code", LabelField: "label",
+				FixedFilters: []catalog.OptionFixedFilter{{Field: "enabled", Value: "true"}}, Limit: 100,
+			}},
+			{Name: "note", Type: catalog.FieldTypeString, Required: true, Editable: true, UIControl: catalog.UIControlInput},
+		},
+		ProjectionFields: []string{"name", "provider", "note"}, KeyFields: []string{"name"}, DefaultPageSize: 20, MaxPageSize: 100, ConfigRevision: 7,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	template, err := release.CompileTemplate([]byte(`{"steps":[{"code":"apply","type":"OVERLAY_APPLY","params":{}},{"code":"complete","type":"COMPLETE","params":{}}]}`), release.FinalEffectOverlay)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := newFakeUnitOfWork(credentialDefinition, model)
+	store.template = application.TemplateRef{Code: "scope-final", Version: 1, ReleaseTypeCode: "scope", Definition: template}
+	base, _ := credentialDefinition.NewRecord("production", map[string]string{"name": "primary", "provider": "stripe", "note": "before"})
+	base.ConfigRevision = 5
+	store.records["production"][base.RecordKey] = base
+	stripe, _ := providerDefinition.NewRecord("production", map[string]string{"code": "stripe", "label": "Stripe", "enabled": "false"})
+	adyen, _ := providerDefinition.NewRecord("production", map[string]string{"code": "adyen", "label": "Adyen", "enabled": "true"})
+	store.optionFacts["providers"] = application.OptionCollectionAuthority{Definition: providerDefinition, Records: []catalog.ConfigurationRecord{stripe, adyen}}
+	service := application.NewService(store, &sequenceIDs{values: []string{"item", "order"}}, fixedClock{now: time.Date(2026, 8, 19, 21, 0, 0, 0, time.UTC)})
+	command := application.CreateReleaseCommand{
+		IdempotencyKey: "dynamic-option", ModelCode: model.Code(), ReleaseTypeCode: "scope",
+		Scope: release.Scope{Region: "cn", Environment: "production", Stage: "blue"}, Actor: "operator",
+		Items: []application.ReleaseDraft{{
+			Action: release.ChangeModify, BaseBefore: base.Data, EffectiveBefore: base.Data,
+			After:                  map[string]string{"name": "primary", "provider": "missing", "note": "after"},
+			ExpectedRecordRevision: 5, ExpectedCollectionRevision: 7,
+		}},
+	}
+	if _, err := service.CreateRelease(context.Background(), command); !errors.Is(err, release.ErrFailedPrecondition) {
+		t.Fatalf("stale dynamic selection error = %v", err)
+	}
+	command.Items[0].After["provider"] = "stripe"
+	created, err := service.CreateRelease(context.Background(), command)
+	if err != nil {
+		t.Fatalf("keep historical disabled selection: %v", err)
+	}
+	if got := store.orders[created.ID].Items()[0].After.Data["provider"]; got != "stripe" {
+		t.Fatalf("historical provider = %q", got)
+	}
+}
+
 func TestCreateBaseFinalRejectsStalePageRevision(t *testing.T) {
 	t.Parallel()
 
@@ -448,6 +522,7 @@ type fakeUnitOfWork struct {
 	createResults map[string]application.StoredRequestResult
 	actionResults map[string]application.StoredRequestResult
 	template      application.TemplateRef
+	optionFacts   map[string]application.OptionCollectionAuthority
 	global        catalog.ConfigRevision
 	outboxEvents  int
 }
@@ -468,6 +543,7 @@ func newFakeUnitOfWork(definition catalog.CollectionDefinition, model catalog.Co
 		orders:        make(map[string]*release.Order),
 		createResults: make(map[string]application.StoredRequestResult),
 		actionResults: make(map[string]application.StoredRequestResult),
+		optionFacts:   make(map[string]application.OptionCollectionAuthority),
 		global:        7,
 	}
 }
@@ -520,6 +596,20 @@ func (transaction *fakeTransaction) LoadOverlayRules(_ context.Context, collecti
 		}
 	}
 	return rules, nil
+}
+
+func (transaction *fakeTransaction) LoadOptionAuthorities(_ context.Context, collections []string, _ release.Scope) (map[string]application.OptionCollectionAuthority, error) {
+	result := make(map[string]application.OptionCollectionAuthority, len(collections))
+	for _, name := range collections {
+		facts, exists := transaction.optionFacts[name]
+		if !exists {
+			continue
+		}
+		facts.Records = append([]catalog.ConfigurationRecord(nil), facts.Records...)
+		facts.Rules = append([]overlay.Rule(nil), facts.Rules...)
+		result[name] = facts
+	}
+	return result, nil
 }
 
 func (transaction *fakeTransaction) FindCreateResult(_ context.Context, actor, idempotencyKey string) (application.StoredRequestResult, bool, error) {

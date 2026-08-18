@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -254,6 +255,98 @@ func (transaction *transaction) LoadOverlayRules(ctx context.Context, collection
 	return rules, nil
 }
 
+func (transaction *transaction) LoadOptionAuthorities(ctx context.Context, collections []string, scope release.Scope) (map[string]application.OptionCollectionAuthority, error) {
+	names := slices.Clone(collections)
+	slices.Sort(names)
+	result := make(map[string]application.OptionCollectionAuthority, len(names))
+	for _, name := range names {
+		var version uint64
+		loadedVersion := transaction.db.WithContext(ctx).Raw(`
+			SELECT config_revision FROM configuration_versions
+			WHERE collection_name = ? AND environment = ?
+			FOR SHARE
+		`, name, scope.Environment).Scan(&version)
+		if loadedVersion.Error != nil {
+			return nil, loadedVersion.Error
+		}
+		if loadedVersion.RowsAffected != 1 || version == 0 {
+			return nil, fmt.Errorf("option collection version %s/%s was not found", name, scope.Environment)
+		}
+
+		type collectionRow struct {
+			Name               string
+			Description        string
+			Fields             []byte
+			KeyFields          []byte
+			SDKDeliveryEnabled bool
+			SchemaVersion      uint64
+			Status             string
+		}
+		var loaded collectionRow
+		loadedCollection := transaction.db.WithContext(ctx).Raw(`
+			SELECT name, description, fields, key_fields, sdk_delivery_enabled, schema_version, status
+			FROM configuration_collections WHERE name = ? FOR SHARE
+		`, name).Scan(&loaded)
+		if loadedCollection.Error != nil {
+			return nil, loadedCollection.Error
+		}
+		if loadedCollection.RowsAffected != 1 || loaded.Status != "ENABLED" {
+			return nil, fmt.Errorf("option collection %q is missing or disabled", name)
+		}
+		var fields []catalog.FieldDefinition
+		var keyFields []string
+		if err := json.Unmarshal(loaded.Fields, &fields); err != nil {
+			return nil, fmt.Errorf("decode option collection %q fields: %w", name, err)
+		}
+		if err := json.Unmarshal(loaded.KeyFields, &keyFields); err != nil {
+			return nil, fmt.Errorf("decode option collection %q key fields: %w", name, err)
+		}
+		definition, err := catalog.CompileCollection(catalog.CollectionSpec{
+			Name: loaded.Name, Description: loaded.Description, Fields: fields, KeyFields: keyFields,
+			SDKDeliveryEnabled: loaded.SDKDeliveryEnabled, SchemaVersion: int64(loaded.SchemaVersion),
+		})
+		if err != nil {
+			return nil, fmt.Errorf("compile option collection %q: %w", name, err)
+		}
+
+		type recordRow struct {
+			RecordKey      string
+			Data           []byte
+			ConfigRevision uint64
+		}
+		var recordRows []recordRow
+		if err := transaction.db.WithContext(ctx).Raw(`
+			SELECT record_key, data, config_revision FROM configuration_records
+			WHERE collection_name = ? AND environment = ?
+			ORDER BY record_key FOR SHARE
+		`, name, scope.Environment).Scan(&recordRows).Error; err != nil {
+			return nil, err
+		}
+		records := make([]catalog.ConfigurationRecord, len(recordRows))
+		for index, row := range recordRows {
+			var data map[string]string
+			if err := json.Unmarshal(row.Data, &data); err != nil {
+				return nil, fmt.Errorf("decode option record %q: %w", row.RecordKey, err)
+			}
+			record, err := definition.NewRecord(scope.Environment, data)
+			if err != nil {
+				return nil, fmt.Errorf("compile option record %q: %w", row.RecordKey, err)
+			}
+			if record.RecordKey != row.RecordKey {
+				return nil, fmt.Errorf("option record %q has a non-canonical key", row.RecordKey)
+			}
+			record.ConfigRevision = catalog.ConfigRevision(row.ConfigRevision)
+			records[index] = record
+		}
+		rules, err := transaction.loadEnvironmentOverlayRules(ctx, name, scope.Environment)
+		if err != nil {
+			return nil, fmt.Errorf("load option collection %q overlays: %w", name, err)
+		}
+		result[name] = application.OptionCollectionAuthority{Definition: definition, Records: records, Rules: rules}
+	}
+	return result, nil
+}
+
 func (transaction *transaction) FindCreateResult(ctx context.Context, actor, idempotencyKey string) (application.StoredRequestResult, bool, error) {
 	type row struct {
 		ID, RequestDigest, Status, CurrentStepCode, CurrentStepType, CurrentStepStatus string
@@ -363,7 +456,11 @@ func (transaction *transaction) InsertOrder(ctx context.Context, order *release.
 		if err != nil {
 			return err
 		}
-		preserved, err := json.Marshal(item.PreserveSensitiveFields)
+		preservedFields := item.PreserveSensitiveFields
+		if preservedFields == nil {
+			preservedFields = []string{}
+		}
+		preserved, err := json.Marshal(preservedFields)
 		if err != nil {
 			return err
 		}

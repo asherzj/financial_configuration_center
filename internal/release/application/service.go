@@ -46,6 +46,7 @@ type Transaction interface {
 	LoadCatalog(context.Context, string, string) (CatalogBundle, error)
 	LoadBaseAuthority(context.Context, string, string, []string) (release.BaseAuthority, error)
 	LoadOverlayRules(context.Context, string, release.Scope, []string) ([]overlay.Rule, error)
+	LoadOptionAuthorities(context.Context, []string, release.Scope) (map[string]OptionCollectionAuthority, error)
 	FindCreateResult(context.Context, string, string) (StoredRequestResult, bool, error)
 	InsertOrder(context.Context, *release.Order) error
 	LoadOrderForUpdate(context.Context, string) (*release.Order, error)
@@ -57,6 +58,12 @@ type Transaction interface {
 	SaveOrder(context.Context, *release.Order) error
 	RecordAction(context.Context, ActionRecord) error
 	InsertActionResult(context.Context, string, string, string, OrderView, time.Time) error
+}
+
+type OptionCollectionAuthority struct {
+	Definition catalog.CollectionDefinition
+	Records    []catalog.ConfigurationRecord
+	Rules      []overlay.Rule
 }
 
 type CatalogBundle struct {
@@ -248,6 +255,10 @@ func (service *Service) CreateBaseFinal(ctx context.Context, command CreateBaseF
 		if err != nil {
 			return fmt.Errorf("load base authority: %w", err)
 		}
+		selectOptions, err := resolveModelOptions(ctx, transaction, bundle.Model, command.Scope)
+		if err != nil {
+			return fmt.Errorf("resolve release options: %w", err)
+		}
 
 		if bundle.Template.Code == "" || bundle.Template.Version == 0 || bundle.Template.ReleaseTypeCode == "" {
 			return errors.New("release catalog has no active BASE_FINAL template")
@@ -263,6 +274,9 @@ func (service *Service) CreateBaseFinal(ctx context.Context, command CreateBaseF
 			}
 			if draft.ExpectedRecordRevision != 0 {
 				return fmt.Errorf("%w: ADD expected record revision must be zero", release.ErrInvalid)
+			}
+			if err := validateOptionSelections(bundle.Model, selectOptions, nil, &records[index]); err != nil {
+				return fmt.Errorf("%w: item %d: %v", release.ErrFailedPrecondition, index, err)
 			}
 			itemSpecs[index] = release.BaseFinalItemSpec{
 				ID:                         service.ids.NewID(),
@@ -388,6 +402,10 @@ func (service *Service) CreateRelease(ctx context.Context, command CreateRelease
 		if err != nil {
 			return fmt.Errorf("load base authority: %w", err)
 		}
+		selectOptions, err := resolveModelOptions(ctx, transaction, bundle.Model, command.Scope)
+		if err != nil {
+			return fmt.Errorf("resolve release options: %w", err)
+		}
 		if finalEffect == release.FinalEffectBase {
 			orderID := service.ids.NewID()
 			items := make([]release.BaseFinalItemSpec, len(canonical))
@@ -398,7 +416,7 @@ func (service *Service) CreateRelease(ctx context.Context, command CreateRelease
 				if authority.CollectionRevision != draft.expectedCollectionRevision || authority.Records[keys[index]] != nil {
 					return fmt.Errorf("%w: BASE_FINAL item %d authority is stale", release.ErrAborted, index)
 				}
-				if err := validateStaticOptionSelections(bundle.Model, nil, draft.after); err != nil {
+				if err := validateOptionSelections(bundle.Model, selectOptions, nil, draft.after); err != nil {
 					return fmt.Errorf("%w: item %d: %v", release.ErrFailedPrecondition, index, err)
 				}
 				items[index] = release.BaseFinalItemSpec{
@@ -465,7 +483,7 @@ func (service *Service) CreateRelease(ctx context.Context, command CreateRelease
 			if !validEffectiveTransition(draft.action, actualBase, actualEffective, draft.after) {
 				return fmt.Errorf("%w: item %d transition is invalid for %s", release.ErrInvalid, index, draft.action)
 			}
-			if err := validateStaticOptionSelections(bundle.Model, actualEffective, draft.after); err != nil {
+			if err := validateOptionSelections(bundle.Model, selectOptions, actualEffective, draft.after); err != nil {
 				return fmt.Errorf("%w: item %d: %v", release.ErrFailedPrecondition, index, err)
 			}
 			itemSpecs[index] = release.OverlayFinalItemSpec{
@@ -589,13 +607,66 @@ func copyAuthoritativeField(target, source map[string]string, name string) {
 	}
 }
 
-func validateStaticOptionSelections(model catalog.CompiledModel, before, after *catalog.ConfigurationRecord) error {
+func resolveModelOptions(ctx context.Context, transaction Transaction, model catalog.CompiledModel, scope release.Scope) (map[string][]catalog.SelectOptionDefinition, error) {
+	fields := model.Fields()
+	collectionSet := make(map[string]struct{})
+	for _, field := range fields {
+		if field.OptionSource != nil && field.OptionSource.Kind == catalog.OptionSourceCollection {
+			collectionSet[field.OptionSource.Collection] = struct{}{}
+		}
+	}
+	collections := make([]string, 0, len(collectionSet))
+	for name := range collectionSet {
+		collections = append(collections, name)
+	}
+	sort.Strings(collections)
+	authorities := map[string]OptionCollectionAuthority{}
+	if len(collections) > 0 {
+		var err error
+		authorities, err = transaction.LoadOptionAuthorities(ctx, collections, scope)
+		if err != nil {
+			return nil, err
+		}
+	}
+	result := make(map[string][]catalog.SelectOptionDefinition)
+	for _, field := range fields {
+		source := field.OptionSource
+		if source == nil {
+			continue
+		}
+		var definition catalog.CollectionDefinition
+		var records []catalog.ConfigurationRecord
+		if source.Kind == catalog.OptionSourceCollection {
+			authority, exists := authorities[source.Collection]
+			if !exists {
+				return nil, fmt.Errorf("option collection %q is unavailable", source.Collection)
+			}
+			definition = authority.Definition
+			var err error
+			records, err = overlay.Evaluate(overlay.Query{
+				Collection: source.Collection,
+				Scope:      overlay.Scope{Region: scope.Region, Environment: scope.Environment, Stage: scope.Stage},
+			}, authority.Records, authority.Rules)
+			if err != nil {
+				return nil, fmt.Errorf("evaluate option collection %q: %w", source.Collection, err)
+			}
+		}
+		options, err := catalog.ResolveSelectOptions(*source, definition, records)
+		if err != nil {
+			return nil, fmt.Errorf("field %q: %w", field.Name, err)
+		}
+		result[field.Name] = options
+	}
+	return result, nil
+}
+
+func validateOptionSelections(model catalog.CompiledModel, resolved map[string][]catalog.SelectOptionDefinition, before, after *catalog.ConfigurationRecord) error {
 	if after == nil {
 		return nil
 	}
 	for _, field := range model.Fields() {
 		source := field.OptionSource
-		if source == nil || source.Kind != catalog.OptionSourceStatic {
+		if source == nil {
 			continue
 		}
 		value, present := after.Data[field.Name]
@@ -603,7 +674,7 @@ func validateStaticOptionSelections(model catalog.CompiledModel, before, after *
 			continue
 		}
 		valid := false
-		for _, option := range source.StaticOptions {
+		for _, option := range resolved[field.Name] {
 			if option.Code == value && !option.Disabled {
 				valid = true
 				break

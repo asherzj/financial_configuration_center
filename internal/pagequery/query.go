@@ -295,7 +295,7 @@ func resolveOptions(current *snapshot.Snapshot, request Request, source *catalog
 		return nil, nil
 	}
 	if source.Kind == catalog.OptionSourceStatic {
-		return append([]catalog.SelectOptionDefinition(nil), source.StaticOptions...), nil
+		return catalog.ResolveSelectOptions(*source, catalog.CollectionDefinition{}, nil)
 	}
 	if source.Kind != catalog.OptionSourceCollection {
 		return nil, fmt.Errorf("unsupported source kind %q", source.Kind)
@@ -311,47 +311,7 @@ func resolveOptions(current *snapshot.Snapshot, request Request, source *catalog
 	if err != nil {
 		return nil, fmt.Errorf("evaluate option collection: %w", err)
 	}
-	canonicalFilters := make([]catalog.OptionFixedFilter, len(source.FixedFilters))
-	for index, filter := range source.FixedFilters {
-		field, _ := definition.Field(filter.Field)
-		value, err := catalog.CanonicalizeScalar(field.Type, filter.Value)
-		if err != nil {
-			return nil, err
-		}
-		canonicalFilters[index] = catalog.OptionFixedFilter{Field: filter.Field, Value: value}
-	}
-	options := make([]catalog.SelectOptionDefinition, 0, len(records))
-	labels := make(map[string]string)
-	for _, record := range records {
-		matches := true
-		for _, filter := range canonicalFilters {
-			if record.Data[filter.Field] != filter.Value {
-				matches = false
-				break
-			}
-		}
-		if !matches {
-			continue
-		}
-		code, codePresent := record.Data[source.ValueField]
-		label, labelPresent := record.Data[source.LabelField]
-		if !codePresent || !labelPresent {
-			return nil, fmt.Errorf("record %q lacks option value or label", record.RecordKey)
-		}
-		if previous, duplicate := labels[code]; duplicate {
-			if previous != label {
-				return nil, fmt.Errorf("option code %q has conflicting labels", code)
-			}
-			continue
-		}
-		labels[code] = label
-		options = append(options, catalog.SelectOptionDefinition{Code: code, Label: label})
-	}
-	if len(options) > int(source.Limit) || len(options) > 1000 {
-		return nil, fmt.Errorf("option count %d exceeds limit %d", len(options), source.Limit)
-	}
-	sort.Slice(options, func(left, right int) bool { return options[left].Code < options[right].Code })
-	return options, nil
+	return catalog.ResolveSelectOptions(*source, definition, records)
 }
 
 func cloneStringPointer(value *string) *string {

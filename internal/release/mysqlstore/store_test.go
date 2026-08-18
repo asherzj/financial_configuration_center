@@ -912,6 +912,64 @@ func TestRealMySQLBaseFinalTransaction(t *testing.T) {
 	}
 }
 
+func TestRealMySQLCreateRejectsFilteredCollectionOption(t *testing.T) {
+	dsn := isolatedDatabase(t)
+	raw, err := sql.Open("mysql", dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	seedDynamicPriorityOptions(t, raw)
+	defer raw.Close()
+
+	ctx := context.Background()
+	database, err := platformmysql.Open(ctx, platformmysql.Config{DSN: dsn, MaxOpenConns: 4, MaxIdleConns: 2, ConnMaxLifetime: time.Minute, ConnMaxIdleTime: time.Minute})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = database.Close() })
+	store, err := mysqlstore.New(database)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.WithinTransaction(ctx, func(transaction application.Transaction) error {
+		bundle, loadErr := transaction.LoadCatalog(ctx, "payment-route-admin", "direct")
+		if loadErr != nil {
+			return loadErr
+		}
+		source := bundle.Model.Fields()[1].OptionSource
+		if source == nil || source.Kind != catalog.OptionSourceCollection {
+			t.Fatalf("persisted priority option source = %#v", source)
+		}
+		facts, loadErr := transaction.LoadOptionAuthorities(ctx, []string{"priorities"}, release.Scope{Region: "cn", Environment: "production"})
+		if loadErr != nil {
+			return loadErr
+		}
+		options, resolveErr := catalog.ResolveSelectOptions(*source, facts["priorities"].Definition, facts["priorities"].Records)
+		if resolveErr != nil {
+			return resolveErr
+		}
+		if len(options) != 1 || options[0].Code != "1" {
+			t.Fatalf("resolved MySQL options = %#v", options)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	service := application.NewService(store, &numberedIDs{next: 900, releaseNumber: "REL-20260819-0900"}, fixedClock{now: time.Date(2026, 8, 19, 22, 0, 0, 0, time.UTC)})
+	invalid := baseCreate("dynamic-option-invalid", "operator", "production", "legacy-route", 7)
+	invalid.Items[0].Data["priority"] = "9"
+	if _, err := service.CreateBaseFinal(ctx, invalid); !errors.Is(err, release.ErrFailedPrecondition) {
+		t.Fatalf("filtered collection option error = %v", err)
+	}
+	assertCount(t, raw, `SELECT COUNT(*) FROM release_orders`, 0)
+
+	valid := baseCreate("dynamic-option-valid", "operator", "production", "active-route", 7)
+	if _, err := service.CreateBaseFinal(ctx, valid); err != nil {
+		t.Fatalf("active collection option: %v", err)
+	}
+	assertCount(t, raw, `SELECT COUNT(*) FROM release_orders`, 1)
+}
+
 func isolatedDatabase(t *testing.T) string {
 	t.Helper()
 	base := os.Getenv("FINCONFIG_TEST_MYSQL_DSN")
@@ -998,6 +1056,57 @@ func seedCatalog(t *testing.T, db *sql.DB) {
 		if _, err := db.Exec(`INSERT INTO configuration_versions (collection_name, environment, config_revision, base_digest, overlay_digest, release_order_id, updated_at) VALUES ('payment_routes', ?, 7, ?, ?, NULL, ?)`, environment, emptyDigest, emptyDigest, now); err != nil {
 			t.Fatal(err)
 		}
+	}
+}
+
+func seedDynamicPriorityOptions(t *testing.T, db *sql.DB) {
+	t.Helper()
+	now := time.Date(2026, 8, 19, 21, 30, 0, 0, time.UTC)
+	fields := []catalog.FieldDefinition{
+		{Name: "code", DisplayName: "Code", Type: catalog.FieldTypeInt64, Required: true, DisplayOrder: 0},
+		{Name: "label", DisplayName: "Label", Type: catalog.FieldTypeString, Required: true, DisplayOrder: 1},
+		{Name: "enabled", DisplayName: "Enabled", Type: catalog.FieldTypeBool, Required: true, DisplayOrder: 2},
+	}
+	fieldsJSON, _ := json.Marshal(fields)
+	keysJSON, _ := json.Marshal([]string{"code"})
+	if _, err := db.Exec(`INSERT INTO configuration_collections (name, description, fields, key_fields, sdk_delivery_enabled, schema_version, status, config_revision, created_at, created_by, updated_at, updated_by) VALUES ('priorities', 'Priorities', ?, ?, FALSE, 1, 'ENABLED', 7, ?, 'seed', ?, 'seed')`, fieldsJSON, keysJSON, now, now); err != nil {
+		t.Fatal(err)
+	}
+	emptyDigest := "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+	if _, err := db.Exec(`INSERT INTO configuration_versions (collection_name, environment, config_revision, base_digest, overlay_digest, updated_at) VALUES ('priorities', 'production', 7, ?, ?, ?)`, emptyDigest, emptyDigest, now); err != nil {
+		t.Fatal(err)
+	}
+	definition, err := catalog.CompileCollection(catalog.CollectionSpec{Name: "priorities", Fields: fields, KeyFields: []string{"code"}, SchemaVersion: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, data := range []map[string]string{{"code": "1", "label": "Low", "enabled": "true"}, {"code": "9", "label": "Legacy", "enabled": "false"}} {
+		record, recordErr := definition.NewRecord("production", data)
+		if recordErr != nil {
+			t.Fatal(recordErr)
+		}
+		encoded, _ := json.Marshal(record.Data)
+		if _, err := db.Exec(`INSERT INTO configuration_records (collection_name, environment, record_key, data, config_revision, created_at, created_by, updated_at, updated_by) VALUES ('priorities', 'production', ?, ?, 7, ?, 'seed', ?, 'seed')`, record.RecordKey, encoded, now, now); err != nil {
+			t.Fatal(err)
+		}
+	}
+	defaultEnabled := "false"
+	model := catalog.ModelSpec{
+		Fields: []catalog.ModelField{
+			{Name: "route_code", Type: catalog.FieldTypeString, Required: true, Editable: true, Queryable: true, UIControl: catalog.UIControlInput, AllowedFilterOperators: []catalog.FilterOperator{catalog.FilterExact}},
+			{Name: "priority", Type: catalog.FieldTypeInt64, Required: true, Editable: true, Queryable: true, UIControl: catalog.UIControlSelect, AllowedFilterOperators: []catalog.FilterOperator{catalog.FilterExact}, OptionSource: &catalog.OptionSourceDefinition{
+				Kind: catalog.OptionSourceCollection, Collection: "priorities", ValueField: "code", LabelField: "label",
+				FixedFilters: []catalog.OptionFixedFilter{{Field: "enabled", Value: "true"}}, Limit: 100,
+			}},
+			{Name: "enabled", Type: catalog.FieldTypeBool, Required: true, Editable: true, Queryable: true, DefaultValue: &defaultEnabled, UIControl: catalog.UIControlBoolean, AllowedFilterOperators: []catalog.FilterOperator{catalog.FilterExact}},
+			{Name: "api_secret", Type: catalog.FieldTypeString, Sensitive: true, Editable: true, UIControl: catalog.UIControlInput},
+		},
+		ProjectionFields: []string{"route_code", "priority", "enabled", "api_secret"}, KeyFields: []string{"route_code"}, DefaultPageSize: 20, MaxPageSize: 100,
+		ReleaseTypes: []catalog.ReleaseTypeDefinition{{Code: "direct", Name: "Direct", TemplateCode: "base-final", Enabled: true}},
+	}
+	modelJSON, _ := json.Marshal(model)
+	if _, err := db.Exec(`UPDATE configuration_models SET definition = ? WHERE code = 'payment-route-admin'`, modelJSON); err != nil {
+		t.Fatal(err)
 	}
 }
 
