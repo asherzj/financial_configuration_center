@@ -16,6 +16,9 @@ const page: PageResult = {
       recordRevision: 7,
       values: { route_code: "visa-cn", priority: "1", enabled: "true" },
       maskedFields: [],
+      basePresent: true,
+      baseValues: { route_code: "visa-cn", priority: "1", enabled: "true" },
+      changedFields: [],
     },
   ],
   projectionFields: ["route_code", "priority", "enabled"],
@@ -126,7 +129,7 @@ describe("OperationPage", () => {
     expect(await screen.findByText("草稿 1")).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "审阅并发布" }));
-    expect(await screen.findByText("mastercard-cn")).toBeInTheDocument();
+    expect(await screen.findByText("After mastercard-cn")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "创建发布单" }));
 
     await waitFor(() => expect(createRelease).toHaveBeenCalledTimes(1));
@@ -289,5 +292,57 @@ describe("OperationPage", () => {
       { action: "EXECUTE", expectedOrderRevision: 6, expectedCurrentStep: "done" },
     ]);
     expect(await screen.findByText("草稿 0")).toBeInTheDocument();
+  });
+
+  it("changes full scope and creates a modify draft from base, effective, and after states", async () => {
+    const scopedPage: PageResult = {
+      ...page,
+      rows: [{
+        recordKey: "existing-key",
+        recordRevision: 9,
+        values: { route_code: "visa-cn", priority: "9", enabled: "true" },
+        maskedFields: [],
+        basePresent: true,
+        baseValues: { route_code: "visa-cn", priority: "1", enabled: "true" },
+        changedFields: ["priority"],
+      }],
+      releaseTypes: [{ code: "scope", name: "Scope override", templateCode: "overlay-final", available: true }],
+      collectionRevision: 10,
+    };
+    const queryPage = vi.fn().mockResolvedValueOnce(page).mockResolvedValue(scopedPage);
+    const createRelease = vi.fn().mockResolvedValue(created);
+    const api: OperationApi = { queryPage, createRelease, actOnRelease: vi.fn().mockResolvedValue(created) };
+
+    render(<OperationPage api={api} />);
+    await screen.findByText("visa-cn");
+    fireEvent.change(screen.getByLabelText("Stage"), { target: { value: "blue" } });
+    fireEvent.click(screen.getByRole("button", { name: "应用范围" }));
+
+    await waitFor(() => expect(queryPage).toHaveBeenCalledTimes(2));
+    expect(queryPage.mock.calls[1]?.[0].scope).toEqual({ region: "cn", environment: "production", stage: "blue" });
+    expect(await screen.findByText("Scope 覆盖")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "修改 visa-cn" }));
+    expect(await screen.findByText("修改配置")).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText("Priority"), { target: { value: "10" } });
+    fireEvent.click(screen.getByRole("button", { name: "加入草稿" }));
+    fireEvent.click(await screen.findByRole("button", { name: "审阅并发布" }));
+    expect(await screen.findByText("Base 1")).toBeInTheDocument();
+    expect(screen.getByText("Effective 9")).toBeInTheDocument();
+    expect(screen.getByText("After 10")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "创建发布单" }));
+
+    await waitFor(() => expect(createRelease).toHaveBeenCalledTimes(1));
+    expect(createRelease.mock.calls[0]?.[0]).toMatchObject({
+      scope: { region: "cn", environment: "production", stage: "blue" },
+      items: [{
+        action: "MODIFY",
+        baseBefore: { route_code: "visa-cn", priority: "1", enabled: "true" },
+        effectiveBefore: { route_code: "visa-cn", priority: "9", enabled: "true" },
+        after: { route_code: "visa-cn", priority: "10", enabled: "true" },
+        expectedRecordRevision: 9,
+        expectedCollectionRevision: 10,
+      }],
+    });
   });
 });

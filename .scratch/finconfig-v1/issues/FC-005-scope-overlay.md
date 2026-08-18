@@ -1,6 +1,6 @@
 # FC-005 Scope Overlay
 
-- Status: in-progress
+- Status: done
 - Blocked by: FC-004 (done)
 - Spec: acceptance scenario 7
 
@@ -22,4 +22,8 @@ OVERLAY_FINAL produces a Scope-specific effective record and exact reversible ef
 
 ## Evidence
 
-Not run.
+- `go test ./...` passes.
+- `go vet ./...` passes.
+- Real MySQL 8.0.46 and 8.4.11 pass `TestRealMySQLOverlayApplyAndRollbackTransaction`, including database-to-snapshot-to-QueryPage effective/base verification and exact rollback.
+- `pnpm test`, `pnpm lint`, `pnpm typecheck`, and `pnpm build` pass.
+- Domain, compiler, release effect, persistence, RPC/BFF and read-side commits: `609f50d`, `a0a479a`, `644dc69`, `a4541c0`, `ba904cc`, `84b6533`, `1880308`.

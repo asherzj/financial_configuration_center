@@ -28,26 +28,35 @@ import type {
   InteractionField,
   OperationApi,
   PageResult,
+  PageRow,
   ReleaseAction,
   ReleaseDetail,
+  Scope,
 } from "./types";
 
-const scope = { region: "cn", environment: "production" } as const;
+const defaultScope: Scope = { region: "cn", environment: "production" };
 const modelCode = "payment-route-admin";
 
 interface DraftRow {
   id: string;
+  action: "ADD" | "MODIFY";
+  baseBefore?: Record<string, string>;
+  effectiveBefore?: Record<string, string>;
   after: Record<string, string>;
+  expectedRecordRevision: number;
 }
 
 export function OperationPage({ api = operationApi }: { api?: OperationApi }) {
   const [form] = Form.useForm<Record<string, unknown>>();
+  const [activeScope, setActiveScope] = useState<Scope>(defaultScope);
+  const [scopeDraft, setScopeDraft] = useState<Scope>(defaultScope);
   const [page, setPage] = useState<PageResult>();
   const [drafts, setDrafts] = useState<DraftRow[]>([]);
   const [release, setRelease] = useState<ReleaseDetail>();
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [addOpen, setAddOpen] = useState(false);
+  const [editingRow, setEditingRow] = useState<PageRow>();
   const [reviewOpen, setReviewOpen] = useState(false);
   const [releaseTypeCode, setReleaseTypeCode] = useState<string>();
   const [description, setDescription] = useState("");
@@ -58,7 +67,7 @@ export function OperationPage({ api = operationApi }: { api?: OperationApi }) {
     setLoading(true);
     setError(undefined);
     try {
-      const loaded = await api.queryPage({ modelCode, scope, queryType: "ALL" });
+      const loaded = await api.queryPage({ modelCode, scope: activeScope, queryType: "ALL" });
       setPage(loaded);
       setReleaseTypeCode((current) =>
         loaded.releaseTypes.some((releaseType) => releaseType.available && releaseType.code === current)
@@ -70,7 +79,7 @@ export function OperationPage({ api = operationApi }: { api?: OperationApi }) {
     } finally {
       setLoading(false);
     }
-  }, [api]);
+  }, [activeScope, api]);
 
   useEffect(() => {
     void load();
@@ -83,15 +92,38 @@ export function OperationPage({ api = operationApi }: { api?: OperationApi }) {
         .filter((field): field is InteractionField => field !== undefined) ?? [],
     [page],
   );
-  const columns: ColumnsType<PageResult["rows"][number]> = projectedFields.map((field) => ({
-    title: field.displayName,
-    dataIndex: ["values", field.name],
-    key: field.name,
-    render: (value: string | undefined) => renderValue(field, value),
-  }));
+  const columns: ColumnsType<PageResult["rows"][number]> = [
+    ...projectedFields.map((field) => ({
+      title: field.displayName,
+      dataIndex: ["values", field.name],
+      key: field.name,
+      render: (value: string | undefined, row: PageRow) => (
+        <Space size={4}>
+          {renderValue(field, value)}
+          {row.changedFields.includes(field.name) ? <Tag color="gold">Scope 覆盖</Tag> : null}
+        </Space>
+      ),
+    })),
+    {
+      title: "操作",
+      key: "actions",
+      render: (_value: unknown, row: PageRow) => (
+        <Button
+          type="link"
+          aria-label={`修改 ${row.values[projectedFields[0]?.name ?? ""] ?? row.recordKey}`}
+          disabled={!row.basePresent}
+          onClick={() => openEdit(row)}
+        >
+          修改
+        </Button>
+      ),
+    },
+  ];
   const selectedReleaseType = page?.releaseTypes.find((releaseType) => releaseType.code === releaseTypeCode);
 
   const openAdd = () => {
+    setEditingRow(undefined);
+    form.resetFields();
     const defaults = Object.fromEntries(
       (page?.interactionFields ?? [])
         .filter((field) => field.editable && field.defaultValue !== undefined)
@@ -101,17 +133,49 @@ export function OperationPage({ api = operationApi }: { api?: OperationApi }) {
     setAddOpen(true);
   };
 
+  function openEdit(row: PageRow) {
+    setEditingRow(row);
+    form.resetFields();
+    form.setFieldsValue(Object.fromEntries(
+      (page?.interactionFields ?? [])
+        .filter((field) => field.editable && row.values[field.name] !== undefined)
+        .map((field) => [field.name, fromCanonicalValue(field, row.values[field.name])]),
+    ));
+    setAddOpen(true);
+  }
+
   const addDraft = async () => {
     const values = await form.validateFields();
     if (!page) return;
-    const after = Object.fromEntries(
+    const edited = Object.fromEntries(
       page.interactionFields
         .filter((field) => field.editable && values[field.name] !== undefined)
         .map((field) => [field.name, toCanonicalInput(field, values[field.name])]),
     );
-    setDrafts((current) => [...current, { id: crypto.randomUUID(), after }]);
+    const after = editingRow ? { ...editingRow.values, ...edited } : edited;
+    setDrafts((current) => [...current, editingRow ? {
+      id: crypto.randomUUID(), action: "MODIFY", baseBefore: { ...editingRow.baseValues },
+      effectiveBefore: { ...editingRow.values }, after, expectedRecordRevision: editingRow.recordRevision,
+    } : {
+      id: crypto.randomUUID(), action: "ADD", after, expectedRecordRevision: 0,
+    }]);
     setAddOpen(false);
+    setEditingRow(undefined);
     form.resetFields();
+  };
+
+  const applyScope = () => {
+    const region = scopeDraft.region.trim();
+    const environment = scopeDraft.environment.trim();
+    const stage = scopeDraft.stage?.trim();
+    if (!region || !environment) {
+      message.warning("Region 与 Environment 为必填项");
+      return;
+    }
+    setDrafts([]);
+    setRelease(undefined);
+    setReviewOpen(false);
+    setActiveScope({ region, environment, ...(stage ? { stage } : {}) });
   };
 
   const createRelease = async () => {
@@ -121,12 +185,14 @@ export function OperationPage({ api = operationApi }: { api?: OperationApi }) {
       const request: CreateReleaseRequest = {
         modelCode: page.modelCode,
         releaseTypeCode: selectedReleaseType.code,
-        description: description.trim() || `Add ${drafts.length} configuration record(s)`,
-        scope,
+        description: description.trim() || `Change ${drafts.length} configuration record(s)`,
+        scope: activeScope,
         items: drafts.map((draft) => ({
-          action: "ADD",
+          action: draft.action,
+          ...(draft.baseBefore ? { baseBefore: draft.baseBefore } : {}),
+          ...(draft.effectiveBefore ? { effectiveBefore: draft.effectiveBefore } : {}),
           after: draft.after,
-          expectedRecordRevision: 0,
+          expectedRecordRevision: draft.expectedRecordRevision,
           expectedCollectionRevision: page.collectionRevision,
         })),
       };
@@ -178,8 +244,9 @@ export function OperationPage({ api = operationApi }: { api?: OperationApi }) {
         <div>
           <Typography.Title level={1}>统一操作入口</Typography.Title>
           <Space wrap>
-            <Tag color="blue">Region: {scope.region}</Tag>
-            <Tag color="green">Environment: {scope.environment}</Tag>
+            <Tag color="blue">Region: {activeScope.region}</Tag>
+            <Tag color="green">Environment: {activeScope.environment}</Tag>
+            {activeScope.stage ? <Tag color="gold">Stage: {activeScope.stage}</Tag> : null}
             <Tag>Model: {page?.modelName ?? modelCode}</Tag>
           </Space>
         </div>
@@ -195,6 +262,23 @@ export function OperationPage({ api = operationApi }: { api?: OperationApi }) {
       </Flex>
 
       {error ? <Alert type="error" title="加载失败" description={error} showIcon /> : null}
+      <Card size="small" title="配置范围">
+        <Flex gap={12} wrap align="end">
+          <div>
+            <label htmlFor="scope-region">Region</label>
+            <Input id="scope-region" aria-label="Region" value={scopeDraft.region} onChange={(event) => setScopeDraft((current) => ({ ...current, region: event.target.value }))} />
+          </div>
+          <div>
+            <label htmlFor="scope-environment">Environment</label>
+            <Input id="scope-environment" aria-label="Environment" value={scopeDraft.environment} onChange={(event) => setScopeDraft((current) => ({ ...current, environment: event.target.value }))} />
+          </div>
+          <div>
+            <label htmlFor="scope-stage">Stage</label>
+            <Input id="scope-stage" aria-label="Stage" placeholder="可选，例如 blue" value={scopeDraft.stage ?? ""} onChange={(event) => setScopeDraft((current) => ({ ...current, stage: event.target.value }))} />
+          </div>
+          <Button type="primary" onClick={applyScope}>应用范围</Button>
+        </Flex>
+      </Card>
       <Card
         title={page?.modelName ?? "配置"}
         extra={
@@ -213,7 +297,7 @@ export function OperationPage({ api = operationApi }: { api?: OperationApi }) {
         />
       </Card>
 
-      <Modal title="新增配置" open={addOpen} onCancel={() => setAddOpen(false)} onOk={() => void addDraft()} okText="加入草稿" destroyOnHidden>
+      <Modal title={editingRow ? "修改配置" : "新增配置"} open={addOpen} onCancel={() => { setAddOpen(false); setEditingRow(undefined); }} onOk={() => void addDraft()} okText="加入草稿" destroyOnHidden>
         <Form form={form} layout="vertical" preserve={false}>
           {page?.interactionFields.filter((field) => field.editable).map((field) => (
             <Form.Item
@@ -224,7 +308,7 @@ export function OperationPage({ api = operationApi }: { api?: OperationApi }) {
               valuePropName={field.uiControl === "BOOLEAN" ? "checked" : "value"}
               rules={[{ required: field.required, message: `${field.displayName} 为必填项` }]}
             >
-              {editor(field)}
+              {editor(field, Boolean(editingRow && field.keyField))}
             </Form.Item>
           ))}
         </Form>
@@ -234,11 +318,15 @@ export function OperationPage({ api = operationApi }: { api?: OperationApi }) {
         <Space orientation="vertical" size={16} className="operation-review">
           <Alert type="info" showIcon title="所有修改仍在浏览器草稿中；创建发布单不会立即改写配置。" />
           {drafts.map((draft, index) => (
-            <Card key={draft.id} size="small" title={`ADD #${index + 1}`}>
+            <Card key={draft.id} size="small" title={`${draft.action} #${index + 1}`}>
               <Descriptions column={1} size="small">
                 {projectedFields.map((field) => (
                   <Descriptions.Item key={field.name} label={field.displayName}>
-                    {renderValue(field, draft.after[field.name])}
+                    <Space wrap>
+                      {draft.baseBefore ? <Tag>Base {draft.baseBefore[field.name] ?? "—"}</Tag> : null}
+                      {draft.effectiveBefore ? <Tag color="blue">Effective {draft.effectiveBefore[field.name] ?? "—"}</Tag> : null}
+                      <Tag color="green">After {draft.after[field.name] ?? "—"}</Tag>
+                    </Space>
                   </Descriptions.Item>
                 ))}
               </Descriptions>
@@ -332,19 +420,19 @@ export function OperationPage({ api = operationApi }: { api?: OperationApi }) {
   );
 }
 
-function editor(field: InteractionField) {
+function editor(field: InteractionField, disabled = false) {
   switch (field.uiControl) {
     case "NUMBER":
-      return <InputNumber stringMode className="operation-full-width" />;
+      return <InputNumber stringMode className="operation-full-width" disabled={disabled} />;
     case "BOOLEAN":
-      return <Checkbox>启用</Checkbox>;
+      return <Checkbox disabled={disabled}>启用</Checkbox>;
     case "SELECT":
-      return <Select options={field.options.map((option) => ({ value: option.code, label: option.label, disabled: option.disabled }))} />;
+      return <Select disabled={disabled} options={field.options.map((option) => ({ value: option.code, label: option.label, disabled: option.disabled }))} />;
     case "TEXTAREA":
     case "JSON":
-      return <Input.TextArea autoSize={{ minRows: 3, maxRows: 8 }} />;
+      return <Input.TextArea disabled={disabled} autoSize={{ minRows: 3, maxRows: 8 }} />;
     default:
-      return <Input />;
+      return <Input disabled={disabled} />;
   }
 }
 
@@ -359,6 +447,11 @@ function fromCanonicalDefault(field: InteractionField): unknown {
   return field.defaultValue;
 }
 
+function fromCanonicalValue(field: InteractionField, value?: string): unknown {
+  if (field.type === "BOOL") return value === "true";
+  return value;
+}
+
 function toCanonicalInput(field: InteractionField, value: unknown): string {
   if (field.type === "BOOL") return value ? "true" : "false";
   return String(value);
@@ -368,6 +461,7 @@ function actionLabel(action: ReleaseAction, release: ReleaseDetail) {
   if (action === "APPROVE") return "批准";
   if (action === "REJECT") return "驳回";
   if (action === "ADVANCE") return "推进下一步";
+  if (action === "ROLLBACK") return "回滚当前步骤";
   if (release.order.currentStepType === "MANUAL_REVIEW") return "提交人工审批";
   if (release.order.currentStepType === "COMPLETE") return "完成发布";
   return `执行 ${release.order.currentStepType}`;

@@ -27,6 +27,15 @@ export interface PageRow {
   recordRevision: number;
   values: Record<string, string>;
   maskedFields: string[];
+  basePresent: boolean;
+  baseValues: Record<string, string>;
+  changedFields: string[];
+}
+
+export interface Scope {
+  region: string;
+  environment: string;
+  stage?: string;
 }
 
 export interface PageResult {
@@ -59,11 +68,13 @@ export interface CreateReleaseRequest {
   modelCode: string;
   releaseTypeCode: string;
   description: string;
-  scope: { region: string; environment: string; stage?: string };
+  scope: Scope;
   items: Array<{
-    action: "ADD";
-    after: Record<string, string>;
-    expectedRecordRevision: 0;
+    action: "ADD" | "MODIFY" | "DELETE";
+    baseBefore?: Record<string, string>;
+    effectiveBefore?: Record<string, string>;
+    after?: Record<string, string>;
+    expectedRecordRevision: number;
     expectedCollectionRevision: number;
   }>;
 }
@@ -82,12 +93,12 @@ export interface ReleaseDetail {
   allowedActions: ReleaseAction[];
 }
 
-export type ReleaseAction = "EXECUTE" | "ADVANCE" | "APPROVE" | "REJECT";
+export type ReleaseAction = "EXECUTE" | "ADVANCE" | "ROLLBACK" | "APPROVE" | "REJECT";
 
 export interface OperationApi {
   queryPage(request: {
     modelCode: string;
-    scope: { region: string; environment: string };
+    scope: Scope;
     queryType: "ALL" | "ONLY_DATA";
   }): Promise<PageResult>;
   createRelease(request: CreateReleaseRequest, idempotencyKey: string): Promise<ReleaseDetail>;
