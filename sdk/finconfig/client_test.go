@@ -3,11 +3,47 @@ package finconfig_test
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
+	"time"
 
 	catalog "github.com/asherzj/financial_configuration_center/internal/catalog/domain"
 	"github.com/asherzj/financial_configuration_center/sdk/finconfig"
 )
+
+func TestVersionPollConvergesWithoutHintOrWatch(t *testing.T) {
+	t.Parallel()
+	record := finconfig.Record{Key: "route", Revision: 7, Values: map[string]string{"code": "visa", "priority": "1"}}
+	transport := &pollTransport{response: finconfig.SnapshotResponse{
+		Identity: finconfig.SnapshotIdentity{ServerEpoch: "epoch", ServerInstanceID: "server", SnapshotInstance: "instance", Generation: 1}, Environment: "production",
+		Collections: []finconfig.CollectionPayload{{Name: "routes", Revision: 7, Digest: digestFor(t, record), Records: []finconfig.Record{record}}},
+	}}
+	client, err := finconfig.New(finconfig.Config{ConsumerID: "consumer", ClientID: "client", Environment: "production", Transport: transport, PollInterval: 5 * time.Millisecond})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := client.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = client.Close(context.Background()) })
+	record.Revision = 8
+	record.Values["priority"] = "2"
+	transport.set(finconfig.SnapshotResponse{
+		Identity: finconfig.SnapshotIdentity{ServerEpoch: "epoch", ServerInstanceID: "server", SnapshotInstance: "instance", Generation: 2}, Environment: "production",
+		Collections: []finconfig.CollectionPayload{{Name: "routes", Revision: 8, Digest: digestFor(t, record), Records: []finconfig.Record{record}}},
+	})
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if got, ok := client.GetByKey("routes", "route"); ok && got.Values["priority"] == "2" {
+			if err := client.Close(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatal("SDK did not converge through version poll")
+}
 
 func TestClientRefreshPublishesImmutableSnapshotAndRetainsLastKnownGood(t *testing.T) {
 	t.Parallel()
@@ -131,6 +167,46 @@ type stubTransport struct {
 	response    finconfig.SnapshotResponse
 	err         error
 	lastRequest finconfig.SnapshotRequest
+}
+
+type pollTransport struct {
+	mu       sync.RWMutex
+	response finconfig.SnapshotResponse
+}
+
+func (transport *pollTransport) GetSnapshot(context.Context, finconfig.SnapshotRequest) (finconfig.SnapshotResponse, error) {
+	transport.mu.RLock()
+	defer transport.mu.RUnlock()
+	return cloneResponse(transport.response), nil
+}
+
+func (transport *pollTransport) set(response finconfig.SnapshotResponse) {
+	transport.mu.Lock()
+	defer transport.mu.Unlock()
+	transport.response = cloneResponse(response)
+}
+
+func cloneResponse(response finconfig.SnapshotResponse) finconfig.SnapshotResponse {
+	cloned := response
+	cloned.Collections = make([]finconfig.CollectionPayload, len(response.Collections))
+	for index, collection := range response.Collections {
+		cloned.Collections[index] = collection
+		cloned.Collections[index].Records = make([]finconfig.Record, len(collection.Records))
+		for recordIndex, record := range collection.Records {
+			cloned.Collections[index].Records[recordIndex] = record
+			cloned.Collections[index].Records[recordIndex].Values = cloneValues(record.Values)
+		}
+	}
+	cloned.DeletedCollections = append([]string(nil), response.DeletedCollections...)
+	return cloned
+}
+
+func cloneValues(values map[string]string) map[string]string {
+	cloned := make(map[string]string, len(values))
+	for key, value := range values {
+		cloned[key] = value
+	}
+	return cloned
 }
 
 func (transport *stubTransport) GetSnapshot(_ context.Context, request finconfig.SnapshotRequest) (finconfig.SnapshotResponse, error) {

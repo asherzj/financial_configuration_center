@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	catalog "github.com/asherzj/financial_configuration_center/internal/catalog/domain"
 )
@@ -59,11 +60,27 @@ type Transport interface {
 }
 
 type Config struct {
-	ConsumerID  string
-	ClientID    string
-	Environment string
-	Transport   Transport
+	ConsumerID   string
+	ClientID     string
+	Environment  string
+	Transport    Transport
+	PollInterval time.Duration
 }
+
+var (
+	ErrAlreadyStarted = errors.New("FinConfig client is already started")
+	ErrClosed         = errors.New("FinConfig client is closed")
+)
+
+type lifecycleState uint8
+
+const (
+	lifecycleNew lifecycleState = iota
+	lifecycleStarting
+	lifecycleRunning
+	lifecycleClosing
+	lifecycleClosed
+)
 
 type ChangeSet struct {
 	Before      SnapshotIdentity
@@ -84,14 +101,19 @@ type clientSnapshot struct {
 }
 
 type Client struct {
-	consumerID  string
-	clientID    string
-	environment string
-	transport   Transport
-	refreshMu   sync.Mutex
-	callbackMu  sync.RWMutex
-	callback    func(ChangeSet) error
-	current     atomic.Pointer[clientSnapshot]
+	consumerID   string
+	clientID     string
+	environment  string
+	transport    Transport
+	refreshMu    sync.Mutex
+	callbackMu   sync.RWMutex
+	callback     func(ChangeSet) error
+	current      atomic.Pointer[clientSnapshot]
+	pollInterval time.Duration
+	lifecycleMu  sync.Mutex
+	lifecycle    lifecycleState
+	cancel       context.CancelFunc
+	closed       chan struct{}
 }
 
 func New(config Config) (*Client, error) {
@@ -101,12 +123,110 @@ func New(config Config) (*Client, error) {
 	if config.ConsumerID == "" || config.ClientID == "" || config.Environment == "" || config.Transport == nil {
 		return nil, errors.New("new FinConfig client: consumer, client, environment, and transport are required")
 	}
+	if config.PollInterval < 0 {
+		return nil, errors.New("new FinConfig client: poll interval cannot be negative")
+	}
+	if config.PollInterval == 0 {
+		config.PollInterval = 30 * time.Second
+	}
 	client := &Client{
 		consumerID: config.ConsumerID, clientID: config.ClientID,
-		environment: config.Environment, transport: config.Transport,
+		environment: config.Environment, transport: config.Transport, pollInterval: config.PollInterval,
+		closed: make(chan struct{}),
 	}
 	client.current.Store(&clientSnapshot{environment: config.Environment, collections: map[string]collectionSnapshot{}})
 	return client, nil
+}
+
+func (client *Client) Start(ctx context.Context) error {
+	client.lifecycleMu.Lock()
+	switch client.lifecycle {
+	case lifecycleClosed, lifecycleClosing:
+		client.lifecycleMu.Unlock()
+		return ErrClosed
+	case lifecycleStarting, lifecycleRunning:
+		client.lifecycleMu.Unlock()
+		return ErrAlreadyStarted
+	}
+	client.lifecycle = lifecycleStarting
+	client.lifecycleMu.Unlock()
+
+	if err := client.Refresh(ctx); err != nil {
+		client.lifecycleMu.Lock()
+		closing := client.lifecycle == lifecycleClosing
+		if !closing {
+			client.lifecycle = lifecycleNew
+		}
+		client.lifecycleMu.Unlock()
+		if closing {
+			client.finishClosed()
+			return ErrClosed
+		}
+		return err
+	}
+
+	client.lifecycleMu.Lock()
+	if client.lifecycle == lifecycleClosing {
+		client.lifecycleMu.Unlock()
+		client.finishClosed()
+		return ErrClosed
+	}
+	runContext, cancel := context.WithCancel(ctx)
+	client.cancel = cancel
+	client.lifecycle = lifecycleRunning
+	client.lifecycleMu.Unlock()
+	go client.poll(runContext)
+	return nil
+}
+
+func (client *Client) Close(ctx context.Context) error {
+	client.lifecycleMu.Lock()
+	switch client.lifecycle {
+	case lifecycleClosed:
+		client.lifecycleMu.Unlock()
+		return nil
+	case lifecycleNew:
+		client.lifecycle = lifecycleClosed
+		close(client.closed)
+		client.lifecycleMu.Unlock()
+		return nil
+	case lifecycleStarting:
+		client.lifecycle = lifecycleClosing
+	case lifecycleRunning:
+		client.lifecycle = lifecycleClosing
+		client.cancel()
+	}
+	closed := client.closed
+	client.lifecycleMu.Unlock()
+	select {
+	case <-closed:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (client *Client) poll(ctx context.Context) {
+	ticker := time.NewTicker(client.pollInterval)
+	defer ticker.Stop()
+	defer client.finishClosed()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			_ = client.Refresh(ctx)
+		}
+	}
+}
+
+func (client *Client) finishClosed() {
+	client.lifecycleMu.Lock()
+	defer client.lifecycleMu.Unlock()
+	if client.lifecycle != lifecycleClosed {
+		client.lifecycle = lifecycleClosed
+		close(client.closed)
+	}
 }
 
 // Refresh validates a complete candidate and invokes consumer validation before

@@ -87,6 +87,31 @@ func (source *Source) AuthorizedCollections(ctx context.Context, consumerID stri
 	return collections, nil
 }
 
+func (source *Source) LoadVersions(ctx context.Context, environment string) (map[string]catalog.ConfigRevision, error) {
+	type row struct {
+		CollectionName string
+		ConfigRevision uint64
+	}
+	var rows []row
+	err := source.database.WithinTransaction(ctx, &sql.TxOptions{Isolation: sql.LevelReadCommitted, ReadOnly: true}, func(db *gorm.DB) error {
+		return db.WithContext(ctx).Raw(`
+			SELECT v.collection_name, v.config_revision
+			FROM configuration_versions v
+			JOIN configuration_collections c ON c.name = v.collection_name
+			WHERE v.environment = ? AND c.status = 'ENABLED'
+			ORDER BY v.collection_name
+		`, environment).Scan(&rows).Error
+	})
+	if err != nil {
+		return nil, fmt.Errorf("load distribution versions for %q: %w", environment, err)
+	}
+	versions := make(map[string]catalog.ConfigRevision, len(rows))
+	for _, row := range rows {
+		versions[row.CollectionName] = catalog.ConfigRevision(row.ConfigRevision)
+	}
+	return versions, nil
+}
+
 func compileCollection(row struct {
 	Name               string
 	Description        string
@@ -176,3 +201,4 @@ func loadRecords(ctx context.Context, db *gorm.DB, collection, environment strin
 }
 
 var _ snapshot.Source = (*Source)(nil)
+var _ snapshot.VersionSource = (*Source)(nil)

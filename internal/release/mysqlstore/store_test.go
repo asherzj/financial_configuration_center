@@ -35,6 +35,71 @@ import (
 	drivermysql "github.com/go-sql-driver/mysql"
 )
 
+func TestRealMySQLPollConvergesWithoutHintOrWatch(t *testing.T) {
+	dsn := isolatedDatabase(t)
+	ctx := context.Background()
+	database, err := platformmysql.Open(ctx, platformmysql.Config{DSN: dsn, MaxOpenConns: 8, MaxIdleConns: 8, ConnMaxLifetime: time.Minute, ConnMaxIdleTime: time.Minute})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = database.Close() })
+	clock := fixedClock{now: time.Date(2026, 8, 19, 10, 0, 0, 0, time.UTC)}
+	source, err := mysqlsource.New(database)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager, err := snapshot.NewManager(source, snapshot.IdentitySeed{ServerEpoch: "epoch-poll", ServerInstanceID: "server-poll", SnapshotInstance: "snapshot-poll"}, clock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manager.Refresh(ctx, "production"); err != nil {
+		t.Fatal(err)
+	}
+	poller, err := snapshot.NewVersionPoller(manager, source, snapshot.VersionPollerOptions{Environment: "production", Interval: 5 * time.Millisecond})
+	if err != nil {
+		t.Fatal(err)
+	}
+	pollContext, stopPoller := context.WithCancel(ctx)
+	defer stopPoller()
+	go func() { _ = poller.Run(pollContext) }()
+
+	configService := configserver.New(manager, source)
+	sdkClient, err := finconfig.New(finconfig.Config{ConsumerID: "payment-service", ClientID: "pod-poll", Environment: "production", Transport: configTransport{service: configService}, PollInterval: 5 * time.Millisecond})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := sdkClient.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = sdkClient.Close(context.Background()) })
+
+	releaseStore, err := mysqlstore.New(database)
+	if err != nil {
+		t.Fatal(err)
+	}
+	releaseService := application.NewService(releaseStore, &numberedIDs{next: 800, releaseNumber: "REL-20260819-0800"}, clock)
+	created, err := releaseService.CreateBaseFinal(ctx, baseCreate("create-poll", "actor-poll", "production", "poll-route", 7))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := releaseService.Act(ctx, application.ActCommand{OrderID: created.ID, ActionRequestID: "30000000-0000-4000-8000-000000000001", ExpectedRevision: 1, ExpectedCurrentStep: release.StepBaseApply, Action: application.ActionExecute, Actor: "actor-poll"}); err != nil {
+		t.Fatal(err)
+	}
+	definition, _ := manager.Current().Definition("payment_routes")
+	record, _ := definition.NewRecord("production", map[string]string{"route_code": "poll-route", "priority": "1"})
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if got, found := sdkClient.GetByKey("payment_routes", record.RecordKey); found && got.Values["route_code"] == "poll-route" {
+			raw, _ := sql.Open("mysql", dsn)
+			defer raw.Close()
+			assertCount(t, raw, `SELECT COUNT(*) FROM outbox_events WHERE status = 'PENDING'`, 1)
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatal("configuration did not converge through server and SDK version polls")
+}
+
 func TestRealMySQLOutboxMultiWorkerLeaseCAS(t *testing.T) {
 	dsn := isolatedDatabase(t)
 	ctx := context.Background()
