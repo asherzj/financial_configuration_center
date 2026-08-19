@@ -57,7 +57,7 @@ type principalResolver struct{}
 
 func (principalResolver) Subject(context.Context) (string, error) { return "auditor", nil }
 func (principalResolver) Roles(context.Context) ([]string, error) {
-	return []string{audit.AuditViewerRole}, nil
+	return []string{audit.AuditorRole}, nil
 }
 
 func stringPointer(value string) *string { return &value }

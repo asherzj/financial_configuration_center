@@ -160,7 +160,7 @@ func TestRealMySQLAuditListFiltersWithoutLoadingSensitiveBodies(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	page, err := service.List(ctx, audit.Principal{Subject: "auditor", Roles: []string{audit.AuditViewerRole}}, audit.Query{
+	page, err := service.List(ctx, audit.Principal{Subject: "auditor", Roles: []string{audit.AuditorRole}}, audit.Query{
 		PrincipalSubject: "alice", ResourceType: "COLLECTION", ResourceID: "routes", PageNumber: 1, PageSize: 20,
 	})
 	if err != nil || page.TotalNumber != 1 || len(page.Records) != 1 || page.Records[0].PrincipalSubject != "alice" || page.Records[0].TraceID != "trace-a" {

@@ -295,7 +295,7 @@ func TestBFFListsFilteredPayloadFreeAuditRecords(t *testing.T) {
 		PageNumber: 1, PageSize: 20, TotalNumber: 1, TotalPages: 1,
 	}}
 	handler, err := adminbff.NewWithAdminOperations(
-		&queryStub{}, &releaseStub{}, authenticator{roles: []string{audit.AuditViewerRole}}, operations, diagnostics, audits,
+		&queryStub{}, &releaseStub{}, authenticator{roles: []string{audit.AuditorRole}}, operations, diagnostics, audits,
 	)
 	if err != nil {
 		t.Fatal(err)

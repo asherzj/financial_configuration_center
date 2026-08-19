@@ -10,8 +10,7 @@ import (
 )
 
 const (
-	AuditViewerRole      = "AUDIT_VIEWER"
-	PlatformOperatorRole = "PLATFORM_OPERATOR"
+	AuditorRole = "AUDITOR"
 )
 
 var (
@@ -70,7 +69,7 @@ func NewService(repository Repository) (*Service, error) {
 }
 
 func (service *Service) List(ctx context.Context, principal Principal, query Query) (Page, error) {
-	if strings.TrimSpace(principal.Subject) == "" || !slices.Contains(principal.Roles, AuditViewerRole) && !slices.Contains(principal.Roles, PlatformOperatorRole) {
+	if strings.TrimSpace(principal.Subject) == "" || !slices.Contains(principal.Roles, AuditorRole) {
 		return Page{}, ErrForbidden
 	}
 	if query.PageNumber == 0 {
