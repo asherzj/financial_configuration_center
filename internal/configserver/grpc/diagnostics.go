@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/asherzj/financial_configuration_center/internal/distribution/snapshot"
+	platformauth "github.com/asherzj/financial_configuration_center/internal/platform/auth"
 	commonv1 "github.com/asherzj/financial_configuration_center/kitex_gen/finconfig/common/v1"
 	configv1 "github.com/asherzj/financial_configuration_center/kitex_gen/finconfig/config/v1"
 	"google.golang.org/grpc/codes"
@@ -16,20 +17,28 @@ type DiagnosticsProvider interface {
 	Diagnostics() snapshot.Diagnostics
 }
 
+type DiagnosticsRequestAuthorizer interface {
+	AuthorizeDiagnostics(context.Context, string) error
+}
+
 type DiagnosticsHandler struct {
 	provider           DiagnosticsProvider
+	authorizer         DiagnosticsRequestAuthorizer
 	managedEnvironment string
 }
 
-func NewDiagnostics(provider DiagnosticsProvider, managedEnvironment string) (*DiagnosticsHandler, error) {
-	managedEnvironment = strings.TrimSpace(managedEnvironment)
-	if provider == nil || managedEnvironment == "" {
-		return nil, errors.New("new diagnostics handler: provider and managed environment are required")
+func NewDiagnostics(provider DiagnosticsProvider, authorizer DiagnosticsRequestAuthorizer, managedEnvironment string) (*DiagnosticsHandler, error) {
+	compiledEnvironment, environmentErr := platformauth.CompileEnvironment(managedEnvironment)
+	if provider == nil || authorizer == nil || environmentErr != nil {
+		return nil, errors.New("new diagnostics handler: provider, request authorizer, and managed environment are required")
 	}
-	return &DiagnosticsHandler{provider: provider, managedEnvironment: managedEnvironment}, nil
+	return &DiagnosticsHandler{provider: provider, authorizer: authorizer, managedEnvironment: compiledEnvironment}, nil
 }
 
-func (handler *DiagnosticsHandler) GetSnapshotStatus(context.Context, *configv1.GetSnapshotStatusRequest) (*configv1.GetSnapshotStatusResponse, error) {
+func (handler *DiagnosticsHandler) GetSnapshotStatus(ctx context.Context, _ *configv1.GetSnapshotStatusRequest) (*configv1.GetSnapshotStatusResponse, error) {
+	if err := handler.authorizer.AuthorizeDiagnostics(ctx, handler.managedEnvironment); err != nil {
+		return nil, err
+	}
 	diagnostics := handler.provider.Diagnostics()
 	if diagnostics.Environment != handler.managedEnvironment {
 		return nil, status.Error(codes.FailedPrecondition, "managed environment snapshot is not loaded")
@@ -46,12 +55,19 @@ func (handler *DiagnosticsHandler) GetSnapshotStatus(context.Context, *configv1.
 	}, nil
 }
 
-func (handler *DiagnosticsHandler) GetCollectionStatus(_ context.Context, request *configv1.GetCollectionStatusRequest) (*configv1.GetCollectionStatusResponse, error) {
+func (handler *DiagnosticsHandler) GetCollectionStatus(ctx context.Context, request *configv1.GetCollectionStatusRequest) (*configv1.GetCollectionStatusResponse, error) {
 	if request == nil || strings.TrimSpace(request.Collection) == "" || strings.TrimSpace(request.Environment) == "" {
 		return nil, status.Error(codes.InvalidArgument, "collection and environment are required")
 	}
-	if request.Environment != handler.managedEnvironment {
+	environment, err := platformauth.CompileEnvironment(request.Environment)
+	if err != nil {
+		return nil, status.Error(codes.InvalidArgument, "environment must be a concrete segment")
+	}
+	if environment != handler.managedEnvironment {
 		return nil, status.Error(codes.FailedPrecondition, "requested environment is not managed by this server")
+	}
+	if err := handler.authorizer.AuthorizeDiagnostics(ctx, environment); err != nil {
+		return nil, err
 	}
 	diagnostics := handler.provider.Diagnostics()
 	if diagnostics.Environment != handler.managedEnvironment {

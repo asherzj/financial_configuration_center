@@ -2,12 +2,14 @@ package grpc_test
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
 	"github.com/asherzj/financial_configuration_center/internal/configserver"
 	configgrpc "github.com/asherzj/financial_configuration_center/internal/configserver/grpc"
 	"github.com/asherzj/financial_configuration_center/internal/distribution/snapshot"
+	platformauth "github.com/asherzj/financial_configuration_center/internal/platform/auth"
 	commonv1 "github.com/asherzj/financial_configuration_center/kitex_gen/finconfig/common/v1"
 	configv1 "github.com/asherzj/financial_configuration_center/kitex_gen/finconfig/config/v1"
 	"github.com/cloudwego/kitex/pkg/streaming"
@@ -26,7 +28,7 @@ func TestWatchSendsInitialWatermarkAndHonorsCancellation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	handler, err := configgrpc.NewWithWatch(stubApplication{}, hub, watchAuthorizer{}, "production")
+	handler, err := configgrpc.NewWithWatch(stubApplication{}, hub, watchAuthorizer{}, allowRequestAuthorizer{}, "production")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -50,7 +52,7 @@ func TestWatchRejectsAnotherManagedEnvironmentBeforeSubscription(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	handler, err := configgrpc.NewWithWatch(stubApplication{}, hub, watchAuthorizer{}, "production")
+	handler, err := configgrpc.NewWithWatch(stubApplication{}, hub, watchAuthorizer{}, allowRequestAuthorizer{}, "production")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -71,7 +73,7 @@ func TestGetSnapshotMapsDeterministicCollectionPayload(t *testing.T) {
 			Records: []configserver.Record{{RecordKey: "key", RecordRevision: 8, Data: map[string]string{"priority": "7", "route_code": "visa-cn"}}},
 		}},
 	}}
-	handler, err := configgrpc.New(application, "production")
+	handler, err := configgrpc.New(application, allowRequestAuthorizer{}, "production")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -105,7 +107,7 @@ func TestGetSnapshotMapsDeterministicCollectionPayload(t *testing.T) {
 func TestGetSnapshotRejectsMissingScopeAtTransportBoundary(t *testing.T) {
 	t.Parallel()
 
-	handler, err := configgrpc.New(stubApplication{}, "production")
+	handler, err := configgrpc.New(stubApplication{}, allowRequestAuthorizer{}, "production")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -117,7 +119,7 @@ func TestGetSnapshotRejectsMissingScopeAtTransportBoundary(t *testing.T) {
 
 func TestGetSnapshotMapsManagedEnvironmentMismatchToFailedPrecondition(t *testing.T) {
 	t.Parallel()
-	handler, err := configgrpc.New(stubApplication{err: configserver.ErrManagedEnvironmentMismatch}, "production")
+	handler, err := configgrpc.New(stubApplication{err: configserver.ErrManagedEnvironmentMismatch}, allowRequestAuthorizer{}, "production")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -131,7 +133,7 @@ func TestGetSnapshotMapsManagedEnvironmentMismatchToFailedPrecondition(t *testin
 
 func TestGetSnapshotMapsMissingSnapshotToUnavailable(t *testing.T) {
 	t.Parallel()
-	handler, err := configgrpc.New(stubApplication{err: configserver.ErrSnapshotUnavailable}, "production")
+	handler, err := configgrpc.New(stubApplication{err: configserver.ErrSnapshotUnavailable}, allowRequestAuthorizer{}, "production")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -145,7 +147,7 @@ func TestGetSnapshotMapsMissingSnapshotToUnavailable(t *testing.T) {
 
 func TestUnimplementedReadsStillRejectAnotherManagedEnvironment(t *testing.T) {
 	t.Parallel()
-	handler, err := configgrpc.New(stubApplication{}, "production")
+	handler, err := configgrpc.New(stubApplication{}, allowRequestAuthorizer{}, "production")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -161,9 +163,116 @@ func TestUnimplementedReadsStillRejectAnotherManagedEnvironment(t *testing.T) {
 	}
 }
 
+func TestConfigHandlerBindsConsumerIdentityBeforeApplication(t *testing.T) {
+	t.Parallel()
+	denied := errors.New("consumer binding denied")
+	authorizer := &recordingConsumerAuthorizer{err: denied}
+	application := &recordingApplication{}
+	handler, err := configgrpc.New(application, authorizer, "production")
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := &configv1.GetSnapshotRequest{ConsumerId: "payments", ClientId: "pod", Scope: &commonv1.Scope{Region: "cn", Environment: "production", Stage: "blue"}}
+	if _, err := handler.GetSnapshot(context.Background(), request); !errors.Is(err, denied) {
+		t.Fatalf("binding error=%v", err)
+	}
+	if application.called || authorizer.consumerID != "payments" || authorizer.scope != (platformauth.Scope{Region: "cn", Environment: "production", Stage: "blue"}) {
+		t.Fatalf("application called=%v consumer=%q scope=%+v", application.called, authorizer.consumerID, authorizer.scope)
+	}
+}
+
+func TestConfigHandlerNormalizesConcreteScopeOnce(t *testing.T) {
+	t.Parallel()
+	authorizer := &recordingConsumerAuthorizer{}
+	application := &recordingApplication{}
+	handler, err := configgrpc.New(application, authorizer, "production")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = handler.GetSnapshot(context.Background(), &configv1.GetSnapshotRequest{
+		ConsumerId: " payments ", ClientId: " pod ",
+		Scope: &commonv1.Scope{Region: " cn ", Environment: " production ", Stage: " blue "},
+	})
+	if err != nil || !application.called || authorizer.consumerID != "payments" || authorizer.scope != (platformauth.Scope{Region: "cn", Environment: "production", Stage: "blue"}) || application.last.Region != "cn" || application.last.Stage != "blue" {
+		t.Fatalf("error=%v application=%+v consumer=%q scope=%+v", err, application.last, authorizer.consumerID, authorizer.scope)
+	}
+}
+
+func TestConfigHandlerRejectsWildcardAndCrossEnvironmentBeforeAuthorization(t *testing.T) {
+	t.Parallel()
+	for name, test := range map[string]struct {
+		scope *commonv1.Scope
+		code  codes.Code
+	}{
+		"wildcard": {scope: &commonv1.Scope{Region: "*", Environment: "production"}, code: codes.InvalidArgument},
+		"routing":  {scope: &commonv1.Scope{Region: "cn", Environment: "staging"}, code: codes.FailedPrecondition},
+	} {
+		authorizer := &recordingConsumerAuthorizer{}
+		application := &recordingApplication{}
+		handler, err := configgrpc.New(application, authorizer, "production")
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, err = handler.GetSnapshot(context.Background(), &configv1.GetSnapshotRequest{ConsumerId: "payments", ClientId: "pod", Scope: test.scope})
+		if status.Code(err) != test.code || application.called || authorizer.consumerID != "" {
+			t.Fatalf("%s code=%v application=%v authorized=%q", name, status.Code(err), application.called, authorizer.consumerID)
+		}
+	}
+}
+
+func TestWatchBindsConsumerUsingStreamContextBeforeSubscription(t *testing.T) {
+	t.Parallel()
+	denied := errors.New("watch binding denied")
+	authorizer := &recordingConsumerAuthorizer{err: denied}
+	watcher := &recordingWatcher{}
+	handler, err := configgrpc.NewWithWatch(stubApplication{}, watcher, watchAuthorizer{}, authorizer, "production")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.WithValue(context.Background(), watchContextKey{}, "authenticated")
+	err = handler.Watch(&configv1.WatchRequest{ConsumerId: "payments", ClientId: "pod", Scope: scope("production")}, &watchStream{ctx: ctx})
+	if !errors.Is(err, denied) || watcher.called || authorizer.contextValue != "authenticated" {
+		t.Fatalf("error=%v subscribed=%v context=%q", err, watcher.called, authorizer.contextValue)
+	}
+}
+
 type stubApplication struct {
 	response configserver.GetSnapshotResponse
 	err      error
+}
+
+type recordingApplication struct {
+	called bool
+	last   configserver.GetSnapshotRequest
+}
+
+func (application *recordingApplication) GetSnapshot(_ context.Context, request configserver.GetSnapshotRequest) (configserver.GetSnapshotResponse, error) {
+	application.called = true
+	application.last = request
+	return configserver.GetSnapshotResponse{}, nil
+}
+
+type recordingConsumerAuthorizer struct {
+	err          error
+	consumerID   string
+	scope        platformauth.Scope
+	contextValue string
+}
+
+func (authorizer *recordingConsumerAuthorizer) AuthorizeConsumer(ctx context.Context, consumerID string, scope platformauth.Scope) error {
+	authorizer.consumerID = consumerID
+	authorizer.scope = scope
+	authorizer.contextValue, _ = ctx.Value(watchContextKey{}).(string)
+	return authorizer.err
+}
+
+type watchContextKey struct{}
+
+type recordingWatcher struct{ called bool }
+
+func (watcher *recordingWatcher) Subscribe() (*snapshot.WatchSubscription, error) {
+	watcher.called = true
+	return nil, errors.New("unexpected subscription")
 }
 
 func (application stubApplication) GetSnapshot(context.Context, configserver.GetSnapshotRequest) (configserver.GetSnapshotResponse, error) {
@@ -179,6 +288,16 @@ type watchAuthorizer struct{}
 func (watchAuthorizer) AuthorizedCollections(context.Context, string) ([]string, error) {
 	return []string{"routes"}, nil
 }
+
+type allowRequestAuthorizer struct{}
+
+func (allowRequestAuthorizer) AuthorizeConsumer(context.Context, string, platformauth.Scope) error {
+	return nil
+}
+
+func (allowRequestAuthorizer) AuthorizeRefresh(context.Context, string) error { return nil }
+
+func (allowRequestAuthorizer) AuthorizeDiagnostics(context.Context, string) error { return nil }
 
 type watchStream struct {
 	streaming.Stream

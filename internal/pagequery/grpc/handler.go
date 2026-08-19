@@ -9,6 +9,7 @@ import (
 	catalog "github.com/asherzj/financial_configuration_center/internal/catalog/domain"
 	"github.com/asherzj/financial_configuration_center/internal/distribution/snapshot"
 	"github.com/asherzj/financial_configuration_center/internal/pagequery"
+	platformauth "github.com/asherzj/financial_configuration_center/internal/platform/auth"
 	commonv1 "github.com/asherzj/financial_configuration_center/kitex_gen/finconfig/common/v1"
 	configv1 "github.com/asherzj/financial_configuration_center/kitex_gen/finconfig/config/v1"
 	"google.golang.org/grpc/codes"
@@ -20,18 +21,37 @@ type Application interface {
 	Query(pagequery.Request) (pagequery.Result, error)
 }
 
-type Handler struct{ application Application }
-
-func New(application Application) (*Handler, error) {
-	if application == nil {
-		return nil, errors.New("new PageQueryService handler: application is required")
-	}
-	return &Handler{application: application}, nil
+type RequestAuthorizer interface {
+	AuthorizePageQuery(context.Context, platformauth.Scope) error
 }
 
-func (handler *Handler) QueryPage(_ context.Context, request *configv1.QueryPageRequest) (*configv1.QueryPageResponse, error) {
+type Handler struct {
+	application        Application
+	authorizer         RequestAuthorizer
+	managedEnvironment string
+}
+
+func New(application Application, authorizer RequestAuthorizer, managedEnvironment string) (*Handler, error) {
+	compiledEnvironment, environmentErr := platformauth.CompileEnvironment(managedEnvironment)
+	if application == nil || authorizer == nil || environmentErr != nil {
+		return nil, errors.New("new PageQueryService handler: application, request authorizer, and managed environment are required")
+	}
+	return &Handler{application: application, authorizer: authorizer, managedEnvironment: compiledEnvironment}, nil
+}
+
+func (handler *Handler) QueryPage(ctx context.Context, request *configv1.QueryPageRequest) (*configv1.QueryPageResponse, error) {
 	if request == nil || request.Scope == nil {
 		return nil, status.Error(codes.InvalidArgument, "model_code and scope are required")
+	}
+	scope, err := platformauth.CompileScope(request.Scope.Region, request.Scope.Environment, request.Scope.Stage)
+	if err != nil {
+		return nil, status.Error(codes.InvalidArgument, "scope must contain concrete region and environment segments")
+	}
+	if scope.Environment != handler.managedEnvironment {
+		return nil, status.Error(codes.FailedPrecondition, "requested environment is not managed by this server")
+	}
+	if err := handler.authorizer.AuthorizePageQuery(ctx, scope); err != nil {
+		return nil, err
 	}
 	queryType, err := fromQueryType(request.QueryType)
 	if err != nil {
@@ -50,8 +70,8 @@ func (handler *Handler) QueryPage(_ context.Context, request *configv1.QueryPage
 		conditions[index] = mapped
 	}
 	result, err := handler.application.Query(pagequery.Request{
-		ModelCode: request.ModelCode, Region: request.Scope.Region, Environment: request.Scope.Environment,
-		Stage: request.Scope.Stage, PreviewBucket: request.PreviewBucket, Type: queryType, Page: page, Conditions: conditions,
+		ModelCode: request.ModelCode, Region: scope.Region, Environment: scope.Environment,
+		Stage: scope.Stage, PreviewBucket: request.PreviewBucket, Type: queryType, Page: page, Conditions: conditions,
 	})
 	if err != nil {
 		switch {

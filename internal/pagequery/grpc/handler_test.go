@@ -1,6 +1,8 @@
 package grpc_test
 
 import (
+	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -8,6 +10,7 @@ import (
 	"github.com/asherzj/financial_configuration_center/internal/distribution/snapshot"
 	"github.com/asherzj/financial_configuration_center/internal/pagequery"
 	pagegrpc "github.com/asherzj/financial_configuration_center/internal/pagequery/grpc"
+	platformauth "github.com/asherzj/financial_configuration_center/internal/platform/auth"
 	commonv1 "github.com/asherzj/financial_configuration_center/kitex_gen/finconfig/common/v1"
 	configv1 "github.com/asherzj/financial_configuration_center/kitex_gen/finconfig/config/v1"
 	"google.golang.org/grpc/codes"
@@ -37,7 +40,7 @@ func TestQueryPageMapsCompleteAllMetadata(t *testing.T) {
 		Snapshot:      snapshot.Identity{ServerEpoch: "epoch", ServerInstanceID: "server", SnapshotInstance: "instance", Generation: 1, PublishedAt: time.Now().UTC()},
 		ModelRevision: 7, CollectionRevision: 8,
 	}}
-	handler, err := pagegrpc.New(application)
+	handler, err := pagegrpc.New(application, allowPageQueryAuthorizer{}, "production")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -74,7 +77,7 @@ func TestQueryPageMapsCompleteAllMetadata(t *testing.T) {
 
 func TestQueryPageMapsManagedEnvironmentMismatchToFailedPrecondition(t *testing.T) {
 	t.Parallel()
-	handler, err := pagegrpc.New(&stubQuerier{err: pagequery.ErrManagedEnvironmentMismatch})
+	handler, err := pagegrpc.New(&stubQuerier{err: pagequery.ErrManagedEnvironmentMismatch}, allowPageQueryAuthorizer{}, "production")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -89,7 +92,7 @@ func TestQueryPageMapsManagedEnvironmentMismatchToFailedPrecondition(t *testing.
 
 func TestQueryPageMapsMissingSnapshotToUnavailable(t *testing.T) {
 	t.Parallel()
-	handler, err := pagegrpc.New(&stubQuerier{err: pagequery.ErrSnapshotUnavailable})
+	handler, err := pagegrpc.New(&stubQuerier{err: pagequery.ErrSnapshotUnavailable}, allowPageQueryAuthorizer{}, "production")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -104,7 +107,7 @@ func TestQueryPageMapsMissingSnapshotToUnavailable(t *testing.T) {
 
 func TestQueryPageMapsMissingModelToNotFound(t *testing.T) {
 	t.Parallel()
-	handler, err := pagegrpc.New(&stubQuerier{err: pagequery.ErrNotFound})
+	handler, err := pagegrpc.New(&stubQuerier{err: pagequery.ErrNotFound}, allowPageQueryAuthorizer{}, "production")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -117,15 +120,72 @@ func TestQueryPageMapsMissingModelToNotFound(t *testing.T) {
 	}
 }
 
+func TestQueryPageAuthorizesRoleAndScopeBeforeApplication(t *testing.T) {
+	t.Parallel()
+	denied := errors.New("page query denied")
+	authorizer := &recordingPageQueryAuthorizer{err: denied}
+	application := &stubQuerier{}
+	handler, err := pagegrpc.New(application, authorizer, "production")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = handler.QueryPage(context.Background(), &configv1.QueryPageRequest{
+		ModelCode: "model", Scope: &commonv1.Scope{Region: " cn ", Environment: " production ", Stage: " blue "},
+	})
+	if !errors.Is(err, denied) || application.calls != 0 || authorizer.scope != (platformauth.Scope{Region: "cn", Environment: "production", Stage: "blue"}) {
+		t.Fatalf("error=%v calls=%d scope=%+v", err, application.calls, authorizer.scope)
+	}
+}
+
+func TestQueryPageRejectsWildcardAndCrossEnvironmentBeforeAuthorization(t *testing.T) {
+	t.Parallel()
+	for name, test := range map[string]struct {
+		scope *commonv1.Scope
+		code  codes.Code
+	}{
+		"wildcard": {scope: &commonv1.Scope{Region: "cn", Environment: "production", Stage: "*"}, code: codes.InvalidArgument},
+		"routing":  {scope: &commonv1.Scope{Region: "cn", Environment: "staging"}, code: codes.FailedPrecondition},
+	} {
+		authorizer := &recordingPageQueryAuthorizer{}
+		application := &stubQuerier{}
+		handler, err := pagegrpc.New(application, authorizer, "production")
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, err = handler.QueryPage(context.Background(), &configv1.QueryPageRequest{ModelCode: "model", Scope: test.scope})
+		if status.Code(err) != test.code || application.calls != 0 || authorizer.scope != (platformauth.Scope{}) {
+			t.Fatalf("%s code=%v calls=%d authorized=%+v", name, status.Code(err), application.calls, authorizer.scope)
+		}
+	}
+}
+
 type stubQuerier struct {
 	result pagequery.Result
 	last   pagequery.Request
 	err    error
+	calls  int
 }
 
 func (querier *stubQuerier) Query(request pagequery.Request) (pagequery.Result, error) {
+	querier.calls++
 	querier.last = request
 	return querier.result, querier.err
 }
 
 func int32Pointer(value int32) *int32 { return &value }
+
+type allowPageQueryAuthorizer struct{}
+
+func (allowPageQueryAuthorizer) AuthorizePageQuery(context.Context, platformauth.Scope) error {
+	return nil
+}
+
+type recordingPageQueryAuthorizer struct {
+	err   error
+	scope platformauth.Scope
+}
+
+func (authorizer *recordingPageQueryAuthorizer) AuthorizePageQuery(_ context.Context, scope platformauth.Scope) error {
+	authorizer.scope = scope
+	return authorizer.err
+}

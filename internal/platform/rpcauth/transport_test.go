@@ -31,7 +31,10 @@ func TestKitexTransportRunsConsumerAuthenticationForUnaryAndWatch(t *testing.T) 
 			if token != "consumer-token" {
 				return platformauth.ConsumerIdentity{}, platformauth.ErrTokenInvalid
 			}
-			return platformauth.ConsumerIdentity{ConsumerID: "payments", JWTID: "transport-jti"}, nil
+			return platformauth.ConsumerIdentity{
+				ConsumerID: "payments", JWTID: "transport-jti",
+				Scopes: []platformauth.ScopePattern{{Region: "cn", Environment: "production", Stage: "*"}},
+			}, nil
 		}),
 		internalVerifierFunc(func(context.Context, string) (platformauth.InternalCallerIdentity, error) {
 			return platformauth.InternalCallerIdentity{}, platformauth.ErrTokenInvalid
@@ -43,7 +46,13 @@ func TestKitexTransportRunsConsumerAuthenticationForUnaryAndWatch(t *testing.T) 
 	}
 	options := []server.Option{server.WithListener(listener), server.WithExitWaitTime(time.Second)}
 	options = append(options, authOptions...)
-	service := &authenticatedConfigService{}
+	requestAuthorizer, err := rpcauth.NewRequestAuthorizer(rpcauth.AuthorizationPolicy{
+		RefreshRelaySubjects: []string{"control-plane-relay"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := &authenticatedConfigService{authorizer: requestAuthorizer}
 	kitexServer := configservice.NewServer(service, options...)
 	stopped := make(chan error, 1)
 	go func() { stopped <- kitexServer.Run() }()
@@ -69,7 +78,7 @@ func TestKitexTransportRunsConsumerAuthenticationForUnaryAndWatch(t *testing.T) 
 	authorized, cancel := context.WithTimeout(authorized, 5*time.Second)
 	defer cancel()
 	for {
-		response, err := kitexClient.GetSnapshot(authorized, &kitexconfigv1.GetSnapshotRequest{})
+		response, err := kitexClient.GetSnapshot(authorized, consumerSnapshotRequest("payments"))
 		if err == nil {
 			if response.GetSnapshot().GetServerEpoch() != "authenticated" {
 				t.Fatalf("unexpected unary response: %+v", response)
@@ -86,17 +95,20 @@ func TestKitexTransportRunsConsumerAuthenticationForUnaryAndWatch(t *testing.T) 
 		}
 	}
 
-	if _, err := kitexClient.GetSnapshot(context.Background(), &kitexconfigv1.GetSnapshotRequest{}); kitexstatus.Code(err) != kitexcodes.Unauthenticated {
+	if _, err := kitexClient.GetSnapshot(context.Background(), consumerSnapshotRequest("payments")); kitexstatus.Code(err) != kitexcodes.Unauthenticated {
 		t.Fatalf("missing unary credentials code=%v err=%v", kitexstatus.Code(err), err)
 	}
-	unauthenticatedStream, err := kitexClient.Watch(context.Background(), &kitexconfigv1.WatchRequest{})
+	if _, err := kitexClient.GetSnapshot(authorized, consumerSnapshotRequest("orders")); kitexstatus.Code(err) != kitexcodes.PermissionDenied {
+		t.Fatalf("consumer substitution code=%v err=%v", kitexstatus.Code(err), err)
+	}
+	unauthenticatedStream, err := kitexClient.Watch(context.Background(), consumerWatchRequest("payments"))
 	if err == nil {
 		_, err = unauthenticatedStream.Recv()
 	}
 	if kitexstatus.Code(err) != kitexcodes.Unauthenticated || service.watchCalls.Load() != 0 {
 		t.Fatalf("missing Watch credentials code=%v handler calls=%d err=%v", kitexstatus.Code(err), service.watchCalls.Load(), err)
 	}
-	stream, err := kitexClient.Watch(authorized, &kitexconfigv1.WatchRequest{})
+	stream, err := kitexClient.Watch(authorized, consumerWatchRequest("payments"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -109,12 +121,14 @@ func TestKitexTransportRunsConsumerAuthenticationForUnaryAndWatch(t *testing.T) 
 	}
 }
 
-type authenticatedConfigService struct{ watchCalls atomic.Int32 }
+type authenticatedConfigService struct {
+	watchCalls atomic.Int32
+	authorizer *rpcauth.RequestAuthorizer
+}
 
-func (*authenticatedConfigService) GetSnapshot(ctx context.Context, _ *kitexconfigv1.GetSnapshotRequest) (*kitexconfigv1.GetSnapshotResponse, error) {
-	identity, ok := rpcauth.ConsumerIdentityFromContext(ctx)
-	if !ok || identity.ConsumerID != "payments" {
-		return nil, kitexstatus.Err(kitexcodes.PermissionDenied, "consumer identity not propagated")
+func (service *authenticatedConfigService) GetSnapshot(ctx context.Context, request *kitexconfigv1.GetSnapshotRequest) (*kitexconfigv1.GetSnapshotResponse, error) {
+	if err := service.authorizer.AuthorizeConsumer(ctx, request.ConsumerId, platformauth.Scope{Region: request.Scope.Region, Environment: request.Scope.Environment, Stage: request.Scope.Stage}); err != nil {
+		return nil, err
 	}
 	return &kitexconfigv1.GetSnapshotResponse{Snapshot: &kitexcommonv1.SnapshotIdentity{ServerEpoch: "authenticated"}}, nil
 }
@@ -127,11 +141,24 @@ func (*authenticatedConfigService) GetCollections(context.Context, *kitexconfigv
 	return &kitexconfigv1.GetCollectionsResponse{}, nil
 }
 
-func (service *authenticatedConfigService) Watch(_ *kitexconfigv1.WatchRequest, stream kitexconfigv1.ConfigService_WatchServer) error {
+func (service *authenticatedConfigService) Watch(request *kitexconfigv1.WatchRequest, stream kitexconfigv1.ConfigService_WatchServer) error {
 	service.watchCalls.Add(1)
-	identity, ok := rpcauth.ConsumerIdentityFromContext(stream.Context())
-	if !ok || identity.ConsumerID != "payments" {
-		return kitexstatus.Err(kitexcodes.PermissionDenied, "consumer stream identity not propagated")
+	if err := service.authorizer.AuthorizeConsumer(stream.Context(), request.ConsumerId, platformauth.Scope{Region: request.Scope.Region, Environment: request.Scope.Environment, Stage: request.Scope.Stage}); err != nil {
+		return err
 	}
 	return stream.Send(&kitexconfigv1.WatchResponse{EventId: "authenticated-watch"})
+}
+
+func consumerSnapshotRequest(consumerID string) *kitexconfigv1.GetSnapshotRequest {
+	return &kitexconfigv1.GetSnapshotRequest{
+		ConsumerId: consumerID, ClientId: "client",
+		Scope: &kitexcommonv1.Scope{Region: "cn", Environment: "production", Stage: "blue"},
+	}
+}
+
+func consumerWatchRequest(consumerID string) *kitexconfigv1.WatchRequest {
+	return &kitexconfigv1.WatchRequest{
+		ConsumerId: consumerID, ClientId: "client",
+		Scope: &kitexcommonv1.Scope{Region: "cn", Environment: "production", Stage: "blue"},
+	}
 }

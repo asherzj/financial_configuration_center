@@ -25,6 +25,33 @@ func TestScopePatternsOnlyAllowWholeSegmentWildcards(t *testing.T) {
 	}
 }
 
+func TestCompileConcreteScopeTrimsAndRejectsBusinessWildcards(t *testing.T) {
+	t.Parallel()
+	scope, err := auth.CompileScope(" cn ", " production ", " blue ")
+	if err != nil || scope != (auth.Scope{Region: "cn", Environment: "production", Stage: "blue"}) {
+		t.Fatalf("scope=%+v err=%v", scope, err)
+	}
+	for name, test := range map[string]struct {
+		region      string
+		environment string
+		stage       string
+	}{
+		"region":      {region: "*", environment: "production"},
+		"environment": {region: "cn", environment: "prod*"},
+		"stage":       {region: "cn", environment: "production", stage: "*"},
+	} {
+		if _, err := auth.CompileScope(test.region, test.environment, test.stage); err == nil {
+			t.Fatalf("%s wildcard scope accepted", name)
+		}
+	}
+	if environment, err := auth.CompileEnvironment(" production "); err != nil || environment != "production" {
+		t.Fatalf("environment=%q err=%v", environment, err)
+	}
+	if _, err := auth.CompileEnvironment("*"); err == nil {
+		t.Fatal("wildcard environment accepted")
+	}
+}
+
 func TestEd25519JWTValidatesIssuerAudienceAndInternalLifetime(t *testing.T) {
 	t.Parallel()
 	publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)

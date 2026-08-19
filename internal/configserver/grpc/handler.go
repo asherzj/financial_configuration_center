@@ -9,6 +9,7 @@ import (
 	catalog "github.com/asherzj/financial_configuration_center/internal/catalog/domain"
 	"github.com/asherzj/financial_configuration_center/internal/configserver"
 	"github.com/asherzj/financial_configuration_center/internal/distribution/snapshot"
+	platformauth "github.com/asherzj/financial_configuration_center/internal/platform/auth"
 	commonv1 "github.com/asherzj/financial_configuration_center/kitex_gen/finconfig/common/v1"
 	configv1 "github.com/asherzj/financial_configuration_center/kitex_gen/finconfig/config/v1"
 	"google.golang.org/grpc/codes"
@@ -29,23 +30,28 @@ type WatchAuthorizer interface {
 	AuthorizedCollections(context.Context, string) ([]string, error)
 }
 
+type ConsumerRequestAuthorizer interface {
+	AuthorizeConsumer(context.Context, string, platformauth.Scope) error
+}
+
 type Handler struct {
 	application        Application
 	watcher            Watcher
 	authorizer         WatchAuthorizer
+	requestAuthorizer  ConsumerRequestAuthorizer
 	managedEnvironment string
 }
 
-func New(application Application, managedEnvironment string) (*Handler, error) {
-	managedEnvironment = strings.TrimSpace(managedEnvironment)
-	if application == nil || managedEnvironment == "" {
-		return nil, errors.New("new ConfigService handler: application and managed environment are required")
+func New(application Application, requestAuthorizer ConsumerRequestAuthorizer, managedEnvironment string) (*Handler, error) {
+	compiledEnvironment, environmentErr := platformauth.CompileEnvironment(managedEnvironment)
+	if application == nil || requestAuthorizer == nil || environmentErr != nil {
+		return nil, errors.New("new ConfigService handler: application, request authorizer, and managed environment are required")
 	}
-	return &Handler{application: application, managedEnvironment: managedEnvironment}, nil
+	return &Handler{application: application, requestAuthorizer: requestAuthorizer, managedEnvironment: compiledEnvironment}, nil
 }
 
-func NewWithWatch(application Application, watcher Watcher, authorizer WatchAuthorizer, managedEnvironment string) (*Handler, error) {
-	handler, err := New(application, managedEnvironment)
+func NewWithWatch(application Application, watcher Watcher, authorizer WatchAuthorizer, requestAuthorizer ConsumerRequestAuthorizer, managedEnvironment string) (*Handler, error) {
+	handler, err := New(application, requestAuthorizer, managedEnvironment)
 	if err != nil {
 		return nil, err
 	}
@@ -58,8 +64,19 @@ func NewWithWatch(application Application, watcher Watcher, authorizer WatchAuth
 }
 
 func (handler *Handler) GetSnapshot(ctx context.Context, request *configv1.GetSnapshotRequest) (*configv1.GetSnapshotResponse, error) {
-	if request == nil || request.Scope == nil || strings.TrimSpace(request.ConsumerId) == "" || strings.TrimSpace(request.ClientId) == "" || strings.TrimSpace(request.Scope.Region) == "" || strings.TrimSpace(request.Scope.Environment) == "" {
+	if request == nil || request.Scope == nil || strings.TrimSpace(request.ConsumerId) == "" || strings.TrimSpace(request.ClientId) == "" {
 		return nil, status.Error(codes.InvalidArgument, "consumer_id, client_id, scope.region, and scope.environment are required")
+	}
+	scope, err := platformauth.CompileScope(request.Scope.Region, request.Scope.Environment, request.Scope.Stage)
+	if err != nil {
+		return nil, status.Error(codes.InvalidArgument, "scope must contain concrete region and environment segments")
+	}
+	if scope.Environment != handler.managedEnvironment {
+		return nil, status.Error(codes.FailedPrecondition, "requested environment is not managed by this server")
+	}
+	consumerID, clientID := strings.TrimSpace(request.ConsumerId), strings.TrimSpace(request.ClientId)
+	if err := handler.requestAuthorizer.AuthorizeConsumer(ctx, consumerID, scope); err != nil {
+		return nil, err
 	}
 	known := make([]configserver.Version, len(request.KnownVersions))
 	for index, version := range request.KnownVersions {
@@ -69,8 +86,8 @@ func (handler *Handler) GetSnapshot(ctx context.Context, request *configv1.GetSn
 		known[index] = configserver.Version{Collection: version.Collection, Revision: catalog.ConfigRevision(version.ConfigRevision), Digest: version.BaseDigest.Value}
 	}
 	response, err := handler.application.GetSnapshot(ctx, configserver.GetSnapshotRequest{
-		ConsumerID: request.ConsumerId, ClientID: request.ClientId,
-		Region: request.Scope.Region, Environment: request.Scope.Environment, Stage: request.Scope.Stage, KnownVersions: known,
+		ConsumerID: consumerID, ClientID: clientID,
+		Region: scope.Region, Environment: scope.Environment, Stage: scope.Stage, KnownVersions: known,
 	})
 	if err != nil {
 		switch {
@@ -117,22 +134,36 @@ func (handler *Handler) GetSnapshot(ctx context.Context, request *configv1.GetSn
 	return converted, nil
 }
 
-func (handler *Handler) DiffVersions(_ context.Context, request *configv1.DiffVersionsRequest) (*configv1.DiffVersionsResponse, error) {
-	if request == nil || request.Scope == nil || strings.TrimSpace(request.ConsumerId) == "" || strings.TrimSpace(request.ClientId) == "" || strings.TrimSpace(request.Scope.Environment) == "" {
+func (handler *Handler) DiffVersions(ctx context.Context, request *configv1.DiffVersionsRequest) (*configv1.DiffVersionsResponse, error) {
+	if request == nil || request.Scope == nil || strings.TrimSpace(request.ConsumerId) == "" || strings.TrimSpace(request.ClientId) == "" {
 		return nil, status.Error(codes.InvalidArgument, "consumer_id, client_id, and scope.environment are required")
 	}
-	if request.Scope.Environment != handler.managedEnvironment {
+	scope, err := platformauth.CompileScope(request.Scope.Region, request.Scope.Environment, request.Scope.Stage)
+	if err != nil {
+		return nil, status.Error(codes.InvalidArgument, "scope must contain concrete region and environment segments")
+	}
+	if scope.Environment != handler.managedEnvironment {
 		return nil, status.Error(codes.FailedPrecondition, "requested environment is not managed by this server")
+	}
+	if err := handler.requestAuthorizer.AuthorizeConsumer(ctx, strings.TrimSpace(request.ConsumerId), scope); err != nil {
+		return nil, err
 	}
 	return nil, status.Error(codes.Unimplemented, "DiffVersions is not implemented in the base-only slice")
 }
 
-func (handler *Handler) GetCollections(_ context.Context, request *configv1.GetCollectionsRequest) (*configv1.GetCollectionsResponse, error) {
-	if request == nil || request.Scope == nil || strings.TrimSpace(request.ConsumerId) == "" || strings.TrimSpace(request.ClientId) == "" || strings.TrimSpace(request.Scope.Environment) == "" || len(request.Collections) == 0 {
+func (handler *Handler) GetCollections(ctx context.Context, request *configv1.GetCollectionsRequest) (*configv1.GetCollectionsResponse, error) {
+	if request == nil || request.Scope == nil || strings.TrimSpace(request.ConsumerId) == "" || strings.TrimSpace(request.ClientId) == "" || len(request.Collections) == 0 {
 		return nil, status.Error(codes.InvalidArgument, "consumer_id, client_id, scope.environment, and collections are required")
 	}
-	if request.Scope.Environment != handler.managedEnvironment {
+	scope, err := platformauth.CompileScope(request.Scope.Region, request.Scope.Environment, request.Scope.Stage)
+	if err != nil {
+		return nil, status.Error(codes.InvalidArgument, "scope must contain concrete region and environment segments")
+	}
+	if scope.Environment != handler.managedEnvironment {
 		return nil, status.Error(codes.FailedPrecondition, "requested environment is not managed by this server")
+	}
+	if err := handler.requestAuthorizer.AuthorizeConsumer(ctx, strings.TrimSpace(request.ConsumerId), scope); err != nil {
+		return nil, err
 	}
 	return nil, status.Error(codes.Unimplemented, "GetCollections is not implemented in the base-only slice")
 }
@@ -141,14 +172,22 @@ func (handler *Handler) Watch(request *configv1.WatchRequest, stream configv1.Co
 	if handler.watcher == nil || handler.authorizer == nil {
 		return status.Error(codes.Unimplemented, "Watch is not configured")
 	}
-	if request == nil || request.Scope == nil || strings.TrimSpace(request.ConsumerId) == "" || strings.TrimSpace(request.ClientId) == "" || strings.TrimSpace(request.Scope.Environment) == "" {
+	if request == nil || request.Scope == nil || strings.TrimSpace(request.ConsumerId) == "" || strings.TrimSpace(request.ClientId) == "" {
 		return status.Error(codes.InvalidArgument, "consumer_id, client_id, and scope.environment are required")
 	}
-	if request.Scope.Environment != handler.managedEnvironment {
+	scope, err := platformauth.CompileScope(request.Scope.Region, request.Scope.Environment, request.Scope.Stage)
+	if err != nil {
+		return status.Error(codes.InvalidArgument, "scope must contain concrete region and environment segments")
+	}
+	if scope.Environment != handler.managedEnvironment {
 		return status.Error(codes.FailedPrecondition, "requested environment is not managed by this server")
 	}
 	ctx := stream.Context()
-	collections, err := handler.authorizer.AuthorizedCollections(ctx, request.ConsumerId)
+	consumerID := strings.TrimSpace(request.ConsumerId)
+	if err := handler.requestAuthorizer.AuthorizeConsumer(ctx, consumerID, scope); err != nil {
+		return err
+	}
+	collections, err := handler.authorizer.AuthorizedCollections(ctx, consumerID)
 	if err != nil {
 		return status.Error(codes.PermissionDenied, "watch authorization failed")
 	}
