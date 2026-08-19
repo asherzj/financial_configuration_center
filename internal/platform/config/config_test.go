@@ -1,6 +1,7 @@
 package config_test
 
 import (
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -99,6 +100,10 @@ auth: {devAuthEnabled: true}
 	if loaded.RuntimeMode != "development" || loaded.ManagedEnvironment != "production" || loaded.ServerEpoch != "018f47cb-42f8-7fb2-a4af-0b0bd6dd98c2" {
 		t.Fatalf("loaded config server profile = %+v", loaded)
 	}
+	mode, groupID, err := loaded.BackendSocketPermissions()
+	if err != nil || mode != 0o660 || groupID != os.Getegid() {
+		t.Fatalf("development socket permissions = %#o/%d, %v", mode, groupID, err)
+	}
 	if summary := loaded.SafeSummary(); strings.Contains(summary, "mysql-secret") || !strings.Contains(summary, `"managedEnvironment":"production"`) {
 		t.Fatalf("unsafe or incomplete summary = %s", summary)
 	}
@@ -115,6 +120,7 @@ serverEpoch: 018f47cb-42f8-7fb2-a4af-0b0bd6dd98c1
 instanceId: config-server-1
 operationsListenAddress: 127.0.0.1:9090
 backendSocket: /var/run/finconfig/backend.sock
+backendSocketGroupId: 1000
 shutdownTimeout: 30s
 mysql: {dsn: "finconfig:mysql-secret@tcp(mysql:3306)/finconfig?parseTime=true&loc=UTC&timeout=5s&readTimeout=5s&writeTimeout=5s", maxOpenConnections: 20, maxIdleConnections: 10, connectionMaxLifetime: 5m, connectionMaxIdleTime: 1m}
 telemetry: {traceSampleRatio: 0.1, otlpEndpoint: ""}
@@ -152,6 +158,7 @@ runtimeMode: production
 instanceId: prod-1
 operationsListenAddress: 0.0.0.0:9090
 backendSocket: /var/run/finconfig/backend.sock
+backendSocketGroupId: 1000
 shutdownTimeout: 30s
 mysql: {dsn: "finconfig:secret@tcp(mysql:3306)/finconfig?parseTime=true&loc=UTC&timeout=5s&readTimeout=5s&writeTimeout=5s", maxOpenConnections: 20, maxIdleConnections: 10, connectionMaxLifetime: 5m, connectionMaxIdleTime: 1m}
 telemetry: {traceSampleRatio: 0.1, otlpEndpoint: ""}
@@ -159,5 +166,52 @@ auth: {devAuthEnabled: true}
 `
 	if _, err := config.Load(strings.NewReader(production), nil); err == nil {
 		t.Fatal("production development auth accepted")
+	}
+}
+
+func TestBackendSocketPermissionsAreStrictAndEnvironmentOverridable(t *testing.T) {
+	t.Parallel()
+	base := `
+serviceName: config-server
+version: v1
+runtimeMode: production
+managedEnvironment: production
+serverEpoch: 018f47cb-42f8-7fb2-a4af-0b0bd6dd98c1
+instanceId: config-server-1
+operationsListenAddress: 127.0.0.1:9090
+backendSocket: /var/run/finconfig/backend.sock
+backendSocketGroupId: 1000
+shutdownTimeout: 30s
+mysql: {dsn: "finconfig:secret@tcp(mysql:3306)/finconfig?parseTime=true&loc=UTC&timeout=5s&readTimeout=5s&writeTimeout=5s", maxOpenConnections: 20, maxIdleConnections: 10, connectionMaxLifetime: 5m, connectionMaxIdleTime: 1m}
+telemetry: {traceSampleRatio: 0.1, otlpEndpoint: ""}
+auth: {devAuthEnabled: false}
+`
+	loaded, err := config.LoadConfigServer(strings.NewReader(base), []string{
+		"FINCONFIG_BACKEND_SOCKET_MODE=0620",
+		"FINCONFIG_BACKEND_SOCKET_GROUP_ID=2000",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	mode, groupID, err := loaded.BackendSocketPermissions()
+	if err != nil || mode != 0o620 || groupID != 2000 {
+		t.Fatalf("overridden socket permissions = %#o/%d, %v", mode, groupID, err)
+	}
+
+	for _, test := range []struct {
+		name string
+		yaml string
+	}{
+		{name: "production missing group", yaml: strings.Replace(base, "backendSocketGroupId: 1000\n", "", 1)},
+		{name: "world writable mode", yaml: strings.Replace(base, "backendSocketGroupId: 1000\n", "backendSocketMode: \"0666\"\nbackendSocketGroupId: 1000\n", 1)},
+		{name: "negative group", yaml: strings.Replace(base, "backendSocketGroupId: 1000", "backendSocketGroupId: -1", 1)},
+	} {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			if _, err := config.LoadConfigServer(strings.NewReader(test.yaml), nil); err == nil {
+				t.Fatalf("unsafe backend socket setting %q accepted", test.name)
+			}
+		})
 	}
 }

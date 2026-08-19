@@ -121,6 +121,8 @@ finconfig_sdk_callback_total{result}
 
 配置至少覆盖：监听地址、MySQL DSN/池、TLS、auth、timeouts、poll/backoff、容量限制、OTel endpoint、Prometheus、graceful shutdown。未知 YAML 字段拒绝。
 
+Kitex backend UDS 额外配置规范绝对路径、四位八进制字符串 `backendSocketMode`（默认 `0660`）和 numeric `backendSocketGroupId`。mode 必须包含 owner read/write 与 group write，可额外授予 group read，禁止 world/execute/special bits；production 必须显式给出共享 GID，development/test 未给出时使用进程 effective GID。socket 根目录及后续父目录必须由服务运行 UID 所有、属于该共享 GID、具有 group execute 且不得 group/world writable；Envoy 仅通过共享 GID 获得目录 traverse 和 socket connect 权限，不得获得父目录写权限。不得降级到 `0777`。
+
 运行时不热更新核心安全/数据库配置；变更通过重启部署。ReleaseTemplate/Model 是业务元数据，不混入进程 YAML。
 
 ## 9. Health、Readiness 与优雅关闭

@@ -14,7 +14,7 @@ Config Server 把 MySQL 中的可变事实转换为可并发读取的不可变 `
 - 唯一 RefreshCoordinator，以及向它提交水位的 VersionPoller、RefreshHint receiver；
 - 同一个 Kitex server 上注册 ConfigService、PageQueryService、RefreshService 与 DiagnosticsService；
 - Consumer/Internal 双认证 profile 的 unary 与 stream middleware；
-- 应用托管的 UDS listener 和 Envoy drain adapter；
+- 应用托管的 UDS listener 和 Envoy drain adapter；UDS 以 `server.WithListener` 交给 Kitex，禁止退回 `WithServiceAddr` 让框架自行管理 socket 文件；
 - WatchHub；
 - health/ready/metrics HTTP server；
 - 根 context、errgroup 和优雅关闭。

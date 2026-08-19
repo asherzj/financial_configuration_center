@@ -8,6 +8,7 @@ import (
 	"io"
 	"net"
 	"net/url"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -39,6 +40,8 @@ type ServiceConfig struct {
 	InstanceID              string          `yaml:"instanceId"`
 	OperationsListenAddress string          `yaml:"operationsListenAddress"`
 	BackendSocket           string          `yaml:"backendSocket"`
+	BackendSocketMode       string          `yaml:"backendSocketMode"`
+	BackendSocketGroupID    *int            `yaml:"backendSocketGroupId"`
 	ShutdownTimeout         Duration        `yaml:"shutdownTimeout"`
 	MySQL                   MySQLConfig     `yaml:"mysql"`
 	Telemetry               TelemetryConfig `yaml:"telemetry"`
@@ -101,7 +104,7 @@ func LoadConfigServer(reader io.Reader, environment []string) (ConfigServerConfi
 
 func defaults() ServiceConfig {
 	return ServiceConfig{
-		RuntimeMode: "development", OperationsListenAddress: "127.0.0.1:9090",
+		RuntimeMode: "development", OperationsListenAddress: "127.0.0.1:9090", BackendSocketMode: "0660",
 		ShutdownTimeout: Duration{30 * time.Second},
 		MySQL:           MySQLConfig{MaxOpenConnections: 20, MaxIdleConnections: 10, ConnectionMaxLifetime: Duration{5 * time.Minute}, ConnectionMaxIdleTime: Duration{time.Minute}},
 		Telemetry:       TelemetryConfig{TraceSampleRatio: 0.1},
@@ -124,7 +127,13 @@ func (config ServiceConfig) Validate() error {
 		return errors.New("operations listen address must include a valid host and port")
 	}
 	if config.BackendSocket != "" {
-		if _, err := platformrpc.PrivateBackendServerOptions(config.BackendSocket); err != nil {
+		if err := platformrpc.ValidatePrivateBackendPath(config.BackendSocket); err != nil {
+			return err
+		}
+		if config.RuntimeMode == "production" && config.BackendSocketGroupID == nil {
+			return errors.New("production backend Unix socket group ID is required")
+		}
+		if _, _, err := config.BackendSocketPermissions(); err != nil {
 			return err
 		}
 	}
@@ -185,6 +194,7 @@ func (config ServiceConfig) SafeSummary() string {
 	summary := map[string]any{
 		"service": config.ServiceName, "version": config.Version, "runtimeMode": config.RuntimeMode, "instanceId": config.InstanceID,
 		"operationsListenAddress": config.OperationsListenAddress, "backendSocket": config.BackendSocket,
+		"backendSocketMode": config.BackendSocketMode, "backendSocketGroupConfigured": config.BackendSocketGroupID != nil,
 		"shutdownTimeout": config.ShutdownTimeout.String(), "mysqlConfigured": config.MySQL.DSN != "",
 		"mysqlMaxOpenConnections": config.MySQL.MaxOpenConnections, "traceSampleRatio": config.Telemetry.TraceSampleRatio,
 		"otlpConfigured": config.Telemetry.OTLPEndpoint != "", "devAuthEnabled": config.Auth.DevAuthEnabled,
@@ -208,7 +218,8 @@ func applyEnvironment(config *ServiceConfig, values []string) error {
 		"FINCONFIG_SERVICE_NAME": &config.ServiceName, "FINCONFIG_VERSION": &config.Version,
 		"FINCONFIG_RUNTIME_MODE": &config.RuntimeMode, "FINCONFIG_INSTANCE_ID": &config.InstanceID,
 		"FINCONFIG_OPERATIONS_LISTEN_ADDRESS": &config.OperationsListenAddress, "FINCONFIG_BACKEND_SOCKET": &config.BackendSocket,
-		"FINCONFIG_MYSQL_DSN": &config.MySQL.DSN, "FINCONFIG_OTLP_ENDPOINT": &config.Telemetry.OTLPEndpoint,
+		"FINCONFIG_BACKEND_SOCKET_MODE": &config.BackendSocketMode,
+		"FINCONFIG_MYSQL_DSN":           &config.MySQL.DSN, "FINCONFIG_OTLP_ENDPOINT": &config.Telemetry.OTLPEndpoint,
 	}
 	for name, target := range stringOverrides {
 		if value, exists := environment[name]; exists {
@@ -221,6 +232,13 @@ func applyEnvironment(config *ServiceConfig, values []string) error {
 			return fmt.Errorf("parse FINCONFIG_SHUTDOWN_TIMEOUT: %w", err)
 		}
 		config.ShutdownTimeout.Duration = parsed
+	}
+	if value, exists := environment["FINCONFIG_BACKEND_SOCKET_GROUP_ID"]; exists {
+		parsed, err := strconv.Atoi(value)
+		if err != nil {
+			return fmt.Errorf("parse FINCONFIG_BACKEND_SOCKET_GROUP_ID: %w", err)
+		}
+		config.BackendSocketGroupID = &parsed
 	}
 	for name, target := range map[string]*int{"FINCONFIG_MYSQL_MAX_OPEN_CONNECTIONS": &config.MySQL.MaxOpenConnections, "FINCONFIG_MYSQL_MAX_IDLE_CONNECTIONS": &config.MySQL.MaxIdleConnections} {
 		if value, exists := environment[name]; exists {
@@ -255,6 +273,21 @@ func applyEnvironment(config *ServiceConfig, values []string) error {
 		config.Auth.DevAuthEnabled = parsed
 	}
 	return nil
+}
+
+func (config ServiceConfig) BackendSocketPermissions() (os.FileMode, int, error) {
+	mode, err := platformrpc.ParsePrivateBackendMode(config.BackendSocketMode)
+	if err != nil {
+		return 0, 0, err
+	}
+	groupID := os.Getegid()
+	if config.BackendSocketGroupID != nil {
+		groupID = *config.BackendSocketGroupID
+	}
+	if err := platformrpc.ValidatePrivateBackendPermissions(mode, groupID); err != nil {
+		return 0, 0, err
+	}
+	return mode, groupID, nil
 }
 
 func applyConfigServerEnvironment(config *ConfigServerConfig, values []string) error {
