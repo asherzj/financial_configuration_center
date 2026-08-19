@@ -46,6 +46,8 @@ type ConfigurationSnapshot struct {
 
 所有 slice 在构建阶段稳定排序，所有 map value 深拷贝。`Current()` 返回只读指针；包外没有 setter，不提供返回内部可变 map 的方法。
 
+Subscription 授权索引必须和 definition、record、model、version 在同一个 REPEATABLE READ load 中进入同一代 snapshot。ConfigService 捕获一次 `Current()` 后，正文、版本和 Consumer 可见集合都从该指针读取；业务 RPC 热路径不得回查 MySQL。这样 MySQL 故障时 last-known-good 读取仍可用，Subscription 增删也不会与正文跨 generation 撕裂。
+
 SnapshotManager 使用：
 
 - `atomic.Pointer[ConfigurationSnapshot]` 服务 reader；

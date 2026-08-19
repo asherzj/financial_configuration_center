@@ -16,7 +16,7 @@ func TestGetSnapshotReturnsOnlyAuthorizedChangedCollections(t *testing.T) {
 	t.Parallel()
 
 	manager, key := serverSnapshot(t)
-	service := configserver.New(manager, staticAuthorizer{collections: []string{"payment_routes"}}, "production")
+	service := configserver.New(manager, "production")
 	response, err := service.GetSnapshot(context.Background(), configserver.GetSnapshotRequest{
 		ConsumerID: "payment-service", ClientID: "pod-1", Region: "cn", Environment: "production",
 	})
@@ -58,7 +58,7 @@ func TestGetSnapshotReturnsOnlyAuthorizedChangedCollections(t *testing.T) {
 func TestDiffVersionsReturnsStableMutuallyExclusiveChanges(t *testing.T) {
 	t.Parallel()
 	manager, _ := serverSnapshot(t)
-	service := configserver.New(manager, staticAuthorizer{collections: []string{"payment_routes"}}, "production")
+	service := configserver.New(manager, "production")
 	response, err := service.DiffVersions(context.Background(), configserver.DiffVersionsRequest{
 		ConsumerID: "payment-service", ClientID: "pod-1", Region: "cn", Environment: "production",
 		KnownVersions: []configserver.Version{
@@ -85,7 +85,7 @@ func TestGetCollectionsFiltersRequestsAndNeverReturnsBelowMinimum(t *testing.T) 
 	t.Parallel()
 	manager, _ := serverSnapshot(t)
 	submitter := &recordingRefreshSubmitter{}
-	service, err := configserver.NewWithRefresh(manager, staticAuthorizer{collections: []string{"payment_routes"}}, "production", submitter, 5*time.Millisecond)
+	service, err := configserver.NewWithRefresh(manager, "production", submitter, 5*time.Millisecond)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -113,7 +113,7 @@ func TestGetCollectionsFiltersRequestsAndNeverReturnsBelowMinimum(t *testing.T) 
 
 func TestGetSnapshotReportsUnavailableBeforeInitialSnapshot(t *testing.T) {
 	t.Parallel()
-	service := configserver.New(emptySnapshotProvider{}, staticAuthorizer{}, "production")
+	service := configserver.New(emptySnapshotProvider{}, "production")
 	_, err := service.GetSnapshot(context.Background(), configserver.GetSnapshotRequest{
 		ConsumerID: "payment-service", ClientID: "pod", Region: "cn", Environment: "production",
 	})
@@ -126,7 +126,7 @@ func TestGetSnapshotEnforcesSubscriptionAndEnvironment(t *testing.T) {
 	t.Parallel()
 
 	manager, _ := serverSnapshot(t)
-	service := configserver.New(manager, staticAuthorizer{}, "production")
+	service := configserver.New(manager, "production")
 	response, err := service.GetSnapshot(context.Background(), configserver.GetSnapshotRequest{ConsumerID: "other", ClientID: "pod", Region: "cn", Environment: "production", KnownVersions: []configserver.Version{{Collection: "old", Revision: 1, Digest: "digest"}}})
 	if err != nil {
 		t.Fatal(err)
@@ -150,7 +150,7 @@ func TestGetSnapshotRejectsSnapshotOutsideManagedEnvironment(t *testing.T) {
 	if _, err := manager.Refresh(context.Background(), "staging"); err != nil {
 		t.Fatal(err)
 	}
-	service := configserver.New(manager, staticAuthorizer{}, "production")
+	service := configserver.New(manager, "production")
 	if _, err := service.GetSnapshot(context.Background(), configserver.GetSnapshotRequest{
 		ConsumerID: "payment-service", ClientID: "pod", Region: "cn", Environment: "staging",
 	}); err == nil {
@@ -161,7 +161,7 @@ func TestGetSnapshotRejectsSnapshotOutsideManagedEnvironment(t *testing.T) {
 func TestGetSnapshotSelectsPercentageRuleByStableClientBucket(t *testing.T) {
 	t.Parallel()
 	manager, key := rolloutServerSnapshot(t)
-	service := configserver.New(manager, staticAuthorizer{collections: []string{"payment_routes"}}, "production")
+	service := configserver.New(manager, "production")
 
 	selected, err := service.GetSnapshot(context.Background(), configserver.GetSnapshotRequest{
 		ConsumerID: "payment-service", ClientID: "pod-10", Region: "cn", Environment: "production", Stage: "blue",
@@ -184,12 +184,6 @@ func TestGetSnapshotSelectsPercentageRuleByStableClientBucket(t *testing.T) {
 	if selected.Collections[0].Digest == unselected.Collections[0].Digest {
 		t.Fatal("distinct effective snapshots shared one digest")
 	}
-}
-
-type staticAuthorizer struct{ collections []string }
-
-func (authorizer staticAuthorizer) AuthorizedCollections(context.Context, string) ([]string, error) {
-	return authorizer.collections, nil
 }
 
 type emptySnapshotProvider struct{}
@@ -230,7 +224,10 @@ func serverSnapshot(t *testing.T) (*snapshot.Manager, string) {
 		t.Fatal(err)
 	}
 	record.ConfigRevision = 8
-	manager, err := snapshot.NewManager(serverSource{input: []snapshot.CollectionInput{{Definition: definition, Version: 8, Cursor: 31, Records: []catalog.ConfigurationRecord{record}}}}, snapshot.IdentitySeed{ServerEpoch: "epoch", ServerInstanceID: "server", SnapshotInstance: "instance"}, serverClock{})
+	manager, err := snapshot.NewManager(serverSource{input: []snapshot.CollectionInput{{
+		Definition: definition, SubscribedConsumers: []string{"payment-service"}, Version: 8, Cursor: 31,
+		Records: []catalog.ConfigurationRecord{record},
+	}}}, snapshot.IdentitySeed{ServerEpoch: "epoch", ServerInstanceID: "server", SnapshotInstance: "instance"}, serverClock{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -264,7 +261,8 @@ func rolloutServerSnapshot(t *testing.T) (*snapshot.Manager, string) {
 		RolloutRanges: []overlay.BucketRange{{Start: 0, End: 9}}, ConfigRevision: 8, ReleaseOrderID: "order", ActivatedRevision: &activation,
 	}
 	manager, err := snapshot.NewManager(serverSource{input: []snapshot.CollectionInput{{
-		Definition: definition, Version: 8, Records: []catalog.ConfigurationRecord{base}, OverlayRules: []overlay.Rule{rule},
+		Definition: definition, SubscribedConsumers: []string{"payment-service"}, Version: 8,
+		Records: []catalog.ConfigurationRecord{base}, OverlayRules: []overlay.Rule{rule},
 	}}}, snapshot.IdentitySeed{ServerEpoch: "epoch", ServerInstanceID: "server", SnapshotInstance: "rollout"}, serverClock{})
 	if err != nil {
 		t.Fatal(err)

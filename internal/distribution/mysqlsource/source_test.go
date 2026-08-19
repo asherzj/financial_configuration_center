@@ -58,6 +58,21 @@ func TestLoadEnvironmentCursorIncludesGlobalMetadata(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := raw.ExecContext(ctx, `
+		INSERT INTO configuration_subscriptions (
+			id, consumer_id, collection_name, index_name, index_fields, cardinality,
+			enabled, config_revision,
+			created_at, created_by, updated_at, updated_by
+		) VALUES (
+			'00000000-0000-0000-0000-000000000001', 'payments-api', 'routes', 'by_code', JSON_ARRAY('code'), 'ONE_TO_ONE',
+			TRUE, 9, UTC_TIMESTAMP(6), 'test', UTC_TIMESTAMP(6), 'test'
+		), (
+			'00000000-0000-0000-0000-000000000002', 'payments-api', 'routes', 'by_code_many', JSON_ARRAY('code'), 'ONE_TO_MANY',
+			TRUE, 9, UTC_TIMESTAMP(6), 'test', UTC_TIMESTAMP(6), 'test'
+		)
+	`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := raw.ExecContext(ctx, `
 		INSERT INTO configuration_change_log (
 			collection_name, kind, region, environment, stage, record_key, action,
 			after_data, config_revision, created_at
@@ -100,6 +115,9 @@ func TestLoadEnvironmentCursorIncludesGlobalMetadata(t *testing.T) {
 	}
 	if loaded.Inputs[0].Cursor != uint64(metadataCursor) {
 		t.Fatalf("cursor = %d, want global metadata cursor %d", loaded.Inputs[0].Cursor, metadataCursor)
+	}
+	if len(loaded.Inputs[0].SubscribedConsumers) != 1 || loaded.Inputs[0].SubscribedConsumers[0] != "payments-api" {
+		t.Fatalf("snapshot consumers = %v", loaded.Inputs[0].SubscribedConsumers)
 	}
 }
 

@@ -15,10 +15,11 @@ func TestRefreshPublishesOneImmutableGeneration(t *testing.T) {
 
 	definition, model := snapshotCatalog(t)
 	source := &stubSource{collections: []snapshot.CollectionInput{{
-		Definition: definition,
-		Models:     []catalog.CompiledModel{model},
-		Version:    8,
-		Cursor:     21,
+		Definition:          definition,
+		Models:              []catalog.CompiledModel{model},
+		SubscribedConsumers: []string{"consumer-b", "consumer-a"},
+		Version:             8,
+		Cursor:              21,
 		Records: []catalog.ConfigurationRecord{{
 			Collection: definition.Name(), Environment: "production", RecordKey: "WyJ2aXNhLWNuIl0",
 			Data: map[string]string{"route_code": "visa-cn", "priority": "7", "enabled": "false"}, ConfigRevision: 8,
@@ -68,13 +69,27 @@ func TestRefreshPublishesOneImmutableGeneration(t *testing.T) {
 	if again.Data["priority"] != "7" {
 		t.Fatal("published record retained source map ownership")
 	}
+	authorized, err := manager.AuthorizedCollections(context.Background(), "consumer-a")
+	if err != nil || len(authorized) != 1 || authorized[0] != definition.Name() {
+		t.Fatalf("snapshot authorization = %v, %v", authorized, err)
+	}
+	authorized[0] = "mutated-collection"
+	authorized, err = manager.AuthorizedCollections(context.Background(), "consumer-a")
+	if err != nil || len(authorized) != 1 || authorized[0] != definition.Name() {
+		t.Fatalf("snapshot authorization was mutable through a reader: %v, %v", authorized, err)
+	}
+	source.collections[0].SubscribedConsumers[0] = "mutated-consumer"
+	authorized, err = manager.AuthorizedCollections(context.Background(), "consumer-b")
+	if err != nil || len(authorized) != 1 || authorized[0] != definition.Name() {
+		t.Fatalf("snapshot authorization retained source ownership: %v, %v", authorized, err)
+	}
 }
 
 func TestRefreshFailureRetainsLastKnownGood(t *testing.T) {
 	t.Parallel()
 
 	definition, model := snapshotCatalog(t)
-	source := &stubSource{collections: []snapshot.CollectionInput{{Definition: definition, Models: []catalog.CompiledModel{model}, Version: 7}}}
+	source := &stubSource{collections: []snapshot.CollectionInput{{Definition: definition, Models: []catalog.CompiledModel{model}, SubscribedConsumers: []string{"payments"}, Version: 7}}}
 	manager, err := snapshot.NewManager(source, snapshot.IdentitySeed{ServerEpoch: "epoch", ServerInstanceID: "server", SnapshotInstance: "instance"}, fixedClock{now: time.Now().UTC()})
 	if err != nil {
 		t.Fatal(err)
@@ -89,6 +104,10 @@ func TestRefreshFailureRetainsLastKnownGood(t *testing.T) {
 	}
 	if manager.Current() != lastKnownGood || manager.Current().Identity().Generation != 1 {
 		t.Fatal("refresh failure replaced last-known-good")
+	}
+	authorized, err := manager.AuthorizedCollections(context.Background(), "payments")
+	if err != nil || len(authorized) != 1 || authorized[0] != definition.Name() {
+		t.Fatalf("last-known-good authorization = %v, %v", authorized, err)
 	}
 	diagnostics := manager.Diagnostics()
 	if diagnostics.LastErrorCode != "SNAPSHOT_REFRESH_FAILED" || diagnostics.Identity.Generation != 1 || len(diagnostics.Collections) != 1 {
@@ -109,6 +128,8 @@ func TestRefreshRetainsFailedOptionDependencyGroupAndPublishesIndependentCollect
 	}
 
 	updated := dependencyInputs(t, 8)
+	updated[0].SubscribedConsumers = []string{"new-payments"}
+	updated[2].SubscribedConsumers = []string{"new-platform"}
 	source.load = snapshot.EnvironmentLoad{
 		Inputs:   []snapshot.CollectionInput{updated[0], updated[2]},
 		Failures: map[string]error{"providers": errors.New("provider rows are invalid")},
@@ -145,6 +166,20 @@ func TestRefreshRetainsFailedOptionDependencyGroupAndPublishesIndependentCollect
 	}
 	if cursor, _ := current.CollectionCursor("feature_flags"); cursor != 80 {
 		t.Fatalf("independent cursor = %d, want 80", cursor)
+	}
+	payments, err := manager.AuthorizedCollections(context.Background(), "payments")
+	if err != nil || len(payments) != 2 || payments[0] != "payment_routes" || payments[1] != "providers" {
+		t.Fatalf("failed-group subscriptions = %v, %v", payments, err)
+	}
+	newPlatform, err := manager.AuthorizedCollections(context.Background(), "new-platform")
+	if err != nil || len(newPlatform) != 1 || newPlatform[0] != "feature_flags" {
+		t.Fatalf("successful-group subscriptions = %v, %v", newPlatform, err)
+	}
+	if stale, err := manager.AuthorizedCollections(context.Background(), "platform"); err != nil || len(stale) != 0 {
+		t.Fatalf("removed subscriptions = %v, %v", stale, err)
+	}
+	if leaked, err := manager.AuthorizedCollections(context.Background(), "new-payments"); err != nil || len(leaked) != 0 {
+		t.Fatalf("failed-group subscriptions merged new authorization = %v, %v", leaked, err)
 	}
 }
 
@@ -252,7 +287,7 @@ func snapshotCatalog(t *testing.T) (catalog.CollectionDefinition, catalog.Compil
 func dependencyInputs(t *testing.T, revision catalog.ConfigRevision) []snapshot.CollectionInput {
 	t.Helper()
 	providers, err := catalog.CompileCollection(catalog.CollectionSpec{
-		Name: "providers", KeyFields: []string{"code"}, SchemaVersion: 1,
+		Name: "providers", KeyFields: []string{"code"}, SchemaVersion: 1, SDKDeliveryEnabled: true,
 		Fields: []catalog.FieldDefinition{
 			{Name: "code", DisplayName: "Code", Type: catalog.FieldTypeString, Required: true, DisplayOrder: 0},
 			{Name: "label", DisplayName: "Label", Type: catalog.FieldTypeString, Required: true, DisplayOrder: 1},
@@ -262,7 +297,7 @@ func dependencyInputs(t *testing.T, revision catalog.ConfigRevision) []snapshot.
 		t.Fatal(err)
 	}
 	routes, err := catalog.CompileCollection(catalog.CollectionSpec{
-		Name: "payment_routes", KeyFields: []string{"route_code"}, SchemaVersion: 1,
+		Name: "payment_routes", KeyFields: []string{"route_code"}, SchemaVersion: 1, SDKDeliveryEnabled: true,
 		Fields: []catalog.FieldDefinition{
 			{Name: "route_code", DisplayName: "Route", Type: catalog.FieldTypeString, Required: true, DisplayOrder: 0},
 			{Name: "provider", DisplayName: "Provider", Type: catalog.FieldTypeString, Required: true, DisplayOrder: 1},
@@ -285,15 +320,15 @@ func dependencyInputs(t *testing.T, revision catalog.ConfigRevision) []snapshot.
 		t.Fatal(err)
 	}
 	flags, err := catalog.CompileCollection(catalog.CollectionSpec{
-		Name: "feature_flags", KeyFields: []string{"name"}, SchemaVersion: 1,
+		Name: "feature_flags", KeyFields: []string{"name"}, SchemaVersion: 1, SDKDeliveryEnabled: true,
 		Fields: []catalog.FieldDefinition{{Name: "name", DisplayName: "Name", Type: catalog.FieldTypeString, Required: true}},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	return []snapshot.CollectionInput{
-		{Definition: routes, Models: []catalog.CompiledModel{model}, Version: revision, Cursor: uint64(revision) * 10},
-		{Definition: providers, Version: revision, Cursor: uint64(revision) * 10},
-		{Definition: flags, Version: revision, Cursor: uint64(revision) * 10},
+		{Definition: routes, Models: []catalog.CompiledModel{model}, SubscribedConsumers: []string{"payments"}, Version: revision, Cursor: uint64(revision) * 10},
+		{Definition: providers, SubscribedConsumers: []string{"payments"}, Version: revision, Cursor: uint64(revision) * 10},
+		{Definition: flags, SubscribedConsumers: []string{"platform"}, Version: revision, Cursor: uint64(revision) * 10},
 	}
 }

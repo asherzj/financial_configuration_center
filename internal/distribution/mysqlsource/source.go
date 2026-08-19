@@ -70,6 +70,10 @@ func (source *Source) LoadEnvironmentPartial(ctx context.Context, environment st
 		`, environment).Scan(&collections).Error; err != nil {
 			return err
 		}
+		subscriptions, err := loadSubscriptions(ctx, db)
+		if err != nil {
+			return err
+		}
 		loaded.Inputs = make([]snapshot.CollectionInput, 0, len(collections))
 		for _, row := range collections {
 			definition, err := compileCollection(row)
@@ -93,7 +97,7 @@ func (source *Source) LoadEnvironmentPartial(ctx context.Context, environment st
 				continue
 			}
 			loaded.Inputs = append(loaded.Inputs, snapshot.CollectionInput{
-				Definition: definition, Models: models, Version: catalog.ConfigRevision(row.ConfigRevision),
+				Definition: definition, Models: models, SubscribedConsumers: subscriptions[row.Name], Version: catalog.ConfigRevision(row.ConfigRevision),
 				Cursor: row.ChangeCursor, Records: records, OverlayRules: overlayRules,
 			})
 		}
@@ -121,22 +125,26 @@ func formatFailures(failures map[string]error) string {
 	return strings.Join(parts, "; ")
 }
 
-func (source *Source) AuthorizedCollections(ctx context.Context, consumerID string) ([]string, error) {
-	var collections []string
-	err := source.database.WithinTransaction(ctx, &sql.TxOptions{Isolation: sql.LevelReadCommitted, ReadOnly: true}, func(db *gorm.DB) error {
-		return db.WithContext(ctx).Raw(`
-			SELECT DISTINCT s.collection_name
-			FROM configuration_subscriptions s
-			JOIN configuration_collections c ON c.name = s.collection_name
-			WHERE s.consumer_id = ? AND s.enabled = TRUE
-				AND c.status = 'ENABLED' AND c.sdk_delivery_enabled = TRUE
-			ORDER BY s.collection_name
-		`, consumerID).Scan(&collections).Error
-	})
-	if err != nil {
-		return nil, fmt.Errorf("load authorized collections: %w", err)
+func loadSubscriptions(ctx context.Context, db *gorm.DB) (map[string][]string, error) {
+	type row struct {
+		CollectionName string
+		ConsumerID     string
 	}
-	return collections, nil
+	var rows []row
+	if err := db.WithContext(ctx).Raw(`
+		SELECT DISTINCT s.collection_name, s.consumer_id
+		FROM configuration_subscriptions s
+		JOIN configuration_collections c ON c.name = s.collection_name
+		WHERE s.enabled = TRUE AND c.status = 'ENABLED'
+		ORDER BY s.collection_name, s.consumer_id
+	`).Scan(&rows).Error; err != nil {
+		return nil, fmt.Errorf("load distribution subscriptions: %w", err)
+	}
+	result := make(map[string][]string)
+	for _, row := range rows {
+		result[row.CollectionName] = append(result[row.CollectionName], row.ConsumerID)
+	}
+	return result, nil
 }
 
 func (source *Source) LoadVersions(ctx context.Context, environment string) (map[string]catalog.ConfigRevision, error) {

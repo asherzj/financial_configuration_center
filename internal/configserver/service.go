@@ -26,10 +26,6 @@ type SnapshotProvider interface {
 	Current() *snapshot.Snapshot
 }
 
-type Authorizer interface {
-	AuthorizedCollections(context.Context, string) ([]string, error)
-}
-
 type Version struct {
 	Collection string
 	Revision   catalog.ConfigRevision
@@ -95,28 +91,27 @@ type GetCollectionsResponse struct {
 
 type Service struct {
 	snapshots          SnapshotProvider
-	authorizer         Authorizer
 	managedEnvironment string
 	refreshSubmitter   snapshot.RefreshTargetSubmitter
 	waitTimeout        time.Duration
 }
 
-func New(snapshots SnapshotProvider, authorizer Authorizer, managedEnvironment string) *Service {
-	return &Service{snapshots: snapshots, authorizer: authorizer, managedEnvironment: strings.TrimSpace(managedEnvironment)}
+func New(snapshots SnapshotProvider, managedEnvironment string) *Service {
+	return &Service{snapshots: snapshots, managedEnvironment: strings.TrimSpace(managedEnvironment)}
 }
 
-func NewWithRefresh(snapshots SnapshotProvider, authorizer Authorizer, managedEnvironment string, submitter snapshot.RefreshTargetSubmitter, waitTimeout time.Duration) (*Service, error) {
+func NewWithRefresh(snapshots SnapshotProvider, managedEnvironment string, submitter snapshot.RefreshTargetSubmitter, waitTimeout time.Duration) (*Service, error) {
 	if submitter == nil || waitTimeout <= 0 || waitTimeout > maxCollectionWait {
 		return nil, errors.New("new Config Server refresh reader: submitter and wait timeout up to two seconds are required")
 	}
-	service := New(snapshots, authorizer, managedEnvironment)
+	service := New(snapshots, managedEnvironment)
 	service.refreshSubmitter = submitter
 	service.waitTimeout = waitTimeout
 	return service, nil
 }
 
 func (service *Service) GetSnapshot(ctx context.Context, request GetSnapshotRequest) (GetSnapshotResponse, error) {
-	if service == nil || service.snapshots == nil || service.authorizer == nil || service.managedEnvironment == "" {
+	if service == nil || service.snapshots == nil || service.managedEnvironment == "" {
 		return GetSnapshotResponse{}, errors.New("get snapshot: service dependencies are incomplete")
 	}
 	request.ConsumerID = strings.TrimSpace(request.ConsumerID)
@@ -141,7 +136,7 @@ func (service *Service) GetSnapshot(ctx context.Context, request GetSnapshotRequ
 	if current.Environment() != service.managedEnvironment {
 		return GetSnapshotResponse{}, fmt.Errorf("get snapshot: %w: snapshot for %q is not loaded", ErrManagedEnvironmentMismatch, service.managedEnvironment)
 	}
-	authorized, err := service.authorizer.AuthorizedCollections(ctx, request.ConsumerID)
+	authorized, err := current.AuthorizedCollections(ctx, request.ConsumerID)
 	if err != nil {
 		return GetSnapshotResponse{}, fmt.Errorf("get snapshot authorization: %w", err)
 	}

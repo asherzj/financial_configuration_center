@@ -43,12 +43,13 @@ type Identity struct {
 }
 
 type CollectionInput struct {
-	Definition   catalog.CollectionDefinition
-	Models       []catalog.CompiledModel
-	Version      catalog.ConfigRevision
-	Cursor       uint64
-	Records      []catalog.ConfigurationRecord
-	OverlayRules []overlay.Rule
+	Definition          catalog.CollectionDefinition
+	Models              []catalog.CompiledModel
+	SubscribedConsumers []string
+	Version             catalog.ConfigRevision
+	Cursor              uint64
+	Records             []catalog.ConfigurationRecord
+	OverlayRules        []overlay.Rule
 }
 
 type EnvironmentLoad struct {
@@ -68,22 +69,24 @@ type RefreshResult struct {
 }
 
 type collectionView struct {
-	definition   catalog.CollectionDefinition
-	version      catalog.ConfigRevision
-	cursor       uint64
-	digest       catalog.Digest
-	records      map[string]catalog.ConfigurationRecord
-	ordered      []string
-	overlayRules []overlay.Rule
+	definition          catalog.CollectionDefinition
+	version             catalog.ConfigRevision
+	cursor              uint64
+	digest              catalog.Digest
+	records             map[string]catalog.ConfigurationRecord
+	ordered             []string
+	overlayRules        []overlay.Rule
+	subscribedConsumers []string
 }
 
 // Snapshot is immutable after construction. Every method returning nested
 // mutable data returns a deep copy.
 type Snapshot struct {
-	identity    Identity
-	environment string
-	collections map[string]collectionView
-	models      map[string]catalog.CompiledModel
+	identity              Identity
+	environment           string
+	collections           map[string]collectionView
+	models                map[string]catalog.CompiledModel
+	authorizedCollections map[string][]string
 }
 
 type Manager struct {
@@ -128,8 +131,9 @@ func NewManager(source Source, seed IdentitySeed, clock Clock) (*Manager, error)
 			ServerEpoch: seed.ServerEpoch, ServerInstanceID: seed.ServerInstanceID,
 			SnapshotInstance: seed.SnapshotInstance, PublishedAt: clock.Now().UTC(),
 		},
-		collections: map[string]collectionView{},
-		models:      map[string]catalog.CompiledModel{},
+		collections:           map[string]collectionView{},
+		models:                map[string]catalog.CompiledModel{},
+		authorizedCollections: map[string][]string{},
 	})
 	return manager, nil
 }
@@ -394,7 +398,10 @@ func previousInputs(previous *Snapshot, group []string) []CollectionInput {
 		for index, rule := range view.overlayRules {
 			rules[index] = cloneOverlayRule(rule)
 		}
-		inputs = append(inputs, CollectionInput{Definition: view.definition, Models: models, Version: view.version, Cursor: view.cursor, Records: records, OverlayRules: rules})
+		inputs = append(inputs, CollectionInput{
+			Definition: view.definition, Models: models, SubscribedConsumers: append([]string(nil), view.subscribedConsumers...),
+			Version: view.version, Cursor: view.cursor, Records: records, OverlayRules: rules,
+		})
 	}
 	return inputs
 }
@@ -510,15 +517,40 @@ func (snapshot *Snapshot) OverlayRules(collection string) []overlay.Rule {
 	return rules
 }
 
+// AuthorizedCollections returns the SDK-deliverable subscriptions published
+// in this immutable snapshot generation.
+func (snapshot *Snapshot) AuthorizedCollections(_ context.Context, consumerID string) ([]string, error) {
+	if snapshot == nil {
+		return nil, errors.New("snapshot authorization is unavailable")
+	}
+	consumerID = strings.TrimSpace(consumerID)
+	if consumerID == "" {
+		return nil, errors.New("snapshot authorization requires a consumer")
+	}
+	return append([]string(nil), snapshot.authorizedCollections[consumerID]...), nil
+}
+
+func (manager *Manager) AuthorizedCollections(ctx context.Context, consumerID string) ([]string, error) {
+	if manager == nil {
+		return nil, errors.New("snapshot authorization is unavailable")
+	}
+	current := manager.Current()
+	if current == nil {
+		return nil, errors.New("snapshot authorization is unavailable")
+	}
+	return current.AuthorizedCollections(ctx, consumerID)
+}
+
 func buildSnapshot(seed IdentitySeed, generation uint64, publishedAt time.Time, environment string, inputs []CollectionInput) (*Snapshot, error) {
 	candidate := &Snapshot{
 		identity: Identity{
 			ServerEpoch: seed.ServerEpoch, ServerInstanceID: seed.ServerInstanceID,
 			SnapshotInstance: seed.SnapshotInstance, Generation: generation, PublishedAt: publishedAt,
 		},
-		environment: environment,
-		collections: make(map[string]collectionView, len(inputs)),
-		models:      make(map[string]catalog.CompiledModel),
+		environment:           environment,
+		collections:           make(map[string]collectionView, len(inputs)),
+		models:                make(map[string]catalog.CompiledModel),
+		authorizedCollections: make(map[string][]string),
 	}
 	for _, input := range inputs {
 		name := input.Definition.Name()
@@ -570,6 +602,22 @@ func buildSnapshot(seed IdentitySeed, generation uint64, publishedAt time.Time, 
 			}
 			view.overlayRules[index] = cloneOverlayRule(rule)
 		}
+		seenConsumers := make(map[string]struct{}, len(input.SubscribedConsumers))
+		for _, consumerID := range input.SubscribedConsumers {
+			consumerID = strings.TrimSpace(consumerID)
+			if consumerID == "" {
+				return nil, fmt.Errorf("build snapshot: collection %q has an empty subscribed consumer", name)
+			}
+			if _, duplicate := seenConsumers[consumerID]; duplicate {
+				return nil, fmt.Errorf("build snapshot: collection %q has duplicate subscribed consumer %q", name, consumerID)
+			}
+			seenConsumers[consumerID] = struct{}{}
+			view.subscribedConsumers = append(view.subscribedConsumers, consumerID)
+			if input.Definition.SDKDeliveryEnabled() {
+				candidate.authorizedCollections[consumerID] = append(candidate.authorizedCollections[consumerID], name)
+			}
+		}
+		sort.Strings(view.subscribedConsumers)
 		candidate.collections[name] = view
 
 		for _, model := range input.Models {
@@ -581,6 +629,9 @@ func buildSnapshot(seed IdentitySeed, generation uint64, publishedAt time.Time, 
 			}
 			candidate.models[model.Code()] = model
 		}
+	}
+	for consumerID := range candidate.authorizedCollections {
+		sort.Strings(candidate.authorizedCollections[consumerID])
 	}
 	if err := validateOptionDependencies(candidate); err != nil {
 		return nil, err
