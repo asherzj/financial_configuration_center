@@ -510,13 +510,16 @@ func validOverlayItemShape(item OverlayFinalItemSpec) bool {
 	if item.ExpectedCollectionRevision == 0 {
 		return false
 	}
+	if (item.BaseBefore == nil && item.ExpectedRecordRevision != 0) || (item.BaseBefore != nil && item.ExpectedRecordRevision == 0) {
+		return false
+	}
 	switch item.Action {
 	case ChangeAdd:
-		return item.BaseBefore == nil && item.EffectiveBefore == nil && item.After != nil && item.ExpectedRecordRevision == 0
+		return item.EffectiveBefore == nil && item.After != nil
 	case ChangeModify:
-		return item.BaseBefore != nil && item.EffectiveBefore != nil && item.After != nil && item.ExpectedRecordRevision > 0
+		return item.EffectiveBefore != nil && item.After != nil
 	case ChangeDelete:
-		return item.BaseBefore != nil && item.EffectiveBefore != nil && item.After == nil && item.ExpectedRecordRevision > 0
+		return item.EffectiveBefore != nil && item.After == nil
 	default:
 		return false
 	}

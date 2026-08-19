@@ -490,7 +490,7 @@ func (service *Service) CreateRelease(ctx context.Context, command CreateRelease
 				if actualRecordRevision != draft.expectedRecordRevision {
 					return fmt.Errorf("%w: BASE_FINAL item %d record authority is stale", release.ErrAborted, index)
 				}
-				if !validEffectiveTransition(draft.action, actualBase, actualEffective, draft.after) {
+				if !validBaseTransition(draft.action, actualBase, actualEffective, draft.after) {
 					return fmt.Errorf("%w: BASE_FINAL item %d transition is invalid", release.ErrInvalid, index)
 				}
 				if err := validateOptionSelections(bundle.Model, selectOptions, actualEffective, draft.after); err != nil {
@@ -538,7 +538,7 @@ func (service *Service) CreateRelease(ctx context.Context, command CreateRelease
 			if actualRecordRevision != draft.expectedRecordRevision {
 				return fmt.Errorf("%w: item %d base revision is %d, expected %d", release.ErrAborted, index, actualRecordRevision, draft.expectedRecordRevision)
 			}
-			if !validEffectiveTransition(draft.action, actualBase, actualEffective, draft.after) {
+			if !validOverlayTransition(draft.action, actualEffective, draft.after) {
 				return fmt.Errorf("%w: item %d transition is invalid for %s", release.ErrInvalid, index, draft.action)
 			}
 			if err := validateOptionSelections(bundle.Model, selectOptions, actualEffective, draft.after); err != nil {
@@ -818,7 +818,7 @@ func sameRecordData(actual, submitted *catalog.ConfigurationRecord) bool {
 	return actual.RecordKey == submitted.RecordKey && maps.Equal(actual.Data, submitted.Data)
 }
 
-func validEffectiveTransition(action release.ChangeAction, base, effective, after *catalog.ConfigurationRecord) bool {
+func validBaseTransition(action release.ChangeAction, base, effective, after *catalog.ConfigurationRecord) bool {
 	switch action {
 	case release.ChangeAdd:
 		return base == nil && effective == nil && after != nil
@@ -826,6 +826,19 @@ func validEffectiveTransition(action release.ChangeAction, base, effective, afte
 		return base != nil && effective != nil && after != nil
 	case release.ChangeDelete:
 		return base != nil && effective != nil && after == nil
+	default:
+		return false
+	}
+}
+
+func validOverlayTransition(action release.ChangeAction, effective, after *catalog.ConfigurationRecord) bool {
+	switch action {
+	case release.ChangeAdd:
+		return effective == nil && after != nil
+	case release.ChangeModify:
+		return effective != nil && after != nil
+	case release.ChangeDelete:
+		return effective != nil && after == nil
 	default:
 		return false
 	}

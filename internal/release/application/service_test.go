@@ -268,6 +268,56 @@ func TestOverlayFinalApplicationAppliesAndRollsBackAtomically(t *testing.T) {
 	}
 }
 
+func TestOverlayFinalCanRestoreAnEffectiveRecordHiddenByDeleteRule(t *testing.T) {
+	t.Parallel()
+	definition, model := compiledCatalog(t)
+	store := newFakeUnitOfWork(definition, model)
+	template, err := release.CompileTemplate([]byte(`{"steps":[
+		{"code":"apply-overlay","type":"OVERLAY_APPLY","params":{}},
+		{"code":"complete","type":"COMPLETE","params":{}}
+	]}`), release.FinalEffectOverlay)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store.template = application.TemplateRef{Code: "overlay-final", Version: 1, ReleaseTypeCode: "scope", Definition: template}
+	base, err := definition.NewRecord("production", map[string]string{"route_code": "visa", "priority": "1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	base.ConfigRevision = 5
+	store.records["production"][base.RecordKey] = base
+	activated := catalog.ConfigRevision(7)
+	store.overlays["production"]["blue"] = map[string]*overlay.Rule{base.RecordKey: {
+		ID: "delete-rule", Collection: definition.Name(), Scope: overlay.Scope{Region: "cn", Environment: "production", Stage: "blue"},
+		RecordKey: base.RecordKey, Action: overlay.ActionDelete, ConfigRevision: 7, ReleaseOrderID: "delete-order", ActivatedRevision: &activated,
+		CreatedAt: time.Date(2026, 8, 19, 8, 0, 0, 0, time.UTC), CreatedBy: "previous", UpdatedAt: time.Date(2026, 8, 19, 8, 0, 0, 0, time.UTC), UpdatedBy: "previous",
+	}}
+	service := application.NewService(store, &sequenceIDs{values: []string{"restore-order", "restore-item"}}, fixedClock{now: time.Date(2026, 8, 19, 9, 0, 0, 0, time.UTC)})
+
+	created, err := service.CreateRelease(context.Background(), application.CreateReleaseCommand{
+		IdempotencyKey: "restore-hidden", ModelCode: model.Code(), ReleaseTypeCode: "scope",
+		Scope: release.Scope{Region: "cn", Environment: "production", Stage: "blue"}, Actor: "operator",
+		Items: []application.ReleaseDraft{{
+			Action: release.ChangeAdd, BaseBefore: base.Data,
+			After:                  map[string]string{"route_code": "visa", "priority": "2", "enabled": "false"},
+			ExpectedRecordRevision: 5, ExpectedCollectionRevision: 7,
+		}},
+	})
+	if err != nil {
+		t.Fatalf("CreateRelease restore: %v", err)
+	}
+	if _, err := service.Act(context.Background(), application.ActCommand{
+		OrderID: created.ID, ActionRequestID: "restore-execute", ExpectedRevision: created.Revision,
+		ExpectedCurrentStep: "apply-overlay", Action: application.ActionExecute, Actor: "operator",
+	}); err != nil {
+		t.Fatalf("execute restore: %v", err)
+	}
+	rule := store.overlays["production"]["blue"][base.RecordKey]
+	if rule == nil || rule.Action != overlay.ActionModify || rule.Content["priority"] != "2" {
+		t.Fatalf("restored overlay rule = %+v", rule)
+	}
+}
+
 func TestBaseFinalApplicationModifiesDeletesAndRestoresScopedFacts(t *testing.T) {
 	t.Parallel()
 	definition, model := compiledCatalog(t)
