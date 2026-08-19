@@ -426,12 +426,20 @@ func TestRealMySQLPollConvergesWithoutHintOrWatch(t *testing.T) {
 	if _, err := manager.Refresh(ctx, "production"); err != nil {
 		t.Fatal(err)
 	}
-	poller, err := snapshot.NewVersionPoller(manager, source, snapshot.VersionPollerOptions{Environment: "production", Interval: 5 * time.Millisecond})
+	coordinator, err := snapshot.NewRefreshCoordinator(manager, snapshot.RefreshCoordinatorOptions{
+		ManagedEnvironment: "production", MaxPendingCollections: 100,
+		InitialBackoff: time.Millisecond, MaxBackoff: 10 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	poller, err := snapshot.NewVersionPoller(manager, source, coordinator, snapshot.VersionPollerOptions{Environment: "production", Interval: 5 * time.Millisecond})
 	if err != nil {
 		t.Fatal(err)
 	}
 	pollContext, stopPoller := context.WithCancel(ctx)
 	defer stopPoller()
+	go func() { _ = coordinator.Run(pollContext) }()
 	go func() { _ = poller.Run(pollContext) }()
 
 	configService := configserver.New(manager, source, "production")

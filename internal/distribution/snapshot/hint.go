@@ -1,7 +1,6 @@
 package snapshot
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"strings"
@@ -32,29 +31,31 @@ type RefreshHint struct {
 
 type HintReceiverOptions struct {
 	ManagedEnvironment string
-	QueueSize          int
 	CacheSize          int
 	DedupTTL           time.Duration
 }
 
+type RefreshTargetSubmitter interface {
+	Submit([]RefreshTarget) error
+}
+
 type HintReceiver struct {
-	manager            SnapshotRefresher
+	submitter          RefreshTargetSubmitter
 	clock              Clock
 	options            HintReceiverOptions
 	managedEnvironment string
-	queue              chan RefreshHint
 	mu                 sync.Mutex
 	seen               map[string]time.Time
 }
 
-func NewHintReceiver(manager SnapshotRefresher, options HintReceiverOptions, clock Clock) (*HintReceiver, error) {
+func NewHintReceiver(submitter RefreshTargetSubmitter, options HintReceiverOptions, clock Clock) (*HintReceiver, error) {
 	options.ManagedEnvironment = strings.TrimSpace(options.ManagedEnvironment)
-	if manager == nil || clock == nil || options.ManagedEnvironment == "" || options.QueueSize <= 0 || options.CacheSize <= 0 || options.DedupTTL <= 0 {
-		return nil, errors.New("new hint receiver: manager, managed environment, clock, and positive limits are required")
+	if submitter == nil || clock == nil || options.ManagedEnvironment == "" || options.CacheSize <= 0 || options.DedupTTL <= 0 {
+		return nil, errors.New("new hint receiver: submitter, managed environment, clock, and positive limits are required")
 	}
 	return &HintReceiver{
-		manager: manager, clock: clock, options: options, managedEnvironment: options.ManagedEnvironment,
-		queue: make(chan RefreshHint, options.QueueSize), seen: make(map[string]time.Time, options.CacheSize),
+		submitter: submitter, clock: clock, options: options, managedEnvironment: options.ManagedEnvironment,
+		seen: make(map[string]time.Time, options.CacheSize),
 	}, nil
 }
 
@@ -80,55 +81,20 @@ func (receiver *HintReceiver) Notify(hint RefreshHint) error {
 	if expiresAt, duplicate := receiver.seen[hint.EventID]; duplicate && expiresAt.After(now) {
 		return nil
 	}
-	if !hintNeeded(receiver.manager.Current(), hint) {
-		receiver.rememberLocked(hint.EventID, now)
-		return nil
-	}
-	select {
-	case receiver.queue <- hint:
-		receiver.rememberLocked(hint.EventID, now)
-		return nil
-	default:
-		return ErrHintQueueFull
-	}
-}
-
-func (receiver *HintReceiver) ProcessNext(ctx context.Context) error {
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	case hint := <-receiver.queue:
-		if !hintNeeded(receiver.manager.Current(), hint) {
-			return nil
-		}
-		if _, err := receiver.manager.Refresh(ctx, hint.Environment); err != nil {
-			return fmt.Errorf("process refresh hint %s: %w", hint.EventID, err)
-		}
-		return nil
-	}
-}
-
-func (receiver *HintReceiver) Run(ctx context.Context) error {
-	for {
-		if err := receiver.ProcessNext(ctx); err != nil {
-			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-				return nil
-			}
+	targets := make([]RefreshTarget, len(hint.Targets))
+	for index, target := range hint.Targets {
+		targets[index] = RefreshTarget{
+			Collection: target.Collection, MinRevision: target.MinRevision, TargetCursor: target.TargetCursor,
 		}
 	}
-}
-
-func hintNeeded(current *Snapshot, hint RefreshHint) bool {
-	if current == nil || current.Environment() != hint.Environment {
-		return true
-	}
-	for _, target := range hint.Targets {
-		revision, exists := current.CollectionVersion(target.Collection)
-		if !exists || revision < target.MinRevision {
-			return true
+	if err := receiver.submitter.Submit(targets); err != nil {
+		if errors.Is(err, ErrRefreshQueueFull) {
+			return ErrHintQueueFull
 		}
+		return fmt.Errorf("submit refresh hint targets: %w", err)
 	}
-	return false
+	receiver.rememberLocked(hint.EventID, now)
+	return nil
 }
 
 func (receiver *HintReceiver) pruneLocked(now time.Time) {

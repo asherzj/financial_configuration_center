@@ -26,23 +26,29 @@ type VersionPollerOptions struct {
 }
 
 type PollResult struct {
-	Refreshed  bool
+	Submitted  bool
 	Generation uint64
+}
+
+type RefreshScheduler interface {
+	RefreshTargetSubmitter
+	RequestRefresh() error
 }
 
 type VersionPoller struct {
 	manager     SnapshotRefresher
 	source      VersionSource
+	scheduler   RefreshScheduler
 	environment string
 	interval    time.Duration
 }
 
-func NewVersionPoller(manager SnapshotRefresher, source VersionSource, options VersionPollerOptions) (*VersionPoller, error) {
+func NewVersionPoller(manager SnapshotRefresher, source VersionSource, scheduler RefreshScheduler, options VersionPollerOptions) (*VersionPoller, error) {
 	options.Environment = strings.TrimSpace(options.Environment)
-	if manager == nil || source == nil || options.Environment == "" || options.Interval <= 0 {
-		return nil, errors.New("new version poller: manager, source, environment, and positive interval are required")
+	if manager == nil || source == nil || scheduler == nil || options.Environment == "" || options.Interval <= 0 {
+		return nil, errors.New("new version poller: manager, source, scheduler, environment, and positive interval are required")
 	}
-	return &VersionPoller{manager: manager, source: source, environment: options.Environment, interval: options.Interval}, nil
+	return &VersionPoller{manager: manager, source: source, scheduler: scheduler, environment: options.Environment, interval: options.Interval}, nil
 }
 
 func (poller *VersionPoller) PollOnce(ctx context.Context) (PollResult, error) {
@@ -59,11 +65,26 @@ func (poller *VersionPoller) PollOnce(ctx context.Context) (PollResult, error) {
 	if current != nil && current.Environment() == poller.environment && sameVersions(current, authority) {
 		return PollResult{Generation: current.Identity().Generation}, nil
 	}
-	refreshed, err := poller.manager.Refresh(ctx, poller.environment)
-	if err != nil {
-		return PollResult{}, fmt.Errorf("poll refresh snapshot: %w", err)
+	force := current == nil || current.Environment() != poller.environment || authorityRemovedCollection(current, authority)
+	if force {
+		if err := poller.scheduler.RequestRefresh(); err != nil {
+			return PollResult{}, fmt.Errorf("poll request full refresh: %w", err)
+		}
+		return PollResult{Submitted: true, Generation: snapshotGeneration(current)}, nil
 	}
-	return PollResult{Refreshed: true, Generation: refreshed.Generation}, nil
+	targets := make([]RefreshTarget, 0, len(authority))
+	for name, revision := range authority {
+		targets = append(targets, RefreshTarget{Collection: name, MinRevision: revision})
+	}
+	if err := poller.scheduler.Submit(targets); err != nil {
+		if !errors.Is(err, ErrRefreshQueueFull) {
+			return PollResult{}, fmt.Errorf("poll submit version targets: %w", err)
+		}
+		if forceErr := poller.scheduler.RequestRefresh(); forceErr != nil {
+			return PollResult{}, fmt.Errorf("poll request full refresh after target capacity: %w", forceErr)
+		}
+	}
+	return PollResult{Submitted: true, Generation: snapshotGeneration(current)}, nil
 }
 
 func (poller *VersionPoller) Run(ctx context.Context) error {
@@ -95,8 +116,27 @@ func sameVersions(current *Snapshot, authority map[string]catalog.ConfigRevision
 	return true
 }
 
+func authorityRemovedCollection(current *Snapshot, authority map[string]catalog.ConfigRevision) bool {
+	for _, name := range current.CollectionNames() {
+		if _, exists := authority[name]; !exists {
+			return true
+		}
+	}
+	return false
+}
+
+func snapshotGeneration(current *Snapshot) uint64 {
+	if current == nil {
+		return 0
+	}
+	return current.Identity().Generation
+}
+
 func (poller *VersionPoller) jitteredInterval() time.Duration {
-	identity := poller.manager.Current().Identity()
+	identity := Identity{}
+	if current := poller.manager.Current(); current != nil {
+		identity = current.Identity()
+	}
 	hash := fnv.New32a()
 	_, _ = hash.Write([]byte(identity.ServerInstanceID + "\x00" + poller.environment + "\x00" + fmt.Sprint(identity.Generation)))
 	// 801 positions map to the inclusive range [-20%, +20%]. Including the

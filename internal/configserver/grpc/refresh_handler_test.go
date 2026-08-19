@@ -22,7 +22,14 @@ func TestRefreshHandlerAcceptsHintIntoReceiver(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	receiver, err := snapshot.NewHintReceiver(manager, snapshot.HintReceiverOptions{ManagedEnvironment: "production", QueueSize: 1, CacheSize: 10, DedupTTL: time.Minute}, handlerClock{})
+	coordinator, err := snapshot.NewRefreshCoordinator(manager, snapshot.RefreshCoordinatorOptions{
+		ManagedEnvironment: "production", MaxPendingCollections: 1,
+		InitialBackoff: time.Millisecond, MaxBackoff: time.Second,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	receiver, err := snapshot.NewHintReceiver(coordinator, snapshot.HintReceiverOptions{ManagedEnvironment: "production", CacheSize: 10, DedupTTL: time.Minute}, handlerClock{})
 	if err != nil {
 		t.Fatal(err)
 	}
