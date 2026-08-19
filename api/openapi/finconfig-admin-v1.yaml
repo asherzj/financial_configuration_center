@@ -35,14 +35,16 @@ paths:
   /collections:
     get:
       operationId: listCollections
+      parameters:
+        - {name: page, in: query, schema: {type: integer, minimum: 1, default: 1}}
+        - {name: size, in: query, schema: {type: integer, minimum: 1, maximum: 100, default: 20}}
       responses:
         '200':
           description: Collections
           content:
             application/json:
-              schema:
-                type: array
-                items: {$ref: '#/components/schemas/Collection'}
+              schema: {$ref: '#/components/schemas/CollectionPage'}
+        default: {$ref: '#/components/responses/Error'}
     post:
       operationId: createCollection
       requestBody:
@@ -88,12 +90,50 @@ paths:
   /subscriptions:
     get:
       operationId: listSubscriptions
+      parameters:
+        - {name: consumerId, in: query, schema: {type: string}}
+        - {name: collection, in: query, schema: {type: string}}
+        - {name: page, in: query, schema: {type: integer, minimum: 1, default: 1}}
+        - {name: size, in: query, schema: {type: integer, minimum: 1, maximum: 100, default: 20}}
       responses:
-        '200': {description: Subscriptions}
+        '200':
+          description: Subscriptions
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/SubscriptionPage'}
+        default: {$ref: '#/components/responses/Error'}
     post:
       operationId: createSubscription
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/Subscription'}
       responses:
-        '201': {description: Created}
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Subscription'}
+        default: {$ref: '#/components/responses/Error'}
+  /subscriptions/{id}:
+    put:
+      operationId: updateSubscription
+      parameters:
+        - {name: id, in: path, required: true, schema: {type: string, format: uuid}}
+        - {$ref: '#/components/parameters/ExpectedRevision'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/Subscription'}
+      responses:
+        '200':
+          description: Updated
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Subscription'}
+        default: {$ref: '#/components/responses/Error'}
   /models:
     get:
       operationId: listModels
@@ -379,16 +419,76 @@ components:
     Collection:
       type: object
       additionalProperties: false
-      required: [name, fields, keyFields, sdkDeliveryEnabled, schemaVersion, status, configRevision]
+      required: [name, fields, keyFields, sdkDeliveryEnabled, schemaVersion, status]
       properties:
         name: {type: string}
         description: {type: string}
-        fields: {type: array, minItems: 1, items: {type: object}}
+        fields: {type: array, minItems: 1, items: {$ref: '#/components/schemas/CollectionField'}}
         keyFields: {type: array, minItems: 1, items: {type: string}}
         sdkDeliveryEnabled: {type: boolean}
         schemaVersion: {type: integer, format: int64, minimum: 1}
         status: {type: string, enum: [ENABLED, DISABLED]}
         configRevision: {type: integer, format: int64, minimum: 1}
+        audit: {$ref: '#/components/schemas/AuditStamp'}
+    CollectionField:
+      type: object
+      additionalProperties: false
+      required: [name, displayName, type, required, sensitive, description, displayOrder, validationRules]
+      properties:
+        name: {type: string}
+        displayName: {type: string}
+        type: {type: string, enum: [STRING, INT64, FLOAT64, BOOL, TIMESTAMP, JSON]}
+        required: {type: boolean}
+        sensitive: {type: boolean}
+        defaultValue: {type: string}
+        description: {type: string}
+        displayOrder: {type: integer, minimum: 0}
+        validationRules: {type: array, items: {type: object}}
+    AuditStamp:
+      type: object
+      additionalProperties: false
+      required: [createdAt, createdBy, updatedAt, updatedBy]
+      properties:
+        createdAt: {type: string, format: date-time}
+        createdBy: {type: string}
+        updatedAt: {type: string, format: date-time}
+        updatedBy: {type: string}
+    PageMetadata:
+      type: object
+      additionalProperties: false
+      required: [number, size, totalNumber, totalPages]
+      properties:
+        number: {type: integer, minimum: 1}
+        size: {type: integer, minimum: 1, maximum: 100}
+        totalNumber: {type: integer, format: int64, minimum: 0}
+        totalPages: {type: integer, minimum: 0}
+    CollectionPage:
+      type: object
+      additionalProperties: false
+      required: [collections, page]
+      properties:
+        collections: {type: array, items: {$ref: '#/components/schemas/Collection'}}
+        page: {$ref: '#/components/schemas/PageMetadata'}
+    Subscription:
+      type: object
+      additionalProperties: false
+      required: [consumerId, collection, indexName, indexFields, cardinality, enabled]
+      properties:
+        id: {type: string, format: uuid}
+        consumerId: {type: string}
+        collection: {type: string}
+        indexName: {type: string}
+        indexFields: {type: array, minItems: 1, items: {type: string}}
+        cardinality: {type: string, enum: [ONE_TO_ONE, ONE_TO_MANY]}
+        enabled: {type: boolean}
+        configRevision: {type: integer, format: int64, minimum: 1}
+    SubscriptionPage:
+      type: object
+      additionalProperties: false
+      required: [subscriptions, page]
+      properties:
+        subscriptions: {type: array, items: {$ref: '#/components/schemas/Subscription'}}
+        page: {$ref: '#/components/schemas/PageMetadata'}
     QueryPageRequest:
       type: object
       additionalProperties: false

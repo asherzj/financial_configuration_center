@@ -12,15 +12,15 @@ var identifierPattern = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9_.-]{0,190}$`)
 
 // FieldDefinition declares one canonical record field.
 type FieldDefinition struct {
-	Name            string
-	DisplayName     string
-	Type            FieldType
-	Required        bool
-	Sensitive       bool
-	DefaultValue    *string
-	Description     string
-	DisplayOrder    int32
-	ValidationRules []ValidationRule
+	Name            string           `json:"name"`
+	DisplayName     string           `json:"displayName"`
+	Type            FieldType        `json:"type"`
+	Required        bool             `json:"required"`
+	Sensitive       bool             `json:"sensitive"`
+	DefaultValue    *string          `json:"defaultValue,omitempty"`
+	Description     string           `json:"description"`
+	DisplayOrder    int32            `json:"displayOrder"`
+	ValidationRules []ValidationRule `json:"validationRules"`
 }
 
 // CollectionSpec is untrusted input to CompileCollection.

@@ -26,10 +26,11 @@ Administrators can safely manage metadata and operators can diagnose snapshots/a
 - Replay requires `PLATFORM_OPERATOR`, the current LeaseRevision, a reason, and the exact event-specific confirmation phrase. MySQL 8.0/8.4 verify stale CAS rejection, one replay audit row, and payload/idempotency preservation.
 - Completed payload-free Snapshot/collection diagnostics across the atomic Snapshot Manager, Kitex DiagnosticsService, Admin BFF, OpenAPI, and console. Refresh failures expose only stable error codes; partial dependency groups expose collection names and retain LKG revisions/digests.
 - Completed bounded, filterable audit diagnostics across MySQL, application authorization, Kitex AuditService, Admin BFF, OpenAPI, and console. Queries support principal/resource/time filters and deliberately never select or expose `before_data`, `after_data`, or `metadata`; MySQL 8.0/8.4 acceptance verifies the projection.
+- Completed Collection and Subscription administration across compiled domain validation, `CONFIG_ADMIN`/`CONFIG_VIEWER` authorization, MySQL CAS transactions, Kitex CatalogAdminService, Admin BFF, OpenAPI, and console. Successful metadata writes advance the bound collection revision per known environment and reuse the supported `CONFIGURATION_CHANGED` outbox envelope; revision conflicts and destructive schema changes preserve existing state.
 - `go test ./... -count=1`
 - `go test -race ./internal/adminbff ./internal/outbox/... -count=1`
 - `pnpm --dir web/admin-console test`
 - `pnpm --dir web/admin-console typecheck`
 - `pnpm --dir web/admin-console lint`
 - `pnpm --dir web/admin-console build`
-- Remaining: Catalog/Subscription/Model/Template management and model compile preview.
+- Remaining: Model/Template management and model compile preview.

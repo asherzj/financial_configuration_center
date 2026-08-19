@@ -11,6 +11,10 @@ const DiagnosticsPage = lazy(() =>
 	import("../features/diagnostics/DiagnosticsPage").then((module) => ({ default: module.DiagnosticsPage })),
 );
 
+const CatalogPage = lazy(() =>
+	import("../features/catalog/CatalogPage").then((module) => ({ default: module.CatalogPage })),
+);
+
 export const router = createBrowserRouter([
   {
     path: "/",
@@ -26,6 +30,8 @@ export const router = createBrowserRouter([
         ),
       },
       { path: "releases", element: <PlaceholderPage title="发布单" /> },
+	  { path: "collections", element: <Suspense fallback={<div>加载配置集合…</div>}><CatalogPage /></Suspense> },
+	  { path: "subscriptions", element: <Suspense fallback={<div>加载消费者与订阅…</div>}><CatalogPage initialTab="subscriptions" /></Suspense> },
 	  {
 		path: "diagnostics",
 		element: (

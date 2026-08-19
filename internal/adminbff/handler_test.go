@@ -12,6 +12,7 @@ import (
 	access "github.com/asherzj/financial_configuration_center/internal/access/application"
 	"github.com/asherzj/financial_configuration_center/internal/adminbff"
 	"github.com/asherzj/financial_configuration_center/internal/audit"
+	catalogapp "github.com/asherzj/financial_configuration_center/internal/catalog/application"
 	catalog "github.com/asherzj/financial_configuration_center/internal/catalog/domain"
 	"github.com/asherzj/financial_configuration_center/internal/distribution/snapshot"
 	"github.com/asherzj/financial_configuration_center/internal/outbox"
@@ -311,6 +312,33 @@ func TestBFFListsFilteredPayloadFreeAuditRecords(t *testing.T) {
 	}
 }
 
+func TestBFFCollectionAndSubscriptionAdminUsesExpectedRevision(t *testing.T) {
+	t.Parallel()
+	catalogAdmin := &catalogAdminStub{
+		collection:   catalogapp.CollectionView{Name: "routes", Fields: []catalog.FieldDefinition{{Name: "code", DisplayName: "Code", Type: catalog.FieldTypeString, Required: true}}, KeyFields: []string{"code"}, SDKDeliveryEnabled: true, SchemaVersion: 1, Status: catalogapp.StatusEnabled, ConfigRevision: 8},
+		subscription: catalogapp.SubscriptionView{SubscriptionInput: catalogapp.SubscriptionInput{ID: "subscription", ConsumerID: "checkout", Collection: "routes", IndexName: "by-code", IndexFields: []string{"code"}, Cardinality: catalogapp.CardinalityOneToOne, Enabled: true}, ConfigRevision: 9},
+	}
+	handler, err := adminbff.NewWithCatalogOperations(&queryStub{}, &releaseStub{}, authenticator{roles: []string{catalogapp.ConfigAdminRole}}, &outboxStub{}, diagnosticsStub{}, &auditStub{}, catalogAdmin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	updated := serveJSONWithHeaders(t, handler, http.MethodPut, "/api/v1/collections/routes", map[string]string{"If-Match": "7"}, map[string]any{
+		"name": "routes", "description": "Routes", "fields": []any{map[string]any{"name": "code", "displayName": "Code", "type": "STRING", "required": true, "sensitive": false, "description": "", "displayOrder": 0, "validationRules": []any{}}},
+		"keyFields": []string{"code"}, "sdkDeliveryEnabled": true, "schemaVersion": 1, "status": "ENABLED",
+	})
+	if updated.Code != http.StatusOK || catalogAdmin.expectedCollectionRevision != 7 || catalogAdmin.principal.Subject != "operator@example.com" || catalogAdmin.collectionInput.Fields[0].Type != catalog.FieldTypeString || !bytes.Contains(updated.Body.Bytes(), []byte(`"configRevision":8`)) {
+		t.Fatalf("updated=%d principal=%+v expected=%d input=%+v body=%s", updated.Code, catalogAdmin.principal, catalogAdmin.expectedCollectionRevision, catalogAdmin.collectionInput, updated.Body.String())
+	}
+	created := serveJSON(t, handler, http.MethodPost, "/api/v1/subscriptions", "", map[string]any{"consumerId": "checkout", "collection": "routes", "indexName": "by-code", "indexFields": []string{"code"}, "cardinality": "ONE_TO_ONE", "enabled": true})
+	if created.Code != http.StatusCreated || catalogAdmin.subscriptionInput.ConsumerID != "checkout" || !bytes.Contains(created.Body.Bytes(), []byte(`"configRevision":9`)) {
+		t.Fatalf("created=%d input=%+v body=%s", created.Code, catalogAdmin.subscriptionInput, created.Body.String())
+	}
+	missingRevision := serveJSON(t, handler, http.MethodPut, "/api/v1/subscriptions/subscription", "", map[string]any{"consumerId": "checkout", "collection": "routes", "indexName": "by-code", "indexFields": []string{"code"}, "cardinality": "ONE_TO_ONE", "enabled": false})
+	if missingRevision.Code != http.StatusBadRequest || !bytes.Contains(missingRevision.Body.Bytes(), []byte("EXPECTED_REVISION_REQUIRED")) {
+		t.Fatalf("missing revision=%d %s", missingRevision.Code, missingRevision.Body.String())
+	}
+}
+
 type authenticator struct {
 	reject bool
 	roles  []string
@@ -371,6 +399,42 @@ type auditStub struct {
 	page      audit.Page
 	principal audit.Principal
 	query     audit.Query
+}
+
+type catalogAdminStub struct {
+	collection                   catalogapp.CollectionView
+	subscription                 catalogapp.SubscriptionView
+	principal                    catalogapp.Principal
+	collectionInput              catalogapp.CollectionInput
+	subscriptionInput            catalogapp.SubscriptionInput
+	expectedCollectionRevision   catalog.ConfigRevision
+	expectedSubscriptionRevision catalog.ConfigRevision
+}
+
+func (stub *catalogAdminStub) CreateCollection(_ context.Context, principal catalogapp.Principal, input catalogapp.CollectionInput) (catalogapp.CollectionView, error) {
+	stub.principal, stub.collectionInput = principal, input
+	return stub.collection, nil
+}
+func (stub *catalogAdminStub) UpdateCollection(_ context.Context, principal catalogapp.Principal, expected catalog.ConfigRevision, input catalogapp.CollectionInput) (catalogapp.CollectionView, error) {
+	stub.principal, stub.expectedCollectionRevision, stub.collectionInput = principal, expected, input
+	return stub.collection, nil
+}
+func (stub *catalogAdminStub) GetCollection(context.Context, catalogapp.Principal, string) (catalogapp.CollectionView, error) {
+	return stub.collection, nil
+}
+func (stub *catalogAdminStub) ListCollections(context.Context, catalogapp.Principal, catalogapp.PageQuery) (catalogapp.CollectionPage, error) {
+	return catalogapp.CollectionPage{Collections: []catalogapp.CollectionView{stub.collection}, PageNumber: 1, PageSize: 20, TotalNumber: 1, TotalPages: 1}, nil
+}
+func (stub *catalogAdminStub) CreateSubscription(_ context.Context, principal catalogapp.Principal, input catalogapp.SubscriptionInput) (catalogapp.SubscriptionView, error) {
+	stub.principal, stub.subscriptionInput = principal, input
+	return stub.subscription, nil
+}
+func (stub *catalogAdminStub) UpdateSubscription(_ context.Context, principal catalogapp.Principal, expected catalog.ConfigRevision, input catalogapp.SubscriptionInput) (catalogapp.SubscriptionView, error) {
+	stub.principal, stub.expectedSubscriptionRevision, stub.subscriptionInput = principal, expected, input
+	return stub.subscription, nil
+}
+func (stub *catalogAdminStub) ListSubscriptions(context.Context, catalogapp.Principal, catalogapp.SubscriptionQuery) (catalogapp.SubscriptionPage, error) {
+	return catalogapp.SubscriptionPage{Subscriptions: []catalogapp.SubscriptionView{stub.subscription}, PageNumber: 1, PageSize: 20, TotalNumber: 1, TotalPages: 1}, nil
 }
 
 func (stub *auditStub) List(_ context.Context, principal audit.Principal, query audit.Query) (audit.Page, error) {

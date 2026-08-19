@@ -15,6 +15,8 @@ export function App() {
             <Space orientation="vertical" size={4} className="app-navigation">
               <Link to="/">仪表盘</Link>
               <Link to="/operations">统一操作入口</Link>
+              <Link to="/collections">配置集合</Link>
+              <Link to="/subscriptions">消费者与订阅</Link>
               <Link to="/releases">发布单</Link>
               <Link to="/diagnostics">运行诊断</Link>
             </Space>

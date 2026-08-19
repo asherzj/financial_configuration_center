@@ -86,6 +86,22 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/subscriptions/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put: operations["updateSubscription"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/models": {
         parameters: {
             query?: never;
@@ -341,7 +357,7 @@ export interface components {
         Collection: {
             name: string;
             description?: string;
-            fields: Record<string, never>[];
+            fields: components["schemas"]["CollectionField"][];
             keyFields: string[];
             sdkDeliveryEnabled: boolean;
             /** Format: int64 */
@@ -349,7 +365,56 @@ export interface components {
             /** @enum {string} */
             status: "ENABLED" | "DISABLED";
             /** Format: int64 */
-            configRevision: number;
+            configRevision?: number;
+            audit?: components["schemas"]["AuditStamp"];
+        };
+        CollectionField: {
+            name: string;
+            displayName: string;
+            /** @enum {string} */
+            type: "STRING" | "INT64" | "FLOAT64" | "BOOL" | "TIMESTAMP" | "JSON";
+            required: boolean;
+            sensitive: boolean;
+            defaultValue?: string;
+            description: string;
+            displayOrder: number;
+            validationRules: Record<string, never>[];
+        };
+        AuditStamp: {
+            /** Format: date-time */
+            createdAt: string;
+            createdBy: string;
+            /** Format: date-time */
+            updatedAt: string;
+            updatedBy: string;
+        };
+        PageMetadata: {
+            number: number;
+            size: number;
+            /** Format: int64 */
+            totalNumber: number;
+            totalPages: number;
+        };
+        CollectionPage: {
+            collections: components["schemas"]["Collection"][];
+            page: components["schemas"]["PageMetadata"];
+        };
+        Subscription: {
+            /** Format: uuid */
+            id?: string;
+            consumerId: string;
+            collection: string;
+            indexName: string;
+            indexFields: string[];
+            /** @enum {string} */
+            cardinality: "ONE_TO_ONE" | "ONE_TO_MANY";
+            enabled: boolean;
+            /** Format: int64 */
+            configRevision?: number;
+        };
+        SubscriptionPage: {
+            subscriptions: components["schemas"]["Subscription"][];
+            page: components["schemas"]["PageMetadata"];
         };
         QueryPageRequest: {
             modelCode: string;
@@ -638,7 +703,10 @@ export interface operations {
     };
     listCollections: {
         parameters: {
-            query?: never;
+            query?: {
+                page?: number;
+                size?: number;
+            };
             header?: never;
             path?: never;
             cookie?: never;
@@ -651,9 +719,10 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["Collection"][];
+                    "application/json": components["schemas"]["CollectionPage"];
                 };
             };
+            default: components["responses"]["Error"];
         };
     };
     createCollection: {
@@ -735,7 +804,12 @@ export interface operations {
     };
     listSubscriptions: {
         parameters: {
-            query?: never;
+            query?: {
+                consumerId?: string;
+                collection?: string;
+                page?: number;
+                size?: number;
+            };
             header?: never;
             path?: never;
             cookie?: never;
@@ -747,8 +821,11 @@ export interface operations {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["SubscriptionPage"];
+                };
             };
+            default: components["responses"]["Error"];
         };
     };
     createSubscription: {
@@ -758,15 +835,51 @@ export interface operations {
             path?: never;
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["Subscription"];
+            };
+        };
         responses: {
             /** @description Created */
             201: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["Subscription"];
+                };
             };
+            default: components["responses"]["Error"];
+        };
+    };
+    updateSubscription: {
+        parameters: {
+            query?: never;
+            header: {
+                "If-Match": components["parameters"]["ExpectedRevision"];
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["Subscription"];
+            };
+        };
+        responses: {
+            /** @description Updated */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Subscription"];
+                };
+            };
+            default: components["responses"]["Error"];
         };
     };
     listModels: {

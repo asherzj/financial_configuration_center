@@ -25,7 +25,9 @@ import (
 	"github.com/asherzj/financial_configuration_center/internal/adminbff"
 	"github.com/asherzj/financial_configuration_center/internal/audit"
 	auditmysqlstore "github.com/asherzj/financial_configuration_center/internal/audit/mysqlstore"
+	catalogapp "github.com/asherzj/financial_configuration_center/internal/catalog/application"
 	catalog "github.com/asherzj/financial_configuration_center/internal/catalog/domain"
+	catalogmysqlstore "github.com/asherzj/financial_configuration_center/internal/catalog/mysqlstore"
 	"github.com/asherzj/financial_configuration_center/internal/configserver"
 	"github.com/asherzj/financial_configuration_center/internal/distribution/mysqlsource"
 	"github.com/asherzj/financial_configuration_center/internal/distribution/snapshot"
@@ -170,6 +172,77 @@ func TestRealMySQLAuditListFiltersWithoutLoadingSensitiveBodies(t *testing.T) {
 	if bytes.Contains(encoded, []byte("before-secret")) || bytes.Contains(encoded, []byte("after-secret")) || bytes.Contains(encoded, []byte("metadata-secret")) {
 		t.Fatalf("audit query leaked bodies: %s", encoded)
 	}
+}
+
+func TestRealMySQLCollectionAndSubscriptionMetadataTransactions(t *testing.T) {
+	dsn := isolatedDatabase(t)
+	ctx := context.Background()
+	now := time.Date(2026, 8, 20, 12, 0, 0, 0, time.UTC)
+	database, err := platformmysql.Open(ctx, platformmysql.Config{DSN: dsn, MaxOpenConns: 4, MaxIdleConns: 2, ConnMaxLifetime: time.Minute, ConnMaxIdleTime: time.Minute})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = database.Close() })
+	store, err := catalogmysqlstore.New(database)
+	if err != nil {
+		t.Fatal(err)
+	}
+	service, err := catalogapp.NewService(store, fixedClock{now: now})
+	if err != nil {
+		t.Fatal(err)
+	}
+	principal := catalogapp.Principal{Subject: "admin", DisplayName: "Admin", Roles: []string{catalogapp.ConfigAdminRole}}
+	input := catalogapp.CollectionInput{
+		Name: "routes", Description: "Routes", SDKDeliveryEnabled: true, SchemaVersion: 1, Status: catalogapp.StatusEnabled,
+		Fields: []catalog.FieldDefinition{
+			{Name: "code", DisplayName: "Code", Type: catalog.FieldTypeString, Required: true, DisplayOrder: 0},
+			{Name: "description", DisplayName: "Description", Type: catalog.FieldTypeString, DisplayOrder: 1},
+		},
+		KeyFields: []string{"code"},
+	}
+	created, err := service.CreateCollection(ctx, principal, input)
+	if err != nil || created.ConfigRevision != 8 || created.Audit.CreatedBy != "admin" {
+		t.Fatalf("created collection = %+v, %v", created, err)
+	}
+	input.Description = "Updated routes"
+	if _, err := service.UpdateCollection(ctx, principal, 99, input); !errors.Is(err, catalogapp.ErrAborted) {
+		t.Fatalf("stale collection update = %v", err)
+	}
+	updated, err := service.UpdateCollection(ctx, principal, created.ConfigRevision, input)
+	if err != nil || updated.ConfigRevision != 9 || updated.Description != "Updated routes" {
+		t.Fatalf("updated collection = %+v, %v", updated, err)
+	}
+	subscription, err := service.CreateSubscription(ctx, principal, catalogapp.SubscriptionInput{
+		ConsumerID: "checkout", Collection: "routes", IndexName: "by-code", IndexFields: []string{"code"}, Cardinality: catalogapp.CardinalityOneToOne, Enabled: true,
+	})
+	if err != nil || subscription.ID == "" || subscription.ConfigRevision != 10 {
+		t.Fatalf("created subscription = %+v, %v", subscription, err)
+	}
+	if _, err := service.CreateSubscription(ctx, principal, subscription.SubscriptionInput); !errors.Is(err, catalogapp.ErrAlreadyExists) {
+		t.Fatalf("duplicate subscription = %v", err)
+	}
+	subscription.Enabled = false
+	updatedSubscription, err := service.UpdateSubscription(ctx, principal, subscription.ConfigRevision, subscription.SubscriptionInput)
+	if err != nil || updatedSubscription.ConfigRevision != 11 || updatedSubscription.Enabled {
+		t.Fatalf("updated subscription = %+v, %v", updatedSubscription, err)
+	}
+	raw, err := sql.Open("mysql", dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer raw.Close()
+	if _, err := raw.Exec(`INSERT INTO configuration_records (collection_name, environment, record_key, data, config_revision, created_at, created_by, updated_at, updated_by) VALUES ('routes', 'production', 'record', JSON_OBJECT('code', 'visa', 'description', 'Visa'), 11, ?, 'seed', ?, 'seed')`, now, now); err != nil {
+		t.Fatal(err)
+	}
+	input.Fields = input.Fields[:1]
+	input.SchemaVersion = 2
+	if _, err := service.UpdateCollection(ctx, principal, updated.ConfigRevision, input); !errors.Is(err, catalogapp.ErrFailedPrecondition) {
+		t.Fatalf("destructive collection update = %v", err)
+	}
+	assertCount(t, raw, `SELECT COUNT(*) FROM audit_records WHERE resource_type IN ('COLLECTION', 'SUBSCRIPTION')`, 4)
+	assertCount(t, raw, `SELECT COUNT(*) FROM configuration_change_log WHERE kind = 'METADATA'`, 4)
+	assertCount(t, raw, `SELECT COUNT(*) FROM outbox_events WHERE event_type = 'CONFIGURATION_CHANGED' AND aggregate_type IN ('COLLECTION', 'SUBSCRIPTION')`, 8)
+	assertCount(t, raw, `SELECT COUNT(*) FROM configuration_versions WHERE collection_name = 'routes' AND config_revision = 11`, 2)
 }
 
 func TestRealMySQLSnapshotRefreshRetainsFailedOptionDependencyGroup(t *testing.T) {

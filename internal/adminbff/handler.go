@@ -13,6 +13,7 @@ import (
 
 	access "github.com/asherzj/financial_configuration_center/internal/access/application"
 	"github.com/asherzj/financial_configuration_center/internal/audit"
+	catalogapp "github.com/asherzj/financial_configuration_center/internal/catalog/application"
 	catalog "github.com/asherzj/financial_configuration_center/internal/catalog/domain"
 	"github.com/asherzj/financial_configuration_center/internal/distribution/snapshot"
 	"github.com/asherzj/financial_configuration_center/internal/outbox"
@@ -60,6 +61,16 @@ type AuditQueries interface {
 	List(context.Context, audit.Principal, audit.Query) (audit.Page, error)
 }
 
+type CatalogAdmin interface {
+	CreateCollection(context.Context, catalogapp.Principal, catalogapp.CollectionInput) (catalogapp.CollectionView, error)
+	UpdateCollection(context.Context, catalogapp.Principal, catalog.ConfigRevision, catalogapp.CollectionInput) (catalogapp.CollectionView, error)
+	GetCollection(context.Context, catalogapp.Principal, string) (catalogapp.CollectionView, error)
+	ListCollections(context.Context, catalogapp.Principal, catalogapp.PageQuery) (catalogapp.CollectionPage, error)
+	CreateSubscription(context.Context, catalogapp.Principal, catalogapp.SubscriptionInput) (catalogapp.SubscriptionView, error)
+	UpdateSubscription(context.Context, catalogapp.Principal, catalog.ConfigRevision, catalogapp.SubscriptionInput) (catalogapp.SubscriptionView, error)
+	ListSubscriptions(context.Context, catalogapp.Principal, catalogapp.SubscriptionQuery) (catalogapp.SubscriptionPage, error)
+}
+
 type Handler struct {
 	queries     PageQueries
 	releases    ReleaseCommands
@@ -67,29 +78,37 @@ type Handler struct {
 	outbox      OutboxOperations
 	diagnostics SnapshotDiagnostics
 	audits      AuditQueries
+	catalog     CatalogAdmin
 	auth        Authenticator
 	mux         *http.ServeMux
 }
 
 func NewWithOutbox(queries PageQueries, releases ReleaseCommands, auth Authenticator, operations OutboxOperations, sensitive ...SensitiveAccess) (*Handler, error) {
-	return newWithOperations(queries, releases, auth, operations, nil, nil, sensitive...)
+	return newWithOperations(queries, releases, auth, operations, nil, nil, nil, sensitive...)
 }
 
 func NewWithOperations(queries PageQueries, releases ReleaseCommands, auth Authenticator, operations OutboxOperations, diagnostics SnapshotDiagnostics, sensitive ...SensitiveAccess) (*Handler, error) {
 	if diagnostics == nil {
 		return nil, errors.New("new Admin BFF: snapshot diagnostics are required")
 	}
-	return newWithOperations(queries, releases, auth, operations, diagnostics, nil, sensitive...)
+	return newWithOperations(queries, releases, auth, operations, diagnostics, nil, nil, sensitive...)
 }
 
 func NewWithAdminOperations(queries PageQueries, releases ReleaseCommands, auth Authenticator, operations OutboxOperations, diagnostics SnapshotDiagnostics, audits AuditQueries, sensitive ...SensitiveAccess) (*Handler, error) {
 	if diagnostics == nil || audits == nil {
 		return nil, errors.New("new Admin BFF: snapshot diagnostics and audit queries are required")
 	}
-	return newWithOperations(queries, releases, auth, operations, diagnostics, audits, sensitive...)
+	return newWithOperations(queries, releases, auth, operations, diagnostics, audits, nil, sensitive...)
 }
 
-func newWithOperations(queries PageQueries, releases ReleaseCommands, auth Authenticator, operations OutboxOperations, diagnostics SnapshotDiagnostics, audits AuditQueries, sensitive ...SensitiveAccess) (*Handler, error) {
+func NewWithCatalogOperations(queries PageQueries, releases ReleaseCommands, auth Authenticator, operations OutboxOperations, diagnostics SnapshotDiagnostics, audits AuditQueries, catalogAdmin CatalogAdmin, sensitive ...SensitiveAccess) (*Handler, error) {
+	if diagnostics == nil || audits == nil || catalogAdmin == nil {
+		return nil, errors.New("new Admin BFF: diagnostics, audit queries, and catalog admin are required")
+	}
+	return newWithOperations(queries, releases, auth, operations, diagnostics, audits, catalogAdmin, sensitive...)
+}
+
+func newWithOperations(queries PageQueries, releases ReleaseCommands, auth Authenticator, operations OutboxOperations, diagnostics SnapshotDiagnostics, audits AuditQueries, catalogAdmin CatalogAdmin, sensitive ...SensitiveAccess) (*Handler, error) {
 	if operations == nil {
 		return nil, errors.New("new Admin BFF: outbox operations are required")
 	}
@@ -100,6 +119,7 @@ func newWithOperations(queries PageQueries, releases ReleaseCommands, auth Authe
 	handler.outbox = operations
 	handler.diagnostics = diagnostics
 	handler.audits = audits
+	handler.catalog = catalogAdmin
 	handler.mux.HandleFunc("GET /api/v1/outbox-events", handler.listOutboxEvents)
 	handler.mux.HandleFunc("POST /api/v1/outbox-events/{id}/replay", handler.replayOutboxEvent)
 	if diagnostics != nil {
@@ -109,7 +129,241 @@ func newWithOperations(queries PageQueries, releases ReleaseCommands, auth Authe
 	if audits != nil {
 		handler.mux.HandleFunc("GET /api/v1/audit-records", handler.listAuditRecords)
 	}
+	if catalogAdmin != nil {
+		handler.mux.HandleFunc("GET /api/v1/collections", handler.listCollections)
+		handler.mux.HandleFunc("POST /api/v1/collections", handler.createCollection)
+		handler.mux.HandleFunc("GET /api/v1/collections/{name}", handler.getCollection)
+		handler.mux.HandleFunc("PUT /api/v1/collections/{name}", handler.updateCollection)
+		handler.mux.HandleFunc("GET /api/v1/subscriptions", handler.listSubscriptions)
+		handler.mux.HandleFunc("POST /api/v1/subscriptions", handler.createSubscription)
+		handler.mux.HandleFunc("PUT /api/v1/subscriptions/{id}", handler.updateSubscription)
+	}
 	return handler, nil
+}
+
+type collectionAdminRequest struct {
+	Name               string                        `json:"name"`
+	Description        string                        `json:"description"`
+	Fields             []collectionFieldAdminRequest `json:"fields"`
+	KeyFields          []string                      `json:"keyFields"`
+	SDKDeliveryEnabled bool                          `json:"sdkDeliveryEnabled"`
+	SchemaVersion      int64                         `json:"schemaVersion"`
+	Status             catalogapp.Status             `json:"status"`
+}
+
+type collectionFieldAdminRequest struct {
+	Name            string                   `json:"name"`
+	DisplayName     string                   `json:"displayName"`
+	Type            catalog.FieldType        `json:"type"`
+	Required        bool                     `json:"required"`
+	Sensitive       bool                     `json:"sensitive"`
+	DefaultValue    *string                  `json:"defaultValue,omitempty"`
+	Description     string                   `json:"description"`
+	DisplayOrder    int32                    `json:"displayOrder"`
+	ValidationRules []catalog.ValidationRule `json:"validationRules"`
+}
+
+func (body collectionAdminRequest) input() catalogapp.CollectionInput {
+	fields := make([]catalog.FieldDefinition, len(body.Fields))
+	for index, field := range body.Fields {
+		fields[index] = catalog.FieldDefinition{Name: field.Name, DisplayName: field.DisplayName, Type: field.Type, Required: field.Required, Sensitive: field.Sensitive, DefaultValue: field.DefaultValue, Description: field.Description, DisplayOrder: field.DisplayOrder, ValidationRules: field.ValidationRules}
+	}
+	return catalogapp.CollectionInput{Name: body.Name, Description: body.Description, Fields: fields, KeyFields: body.KeyFields, SDKDeliveryEnabled: body.SDKDeliveryEnabled, SchemaVersion: body.SchemaVersion, Status: body.Status}
+}
+
+func (handler *Handler) createCollection(writer http.ResponseWriter, request *http.Request) {
+	principal, ok := handler.catalogPrincipal(writer, request)
+	if !ok {
+		return
+	}
+	var body collectionAdminRequest
+	if !decodeJSON(writer, request, &body) {
+		return
+	}
+	view, err := handler.catalog.CreateCollection(request.Context(), principal, body.input())
+	if err != nil {
+		writeDomainError(writer, err)
+		return
+	}
+	writeJSON(writer, http.StatusCreated, collectionAdminResponse(view))
+}
+
+func (handler *Handler) updateCollection(writer http.ResponseWriter, request *http.Request) {
+	principal, ok := handler.catalogPrincipal(writer, request)
+	if !ok {
+		return
+	}
+	expected, ok := expectedRevision(writer, request)
+	if !ok {
+		return
+	}
+	var body collectionAdminRequest
+	if !decodeJSON(writer, request, &body) {
+		return
+	}
+	if body.Name != request.PathValue("name") {
+		writeError(writer, http.StatusBadRequest, "INVALID_ARGUMENT", "collection path and body names must match")
+		return
+	}
+	view, err := handler.catalog.UpdateCollection(request.Context(), principal, expected, body.input())
+	if err != nil {
+		writeDomainError(writer, err)
+		return
+	}
+	writeJSON(writer, http.StatusOK, collectionAdminResponse(view))
+}
+
+func (handler *Handler) getCollection(writer http.ResponseWriter, request *http.Request) {
+	principal, ok := handler.catalogPrincipal(writer, request)
+	if !ok {
+		return
+	}
+	view, err := handler.catalog.GetCollection(request.Context(), principal, request.PathValue("name"))
+	if err != nil {
+		writeDomainError(writer, err)
+		return
+	}
+	writeJSON(writer, http.StatusOK, collectionAdminResponse(view))
+}
+
+func (handler *Handler) listCollections(writer http.ResponseWriter, request *http.Request) {
+	principal, ok := handler.catalogPrincipal(writer, request)
+	if !ok {
+		return
+	}
+	number, size, ok := queryPage(writer, request)
+	if !ok {
+		return
+	}
+	page, err := handler.catalog.ListCollections(request.Context(), principal, catalogapp.PageQuery{PageNumber: number, PageSize: size})
+	if err != nil {
+		writeDomainError(writer, err)
+		return
+	}
+	collections := make([]map[string]any, len(page.Collections))
+	for index, collection := range page.Collections {
+		collections[index] = collectionAdminResponse(collection)
+	}
+	writeJSON(writer, http.StatusOK, map[string]any{"collections": collections, "page": pageResponse(page.PageNumber, page.PageSize, page.TotalNumber, page.TotalPages)})
+}
+
+type subscriptionAdminRequest struct {
+	ID          string                 `json:"id,omitempty"`
+	ConsumerID  string                 `json:"consumerId"`
+	Collection  string                 `json:"collection"`
+	IndexName   string                 `json:"indexName"`
+	IndexFields []string               `json:"indexFields"`
+	Cardinality catalogapp.Cardinality `json:"cardinality"`
+	Enabled     bool                   `json:"enabled"`
+}
+
+func (body subscriptionAdminRequest) input() catalogapp.SubscriptionInput {
+	return catalogapp.SubscriptionInput{ID: body.ID, ConsumerID: body.ConsumerID, Collection: body.Collection, IndexName: body.IndexName, IndexFields: body.IndexFields, Cardinality: body.Cardinality, Enabled: body.Enabled}
+}
+
+func (handler *Handler) createSubscription(writer http.ResponseWriter, request *http.Request) {
+	principal, ok := handler.catalogPrincipal(writer, request)
+	if !ok {
+		return
+	}
+	var body subscriptionAdminRequest
+	if !decodeJSON(writer, request, &body) {
+		return
+	}
+	view, err := handler.catalog.CreateSubscription(request.Context(), principal, body.input())
+	if err != nil {
+		writeDomainError(writer, err)
+		return
+	}
+	writeJSON(writer, http.StatusCreated, subscriptionAdminResponse(view))
+}
+
+func (handler *Handler) updateSubscription(writer http.ResponseWriter, request *http.Request) {
+	principal, ok := handler.catalogPrincipal(writer, request)
+	if !ok {
+		return
+	}
+	expected, ok := expectedRevision(writer, request)
+	if !ok {
+		return
+	}
+	var body subscriptionAdminRequest
+	if !decodeJSON(writer, request, &body) {
+		return
+	}
+	if body.ID != "" && body.ID != request.PathValue("id") {
+		writeError(writer, http.StatusBadRequest, "INVALID_ARGUMENT", "subscription path and body IDs must match")
+		return
+	}
+	body.ID = request.PathValue("id")
+	view, err := handler.catalog.UpdateSubscription(request.Context(), principal, expected, body.input())
+	if err != nil {
+		writeDomainError(writer, err)
+		return
+	}
+	writeJSON(writer, http.StatusOK, subscriptionAdminResponse(view))
+}
+
+func (handler *Handler) listSubscriptions(writer http.ResponseWriter, request *http.Request) {
+	principal, ok := handler.catalogPrincipal(writer, request)
+	if !ok {
+		return
+	}
+	number, size, ok := queryPage(writer, request)
+	if !ok {
+		return
+	}
+	page, err := handler.catalog.ListSubscriptions(request.Context(), principal, catalogapp.SubscriptionQuery{ConsumerID: request.URL.Query().Get("consumerId"), Collection: request.URL.Query().Get("collection"), PageNumber: number, PageSize: size})
+	if err != nil {
+		writeDomainError(writer, err)
+		return
+	}
+	subscriptions := make([]map[string]any, len(page.Subscriptions))
+	for index, subscription := range page.Subscriptions {
+		subscriptions[index] = subscriptionAdminResponse(subscription)
+	}
+	writeJSON(writer, http.StatusOK, map[string]any{"subscriptions": subscriptions, "page": pageResponse(page.PageNumber, page.PageSize, page.TotalNumber, page.TotalPages)})
+}
+
+func (handler *Handler) catalogPrincipal(writer http.ResponseWriter, request *http.Request) (catalogapp.Principal, bool) {
+	principal, ok := handler.authenticate(writer, request)
+	return catalogapp.Principal{Subject: principal.Subject, DisplayName: principal.DisplayName, Roles: append([]string(nil), principal.Roles...)}, ok
+}
+
+func expectedRevision(writer http.ResponseWriter, request *http.Request) (catalog.ConfigRevision, bool) {
+	raw := strings.TrimSpace(request.Header.Get("If-Match"))
+	value, err := strconv.ParseUint(raw, 10, 64)
+	if err != nil || value == 0 {
+		writeError(writer, http.StatusBadRequest, "EXPECTED_REVISION_REQUIRED", "If-Match must contain a positive revision")
+		return 0, false
+	}
+	return catalog.ConfigRevision(value), true
+}
+
+func queryPage(writer http.ResponseWriter, request *http.Request) (int, int, bool) {
+	number, err := positiveQueryInt(request, "page", 1)
+	if err != nil {
+		writeError(writer, http.StatusBadRequest, "INVALID_ARGUMENT", err.Error())
+		return 0, 0, false
+	}
+	size, err := positiveQueryInt(request, "size", 20)
+	if err != nil {
+		writeError(writer, http.StatusBadRequest, "INVALID_ARGUMENT", err.Error())
+		return 0, 0, false
+	}
+	return number, size, true
+}
+
+func collectionAdminResponse(view catalogapp.CollectionView) map[string]any {
+	return map[string]any{"name": view.Name, "description": view.Description, "fields": view.Fields, "keyFields": view.KeyFields, "sdkDeliveryEnabled": view.SDKDeliveryEnabled, "schemaVersion": view.SchemaVersion, "status": view.Status, "configRevision": view.ConfigRevision, "audit": map[string]any{"createdAt": view.Audit.CreatedAt, "createdBy": view.Audit.CreatedBy, "updatedAt": view.Audit.UpdatedAt, "updatedBy": view.Audit.UpdatedBy}}
+}
+
+func subscriptionAdminResponse(view catalogapp.SubscriptionView) map[string]any {
+	return map[string]any{"id": view.ID, "consumerId": view.ConsumerID, "collection": view.Collection, "indexName": view.IndexName, "indexFields": view.IndexFields, "cardinality": view.Cardinality, "enabled": view.Enabled, "configRevision": view.ConfigRevision}
+}
+
+func pageResponse(number, size int, total int64, pages int) map[string]any {
+	return map[string]any{"number": number, "size": size, "totalNumber": total, "totalPages": pages}
 }
 
 func (handler *Handler) listAuditRecords(writer http.ResponseWriter, request *http.Request) {
@@ -608,6 +862,18 @@ func decodeJSON(writer http.ResponseWriter, request *http.Request, target any) b
 
 func writeDomainError(writer http.ResponseWriter, err error) {
 	switch {
+	case errors.Is(err, catalogapp.ErrInvalid):
+		writeError(writer, http.StatusBadRequest, "INVALID_ARGUMENT", err.Error())
+	case errors.Is(err, catalogapp.ErrForbidden):
+		writeError(writer, http.StatusForbidden, "PERMISSION_DENIED", err.Error())
+	case errors.Is(err, catalogapp.ErrNotFound):
+		writeError(writer, http.StatusNotFound, "NOT_FOUND", err.Error())
+	case errors.Is(err, catalogapp.ErrAlreadyExists):
+		writeError(writer, http.StatusConflict, "ALREADY_EXISTS", err.Error())
+	case errors.Is(err, catalogapp.ErrAborted):
+		writeError(writer, http.StatusConflict, "REVISION_CONFLICT", err.Error())
+	case errors.Is(err, catalogapp.ErrFailedPrecondition):
+		writeError(writer, http.StatusPreconditionFailed, "FAILED_PRECONDITION", err.Error())
 	case errors.Is(err, audit.ErrInvalid):
 		writeError(writer, http.StatusBadRequest, "INVALID_ARGUMENT", err.Error())
 	case errors.Is(err, audit.ErrForbidden):
