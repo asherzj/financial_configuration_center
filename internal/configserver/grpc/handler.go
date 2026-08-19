@@ -30,20 +30,22 @@ type WatchAuthorizer interface {
 }
 
 type Handler struct {
-	application Application
-	watcher     Watcher
-	authorizer  WatchAuthorizer
+	application        Application
+	watcher            Watcher
+	authorizer         WatchAuthorizer
+	managedEnvironment string
 }
 
-func New(application Application) (*Handler, error) {
-	if application == nil {
-		return nil, errors.New("new ConfigService handler: application is required")
+func New(application Application, managedEnvironment string) (*Handler, error) {
+	managedEnvironment = strings.TrimSpace(managedEnvironment)
+	if application == nil || managedEnvironment == "" {
+		return nil, errors.New("new ConfigService handler: application and managed environment are required")
 	}
-	return &Handler{application: application}, nil
+	return &Handler{application: application, managedEnvironment: managedEnvironment}, nil
 }
 
-func NewWithWatch(application Application, watcher Watcher, authorizer WatchAuthorizer) (*Handler, error) {
-	handler, err := New(application)
+func NewWithWatch(application Application, watcher Watcher, authorizer WatchAuthorizer, managedEnvironment string) (*Handler, error) {
+	handler, err := New(application, managedEnvironment)
 	if err != nil {
 		return nil, err
 	}
@@ -71,6 +73,12 @@ func (handler *Handler) GetSnapshot(ctx context.Context, request *configv1.GetSn
 		Region: request.Scope.Region, Environment: request.Scope.Environment, Stage: request.Scope.Stage, KnownVersions: known,
 	})
 	if err != nil {
+		switch {
+		case errors.Is(err, configserver.ErrManagedEnvironmentMismatch):
+			return nil, status.Error(codes.FailedPrecondition, "requested environment is not managed by this server")
+		case errors.Is(err, configserver.ErrSnapshotUnavailable):
+			return nil, status.Error(codes.Unavailable, "configuration snapshot is not available")
+		}
 		return nil, status.Error(codes.Internal, "get snapshot failed")
 	}
 	converted := &configv1.GetSnapshotResponse{
@@ -109,11 +117,23 @@ func (handler *Handler) GetSnapshot(ctx context.Context, request *configv1.GetSn
 	return converted, nil
 }
 
-func (handler *Handler) DiffVersions(context.Context, *configv1.DiffVersionsRequest) (*configv1.DiffVersionsResponse, error) {
+func (handler *Handler) DiffVersions(_ context.Context, request *configv1.DiffVersionsRequest) (*configv1.DiffVersionsResponse, error) {
+	if request == nil || request.Scope == nil || strings.TrimSpace(request.ConsumerId) == "" || strings.TrimSpace(request.ClientId) == "" || strings.TrimSpace(request.Scope.Environment) == "" {
+		return nil, status.Error(codes.InvalidArgument, "consumer_id, client_id, and scope.environment are required")
+	}
+	if request.Scope.Environment != handler.managedEnvironment {
+		return nil, status.Error(codes.FailedPrecondition, "requested environment is not managed by this server")
+	}
 	return nil, status.Error(codes.Unimplemented, "DiffVersions is not implemented in the base-only slice")
 }
 
-func (handler *Handler) GetCollections(context.Context, *configv1.GetCollectionsRequest) (*configv1.GetCollectionsResponse, error) {
+func (handler *Handler) GetCollections(_ context.Context, request *configv1.GetCollectionsRequest) (*configv1.GetCollectionsResponse, error) {
+	if request == nil || request.Scope == nil || strings.TrimSpace(request.ConsumerId) == "" || strings.TrimSpace(request.ClientId) == "" || strings.TrimSpace(request.Scope.Environment) == "" || len(request.Collections) == 0 {
+		return nil, status.Error(codes.InvalidArgument, "consumer_id, client_id, scope.environment, and collections are required")
+	}
+	if request.Scope.Environment != handler.managedEnvironment {
+		return nil, status.Error(codes.FailedPrecondition, "requested environment is not managed by this server")
+	}
 	return nil, status.Error(codes.Unimplemented, "GetCollections is not implemented in the base-only slice")
 }
 
@@ -123,6 +143,9 @@ func (handler *Handler) Watch(request *configv1.WatchRequest, stream configv1.Co
 	}
 	if request == nil || request.Scope == nil || strings.TrimSpace(request.ConsumerId) == "" || strings.TrimSpace(request.ClientId) == "" || strings.TrimSpace(request.Scope.Environment) == "" {
 		return status.Error(codes.InvalidArgument, "consumer_id, client_id, and scope.environment are required")
+	}
+	if request.Scope.Environment != handler.managedEnvironment {
+		return status.Error(codes.FailedPrecondition, "requested environment is not managed by this server")
 	}
 	ctx := stream.Context()
 	collections, err := handler.authorizer.AuthorizedCollections(ctx, request.ConsumerId)

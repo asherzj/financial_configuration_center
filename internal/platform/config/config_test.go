@@ -13,7 +13,7 @@ func TestLoadStrictYAMLThenEnvironmentOverrides(t *testing.T) {
 	yaml := `
 serviceName: control-plane
 version: v1
-environment: development
+runtimeMode: development
 instanceId: local-1
 operationsListenAddress: 127.0.0.1:9090
 backendSocket: /var/run/finconfig/backend.sock
@@ -47,6 +47,98 @@ auth:
 	}
 }
 
+func TestLoadNamesProcessSafetyModeRuntimeMode(t *testing.T) {
+	t.Parallel()
+	loaded, err := config.Load(strings.NewReader(`
+serviceName: control-plane
+version: v1
+runtimeMode: test
+instanceId: test-1
+operationsListenAddress: 127.0.0.1:9090
+shutdownTimeout: 30s
+mysql: {maxOpenConnections: 20, maxIdleConnections: 10, connectionMaxLifetime: 5m, connectionMaxIdleTime: 1m}
+telemetry: {traceSampleRatio: 0.1, otlpEndpoint: ""}
+auth: {devAuthEnabled: false}
+`), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.RuntimeMode != "test" {
+		t.Fatalf("runtime mode = %q", loaded.RuntimeMode)
+	}
+}
+
+func TestLoadConfigServerSeparatesManagedEnvironmentFromRuntimeMode(t *testing.T) {
+	t.Parallel()
+	loaded, err := config.LoadConfigServer(strings.NewReader(`
+serviceName: config-server
+version: v1
+runtimeMode: development
+managedEnvironment: staging
+serverEpoch: 018f47cb-42f8-7fb2-a4af-0b0bd6dd98c1
+instanceId: config-server-1
+operationsListenAddress: 127.0.0.1:9090
+backendSocket: /var/run/finconfig/backend.sock
+shutdownTimeout: 30s
+mysql:
+  dsn: mysql-secret
+  maxOpenConnections: 20
+  maxIdleConnections: 10
+  connectionMaxLifetime: 5m
+  connectionMaxIdleTime: 1m
+telemetry: {traceSampleRatio: 0.1, otlpEndpoint: ""}
+auth: {devAuthEnabled: true}
+`), []string{
+		"FINCONFIG_MANAGED_ENVIRONMENT=production",
+		"FINCONFIG_SERVER_EPOCH=018f47cb-42f8-7fb2-a4af-0b0bd6dd98c2",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.RuntimeMode != "development" || loaded.ManagedEnvironment != "production" || loaded.ServerEpoch != "018f47cb-42f8-7fb2-a4af-0b0bd6dd98c2" {
+		t.Fatalf("loaded config server profile = %+v", loaded)
+	}
+	if summary := loaded.SafeSummary(); strings.Contains(summary, "mysql-secret") || !strings.Contains(summary, `"managedEnvironment":"production"`) {
+		t.Fatalf("unsafe or incomplete summary = %s", summary)
+	}
+}
+
+func TestLoadConfigServerRejectsMissingBoundaryIdentityAndDependencies(t *testing.T) {
+	t.Parallel()
+	base := `
+serviceName: config-server
+version: v1
+runtimeMode: development
+managedEnvironment: production
+serverEpoch: 018f47cb-42f8-7fb2-a4af-0b0bd6dd98c1
+instanceId: config-server-1
+operationsListenAddress: 127.0.0.1:9090
+backendSocket: /var/run/finconfig/backend.sock
+shutdownTimeout: 30s
+mysql: {dsn: mysql-secret, maxOpenConnections: 20, maxIdleConnections: 10, connectionMaxLifetime: 5m, connectionMaxIdleTime: 1m}
+telemetry: {traceSampleRatio: 0.1, otlpEndpoint: ""}
+auth: {devAuthEnabled: true}
+`
+	tests := []struct {
+		name string
+		yaml string
+	}{
+		{name: "managed environment", yaml: strings.Replace(base, "managedEnvironment: production\n", "", 1)},
+		{name: "server epoch", yaml: strings.Replace(base, "018f47cb-42f8-7fb2-a4af-0b0bd6dd98c1", "not-a-uuid", 1)},
+		{name: "MySQL", yaml: strings.Replace(base, "dsn: mysql-secret", `dsn: ""`, 1)},
+		{name: "backend UDS", yaml: strings.Replace(base, "backendSocket: /var/run/finconfig/backend.sock\n", "", 1)},
+	}
+	for _, test := range tests {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			if _, err := config.LoadConfigServer(strings.NewReader(test.yaml), nil); err == nil {
+				t.Fatalf("Config Server profile without %s was accepted", test.name)
+			}
+		})
+	}
+}
+
 func TestLoadRejectsUnknownYAMLAndUnsafeProductionSettings(t *testing.T) {
 	t.Parallel()
 	if _, err := config.Load(strings.NewReader("serviceName: cp\nunknownSetting: true\n"), nil); err == nil {
@@ -55,7 +147,7 @@ func TestLoadRejectsUnknownYAMLAndUnsafeProductionSettings(t *testing.T) {
 	production := `
 serviceName: control-plane
 version: v1
-environment: production
+runtimeMode: production
 instanceId: prod-1
 operationsListenAddress: 0.0.0.0:9090
 backendSocket: /var/run/finconfig/backend.sock

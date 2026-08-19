@@ -18,7 +18,12 @@ type SnapshotProvider interface {
 	Current() *snapshot.Snapshot
 }
 
-var ErrInvalidArgument = errors.New("invalid page query argument")
+var (
+	ErrInvalidArgument            = errors.New("invalid page query argument")
+	ErrManagedEnvironmentMismatch = errors.New("page query environment does not match the managed environment")
+	ErrSnapshotUnavailable        = errors.New("page query snapshot is unavailable")
+	ErrNotFound                   = errors.New("page query resource was not found")
+)
 
 type QueryType string
 
@@ -122,13 +127,18 @@ type Result struct {
 	CollectionRevision catalog.ConfigRevision
 }
 
-type Querier struct{ snapshots SnapshotProvider }
+type Querier struct {
+	snapshots          SnapshotProvider
+	managedEnvironment string
+}
 
-func New(snapshots SnapshotProvider) *Querier { return &Querier{snapshots: snapshots} }
+func New(snapshots SnapshotProvider, managedEnvironment string) *Querier {
+	return &Querier{snapshots: snapshots, managedEnvironment: strings.TrimSpace(managedEnvironment)}
+}
 
 func (querier *Querier) Query(request Request) (Result, error) {
-	if querier == nil || querier.snapshots == nil {
-		return Result{}, errors.New("page query: snapshot provider is required")
+	if querier == nil || querier.snapshots == nil || querier.managedEnvironment == "" {
+		return Result{}, errors.New("page query: snapshot provider and managed environment are required")
 	}
 	request.ModelCode = strings.TrimSpace(request.ModelCode)
 	request.Region = strings.TrimSpace(request.Region)
@@ -137,6 +147,9 @@ func (querier *Querier) Query(request Request) (Result, error) {
 	if request.ModelCode == "" || request.Region == "" || request.Environment == "" {
 		return Result{}, fmt.Errorf("%w: model, region, and environment are required", ErrInvalidArgument)
 	}
+	if request.Environment != querier.managedEnvironment {
+		return Result{}, fmt.Errorf("%w: got %q, want %q", ErrManagedEnvironmentMismatch, request.Environment, querier.managedEnvironment)
+	}
 	if request.PreviewBucket != nil && (*request.PreviewBucket < 0 || *request.PreviewBucket > 99) {
 		return Result{}, fmt.Errorf("%w: preview bucket must be between 0 and 99", ErrInvalidArgument)
 	}
@@ -144,16 +157,19 @@ func (querier *Querier) Query(request Request) (Result, error) {
 		return Result{}, fmt.Errorf("%w: unsupported query type %q", ErrInvalidArgument, request.Type)
 	}
 	current := querier.snapshots.Current()
-	if current == nil || current.Environment() != request.Environment {
-		return Result{}, errors.New("page query: requested environment is not loaded")
+	if current == nil {
+		return Result{}, fmt.Errorf("%w", ErrSnapshotUnavailable)
+	}
+	if current.Environment() != querier.managedEnvironment {
+		return Result{}, fmt.Errorf("%w: managed environment %q is not loaded", ErrManagedEnvironmentMismatch, querier.managedEnvironment)
 	}
 	model, exists := current.Model(request.ModelCode)
 	if !exists {
-		return Result{}, fmt.Errorf("page query: model %q is not loaded", request.ModelCode)
+		return Result{}, fmt.Errorf("%w: model %q is not loaded", ErrNotFound, request.ModelCode)
 	}
 	definition, exists := current.Definition(model.Collection())
 	if !exists {
-		return Result{}, errors.New("page query: model collection is not loaded")
+		return Result{}, fmt.Errorf("%w: model collection %q is not loaded", ErrNotFound, model.Collection())
 	}
 	collectionRevision, exists := current.CollectionVersion(model.Collection())
 	if !exists {

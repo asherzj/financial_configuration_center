@@ -83,7 +83,7 @@ func TestRealMySQLSensitiveRevealUsesCurrentAuthorityAndCommitsAudit(t *testing.
 	if _, err := manager.Refresh(ctx, "production"); err != nil {
 		t.Fatal(err)
 	}
-	page, err := pagequery.New(manager).Query(pagequery.Request{ModelCode: "payment-route-admin", Region: "cn", Environment: "production", Type: pagequery.TypeAll})
+	page, err := pagequery.New(manager, "production").Query(pagequery.Request{ModelCode: "payment-route-admin", Region: "cn", Environment: "production", Type: pagequery.TypeAll})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -434,7 +434,7 @@ func TestRealMySQLPollConvergesWithoutHintOrWatch(t *testing.T) {
 	defer stopPoller()
 	go func() { _ = poller.Run(pollContext) }()
 
-	configService := configserver.New(manager, source)
+	configService := configserver.New(manager, source, "production")
 	sdkClient, err := finconfig.New(finconfig.Config{ConsumerID: "payment-service", ClientID: "pod-poll", Region: "cn", Environment: "production", Transport: configTransport{service: configService}, PollInterval: 5 * time.Millisecond})
 	if err != nil {
 		t.Fatal(err)
@@ -873,7 +873,7 @@ func TestRealMySQLOverlayApplyAndRollbackTransaction(t *testing.T) {
 	if _, err := manager.Refresh(ctx, "production"); err != nil {
 		t.Fatal(err)
 	}
-	page, err := pagequery.New(manager).Query(pagequery.Request{ModelCode: "payment-route-admin", Region: "cn", Environment: "production", Stage: "blue", Type: pagequery.TypeAll})
+	page, err := pagequery.New(manager, "production").Query(pagequery.Request{ModelCode: "payment-route-admin", Region: "cn", Environment: "production", Stage: "blue", Type: pagequery.TypeAll})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1092,7 +1092,7 @@ func TestRealMySQLPercentageRolloutTransaction(t *testing.T) {
 	if _, err := manager.Refresh(ctx, "production"); err != nil {
 		t.Fatal(err)
 	}
-	configService := configserver.New(manager, distributionSource)
+	configService := configserver.New(manager, distributionSource, "production")
 	selectedClient, err := finconfig.New(finconfig.Config{
 		ConsumerID: "payment-service", ClientID: "pod-10", Region: "cn", Environment: "production", Stage: "blue",
 		Transport: configTransport{service: configService},
@@ -1235,7 +1235,7 @@ func TestRealMySQLHTTPWalkingSkeleton(t *testing.T) {
 	if _, err := manager.Refresh(ctx, "production"); err != nil {
 		t.Fatal(err)
 	}
-	handler, err := adminbff.New(pagequery.New(manager), service, httpActor{})
+	handler, err := adminbff.New(pagequery.New(manager, "production"), service, httpActor{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1293,7 +1293,7 @@ func TestRealMySQLHTTPWalkingSkeleton(t *testing.T) {
 	if queried.Code != http.StatusOK || !bytes.Contains(queried.Body.Bytes(), []byte(`"priority":"7"`)) {
 		t.Fatalf("published query = %d %s", queried.Code, queried.Body.String())
 	}
-	configService := configserver.New(manager, distributionSource)
+	configService := configserver.New(manager, distributionSource, "production")
 	sdkClient, err := finconfig.New(finconfig.Config{ConsumerID: "payment-service", ClientID: "pod-http", Region: "cn", Environment: "production", Transport: configTransport{service: configService}})
 	if err != nil {
 		t.Fatal(err)
@@ -1384,14 +1384,14 @@ func TestRealMySQLBaseFinalTransaction(t *testing.T) {
 	if _, err := productionSnapshots.Refresh(ctx, "production"); err != nil {
 		t.Fatalf("refresh production snapshot: %v", err)
 	}
-	page, err := pagequery.New(productionSnapshots).Query(pagequery.Request{ModelCode: "payment-route-admin", Region: "cn", Environment: "production", Type: pagequery.TypeAll})
+	page, err := pagequery.New(productionSnapshots, "production").Query(pagequery.Request{ModelCode: "payment-route-admin", Region: "cn", Environment: "production", Type: pagequery.TypeAll})
 	if err != nil {
 		t.Fatalf("query production page: %v", err)
 	}
 	if len(page.Rows) != 1 || page.Rows[0].Values["priority"] != "7" || page.CollectionRevision != 8 {
 		t.Fatalf("production page = %+v", page)
 	}
-	configService := configserver.New(productionSnapshots, distributionSource)
+	configService := configserver.New(productionSnapshots, distributionSource, "production")
 	sdkClient, err := finconfig.New(finconfig.Config{
 		ConsumerID: "payment-service", ClientID: "pod-1", Region: "cn", Environment: "production",
 		Transport: configTransport{service: configService},
@@ -1413,7 +1413,7 @@ func TestRealMySQLBaseFinalTransaction(t *testing.T) {
 	if _, err := stagingSnapshots.Refresh(ctx, "staging"); err != nil {
 		t.Fatalf("refresh staging snapshot: %v", err)
 	}
-	stagingPage, err := pagequery.New(stagingSnapshots).Query(pagequery.Request{ModelCode: "payment-route-admin", Region: "cn", Environment: "staging", Type: pagequery.TypeOnlyData})
+	stagingPage, err := pagequery.New(stagingSnapshots, "staging").Query(pagequery.Request{ModelCode: "payment-route-admin", Region: "cn", Environment: "staging", Type: pagequery.TypeOnlyData})
 	if err != nil {
 		t.Fatalf("query staging page: %v", err)
 	}

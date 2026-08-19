@@ -2,6 +2,7 @@ package configserver_test
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -15,7 +16,7 @@ func TestGetSnapshotReturnsOnlyAuthorizedChangedCollections(t *testing.T) {
 	t.Parallel()
 
 	manager, key := serverSnapshot(t)
-	service := configserver.New(manager, staticAuthorizer{collections: []string{"payment_routes"}})
+	service := configserver.New(manager, staticAuthorizer{collections: []string{"payment_routes"}}, "production")
 	response, err := service.GetSnapshot(context.Background(), configserver.GetSnapshotRequest{
 		ConsumerID: "payment-service", ClientID: "pod-1", Region: "cn", Environment: "production",
 	})
@@ -54,11 +55,22 @@ func TestGetSnapshotReturnsOnlyAuthorizedChangedCollections(t *testing.T) {
 	}
 }
 
+func TestGetSnapshotReportsUnavailableBeforeInitialSnapshot(t *testing.T) {
+	t.Parallel()
+	service := configserver.New(emptySnapshotProvider{}, staticAuthorizer{}, "production")
+	_, err := service.GetSnapshot(context.Background(), configserver.GetSnapshotRequest{
+		ConsumerID: "payment-service", ClientID: "pod", Region: "cn", Environment: "production",
+	})
+	if !errors.Is(err, configserver.ErrSnapshotUnavailable) {
+		t.Fatalf("missing snapshot error = %v", err)
+	}
+}
+
 func TestGetSnapshotEnforcesSubscriptionAndEnvironment(t *testing.T) {
 	t.Parallel()
 
 	manager, _ := serverSnapshot(t)
-	service := configserver.New(manager, staticAuthorizer{})
+	service := configserver.New(manager, staticAuthorizer{}, "production")
 	response, err := service.GetSnapshot(context.Background(), configserver.GetSnapshotRequest{ConsumerID: "other", ClientID: "pod", Region: "cn", Environment: "production", KnownVersions: []configserver.Version{{Collection: "old", Revision: 1, Digest: "digest"}}})
 	if err != nil {
 		t.Fatal(err)
@@ -71,10 +83,29 @@ func TestGetSnapshotEnforcesSubscriptionAndEnvironment(t *testing.T) {
 	}
 }
 
+func TestGetSnapshotRejectsSnapshotOutsideManagedEnvironment(t *testing.T) {
+	t.Parallel()
+	manager, err := snapshot.NewManager(serverSource{}, snapshot.IdentitySeed{
+		ServerEpoch: "epoch", ServerInstanceID: "server", SnapshotInstance: "wrong-environment",
+	}, serverClock{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manager.Refresh(context.Background(), "staging"); err != nil {
+		t.Fatal(err)
+	}
+	service := configserver.New(manager, staticAuthorizer{}, "production")
+	if _, err := service.GetSnapshot(context.Background(), configserver.GetSnapshotRequest{
+		ConsumerID: "payment-service", ClientID: "pod", Region: "cn", Environment: "staging",
+	}); err == nil {
+		t.Fatal("snapshot outside the managed environment was served")
+	}
+}
+
 func TestGetSnapshotSelectsPercentageRuleByStableClientBucket(t *testing.T) {
 	t.Parallel()
 	manager, key := rolloutServerSnapshot(t)
-	service := configserver.New(manager, staticAuthorizer{collections: []string{"payment_routes"}})
+	service := configserver.New(manager, staticAuthorizer{collections: []string{"payment_routes"}}, "production")
 
 	selected, err := service.GetSnapshot(context.Background(), configserver.GetSnapshotRequest{
 		ConsumerID: "payment-service", ClientID: "pod-10", Region: "cn", Environment: "production", Stage: "blue",
@@ -104,6 +135,10 @@ type staticAuthorizer struct{ collections []string }
 func (authorizer staticAuthorizer) AuthorizedCollections(context.Context, string) ([]string, error) {
 	return authorizer.collections, nil
 }
+
+type emptySnapshotProvider struct{}
+
+func (emptySnapshotProvider) Current() *snapshot.Snapshot { return nil }
 
 type serverSource struct{ input []snapshot.CollectionInput }
 

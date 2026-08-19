@@ -12,6 +12,11 @@ import (
 	overlay "github.com/asherzj/financial_configuration_center/internal/overlay/domain"
 )
 
+var (
+	ErrManagedEnvironmentMismatch = errors.New("Config Server environment does not match the managed environment")
+	ErrSnapshotUnavailable        = errors.New("Config Server snapshot is unavailable")
+)
+
 type SnapshotProvider interface {
 	Current() *snapshot.Snapshot
 }
@@ -59,16 +64,17 @@ type GetSnapshotResponse struct {
 }
 
 type Service struct {
-	snapshots  SnapshotProvider
-	authorizer Authorizer
+	snapshots          SnapshotProvider
+	authorizer         Authorizer
+	managedEnvironment string
 }
 
-func New(snapshots SnapshotProvider, authorizer Authorizer) *Service {
-	return &Service{snapshots: snapshots, authorizer: authorizer}
+func New(snapshots SnapshotProvider, authorizer Authorizer, managedEnvironment string) *Service {
+	return &Service{snapshots: snapshots, authorizer: authorizer, managedEnvironment: strings.TrimSpace(managedEnvironment)}
 }
 
 func (service *Service) GetSnapshot(ctx context.Context, request GetSnapshotRequest) (GetSnapshotResponse, error) {
-	if service == nil || service.snapshots == nil || service.authorizer == nil {
+	if service == nil || service.snapshots == nil || service.authorizer == nil || service.managedEnvironment == "" {
 		return GetSnapshotResponse{}, errors.New("get snapshot: service dependencies are incomplete")
 	}
 	request.ConsumerID = strings.TrimSpace(request.ConsumerID)
@@ -79,13 +85,19 @@ func (service *Service) GetSnapshot(ctx context.Context, request GetSnapshotRequ
 	if request.ConsumerID == "" || request.ClientID == "" || request.Region == "" || request.Environment == "" {
 		return GetSnapshotResponse{}, errors.New("get snapshot: consumer, client, region, and environment are required")
 	}
+	if request.Environment != service.managedEnvironment {
+		return GetSnapshotResponse{}, fmt.Errorf("get snapshot: %w: got %q, want %q", ErrManagedEnvironmentMismatch, request.Environment, service.managedEnvironment)
+	}
 	bucket, err := overlay.ClientBucket(request.ConsumerID, request.ClientID)
 	if err != nil {
 		return GetSnapshotResponse{}, fmt.Errorf("get snapshot: %w", err)
 	}
 	current := service.snapshots.Current()
-	if current == nil || current.Environment() != request.Environment {
-		return GetSnapshotResponse{}, fmt.Errorf("get snapshot: environment %q is not loaded", request.Environment)
+	if current == nil {
+		return GetSnapshotResponse{}, fmt.Errorf("get snapshot: %w", ErrSnapshotUnavailable)
+	}
+	if current.Environment() != service.managedEnvironment {
+		return GetSnapshotResponse{}, fmt.Errorf("get snapshot: %w: snapshot for %q is not loaded", ErrManagedEnvironmentMismatch, service.managedEnvironment)
 	}
 	authorized, err := service.authorizer.AuthorizedCollections(ctx, request.ConsumerID)
 	if err != nil {

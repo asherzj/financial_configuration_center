@@ -9,6 +9,8 @@ import (
 	configgrpc "github.com/asherzj/financial_configuration_center/internal/configserver/grpc"
 	"github.com/asherzj/financial_configuration_center/internal/distribution/snapshot"
 	configv1 "github.com/asherzj/financial_configuration_center/kitex_gen/finconfig/config/v1"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 func TestDiagnosticsHandlerProjectsOnlySnapshotMetadata(t *testing.T) {
@@ -19,7 +21,7 @@ func TestDiagnosticsHandlerProjectsOnlySnapshotMetadata(t *testing.T) {
 		Collections:            []snapshot.CollectionDiagnostic{{Name: "routes", Revision: 8, Digest: catalog.Digest{Algorithm: "SHA-256", Value: "digest"}}},
 		FailedDependencyGroups: [][]string{{"routes", "options"}},
 	}}
-	handler, err := configgrpc.NewDiagnostics(provider)
+	handler, err := configgrpc.NewDiagnostics(provider, "production")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -30,6 +32,20 @@ func TestDiagnosticsHandlerProjectsOnlySnapshotMetadata(t *testing.T) {
 	collection, err := handler.GetCollectionStatus(context.Background(), &configv1.GetCollectionStatusRequest{Collection: "routes", Environment: "production"})
 	if err != nil || collection.Version.ConfigRevision != 8 || collection.Version.EffectiveDigest.Value != "digest" {
 		t.Fatalf("collection status = %+v, %v", collection, err)
+	}
+}
+
+func TestDiagnosticsRejectsSnapshotOutsideManagedEnvironment(t *testing.T) {
+	t.Parallel()
+	handler, err := configgrpc.NewDiagnostics(diagnosticsProvider{value: snapshot.Diagnostics{Environment: "staging"}}, "production")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := handler.GetSnapshotStatus(context.Background(), &configv1.GetSnapshotStatusRequest{}); status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("snapshot status error = %v", err)
+	}
+	if _, err := handler.GetCollectionStatus(context.Background(), &configv1.GetCollectionStatusRequest{Collection: "routes", Environment: "staging"}); status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("collection status error = %v", err)
 	}
 }
 

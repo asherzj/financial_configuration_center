@@ -10,6 +10,8 @@ import (
 	pagegrpc "github.com/asherzj/financial_configuration_center/internal/pagequery/grpc"
 	commonv1 "github.com/asherzj/financial_configuration_center/kitex_gen/finconfig/common/v1"
 	configv1 "github.com/asherzj/financial_configuration_center/kitex_gen/finconfig/config/v1"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 func TestQueryPageMapsCompleteAllMetadata(t *testing.T) {
@@ -70,14 +72,60 @@ func TestQueryPageMapsCompleteAllMetadata(t *testing.T) {
 	}
 }
 
+func TestQueryPageMapsManagedEnvironmentMismatchToFailedPrecondition(t *testing.T) {
+	t.Parallel()
+	handler, err := pagegrpc.New(&stubQuerier{err: pagequery.ErrManagedEnvironmentMismatch})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = handler.QueryPage(t.Context(), &configv1.QueryPageRequest{
+		ModelCode: "model", Scope: &commonv1.Scope{Region: "cn", Environment: "staging"},
+		QueryType: commonv1.QueryPageType_QUERY_PAGE_TYPE_ONLY_DATA,
+	})
+	if status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("managed-environment mismatch code = %s, error = %v", status.Code(err), err)
+	}
+}
+
+func TestQueryPageMapsMissingSnapshotToUnavailable(t *testing.T) {
+	t.Parallel()
+	handler, err := pagegrpc.New(&stubQuerier{err: pagequery.ErrSnapshotUnavailable})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = handler.QueryPage(t.Context(), &configv1.QueryPageRequest{
+		ModelCode: "model", Scope: &commonv1.Scope{Region: "cn", Environment: "production"},
+		QueryType: commonv1.QueryPageType_QUERY_PAGE_TYPE_ONLY_DATA,
+	})
+	if status.Code(err) != codes.Unavailable {
+		t.Fatalf("missing snapshot code = %s, error = %v", status.Code(err), err)
+	}
+}
+
+func TestQueryPageMapsMissingModelToNotFound(t *testing.T) {
+	t.Parallel()
+	handler, err := pagegrpc.New(&stubQuerier{err: pagequery.ErrNotFound})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = handler.QueryPage(t.Context(), &configv1.QueryPageRequest{
+		ModelCode: "missing-model", Scope: &commonv1.Scope{Region: "cn", Environment: "production"},
+		QueryType: commonv1.QueryPageType_QUERY_PAGE_TYPE_ONLY_DATA,
+	})
+	if status.Code(err) != codes.NotFound {
+		t.Fatalf("missing model code = %s, error = %v", status.Code(err), err)
+	}
+}
+
 type stubQuerier struct {
 	result pagequery.Result
 	last   pagequery.Request
+	err    error
 }
 
 func (querier *stubQuerier) Query(request pagequery.Request) (pagequery.Result, error) {
 	querier.last = request
-	return querier.result, nil
+	return querier.result, querier.err
 }
 
 func int32Pointer(value int32) *int32 { return &value }

@@ -11,7 +11,10 @@ import (
 	catalog "github.com/asherzj/financial_configuration_center/internal/catalog/domain"
 )
 
-var ErrHintQueueFull = errors.New("refresh hint queue is full")
+var (
+	ErrHintQueueFull              = errors.New("refresh hint queue is full")
+	ErrManagedEnvironmentMismatch = errors.New("refresh hint environment does not match the managed environment")
+)
 
 type HintTarget struct {
 	Collection   string
@@ -28,25 +31,31 @@ type RefreshHint struct {
 }
 
 type HintReceiverOptions struct {
-	QueueSize int
-	CacheSize int
-	DedupTTL  time.Duration
+	ManagedEnvironment string
+	QueueSize          int
+	CacheSize          int
+	DedupTTL           time.Duration
 }
 
 type HintReceiver struct {
-	manager SnapshotRefresher
-	clock   Clock
-	options HintReceiverOptions
-	queue   chan RefreshHint
-	mu      sync.Mutex
-	seen    map[string]time.Time
+	manager            SnapshotRefresher
+	clock              Clock
+	options            HintReceiverOptions
+	managedEnvironment string
+	queue              chan RefreshHint
+	mu                 sync.Mutex
+	seen               map[string]time.Time
 }
 
 func NewHintReceiver(manager SnapshotRefresher, options HintReceiverOptions, clock Clock) (*HintReceiver, error) {
-	if manager == nil || clock == nil || options.QueueSize <= 0 || options.CacheSize <= 0 || options.DedupTTL <= 0 {
-		return nil, errors.New("new hint receiver: manager, clock, and positive limits are required")
+	options.ManagedEnvironment = strings.TrimSpace(options.ManagedEnvironment)
+	if manager == nil || clock == nil || options.ManagedEnvironment == "" || options.QueueSize <= 0 || options.CacheSize <= 0 || options.DedupTTL <= 0 {
+		return nil, errors.New("new hint receiver: manager, managed environment, clock, and positive limits are required")
 	}
-	return &HintReceiver{manager: manager, clock: clock, options: options, queue: make(chan RefreshHint, options.QueueSize), seen: make(map[string]time.Time, options.CacheSize)}, nil
+	return &HintReceiver{
+		manager: manager, clock: clock, options: options, managedEnvironment: options.ManagedEnvironment,
+		queue: make(chan RefreshHint, options.QueueSize), seen: make(map[string]time.Time, options.CacheSize),
+	}, nil
 }
 
 func (receiver *HintReceiver) Notify(hint RefreshHint) error {
@@ -54,6 +63,9 @@ func (receiver *HintReceiver) Notify(hint RefreshHint) error {
 	hint.Environment = strings.TrimSpace(hint.Environment)
 	if hint.EventID == "" || hint.Environment == "" || len(hint.Targets) == 0 {
 		return errors.New("refresh hint event, environment, and targets are required")
+	}
+	if hint.Environment != receiver.managedEnvironment {
+		return fmt.Errorf("%w: got %q, want %q", ErrManagedEnvironmentMismatch, hint.Environment, receiver.managedEnvironment)
 	}
 	for index := range hint.Targets {
 		hint.Targets[index].Collection = strings.TrimSpace(hint.Targets[index].Collection)

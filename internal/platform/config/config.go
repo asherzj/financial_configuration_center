@@ -14,6 +14,7 @@ import (
 
 	platformmysql "github.com/asherzj/financial_configuration_center/internal/platform/mysql"
 	platformrpc "github.com/asherzj/financial_configuration_center/internal/platform/rpc"
+	"github.com/google/uuid"
 	"gopkg.in/yaml.v3"
 )
 
@@ -34,7 +35,7 @@ func (duration *Duration) UnmarshalYAML(node *yaml.Node) error {
 type ServiceConfig struct {
 	ServiceName             string          `yaml:"serviceName"`
 	Version                 string          `yaml:"version"`
-	Environment             string          `yaml:"environment"`
+	RuntimeMode             string          `yaml:"runtimeMode"`
 	InstanceID              string          `yaml:"instanceId"`
 	OperationsListenAddress string          `yaml:"operationsListenAddress"`
 	BackendSocket           string          `yaml:"backendSocket"`
@@ -42,6 +43,12 @@ type ServiceConfig struct {
 	MySQL                   MySQLConfig     `yaml:"mysql"`
 	Telemetry               TelemetryConfig `yaml:"telemetry"`
 	Auth                    AuthConfig      `yaml:"auth"`
+}
+
+type ConfigServerConfig struct {
+	ServiceConfig      `yaml:",inline"`
+	ManagedEnvironment string `yaml:"managedEnvironment"`
+	ServerEpoch        string `yaml:"serverEpoch"`
 }
 
 type MySQLConfig struct {
@@ -63,15 +70,8 @@ type AuthConfig struct {
 
 func Load(reader io.Reader, environment []string) (ServiceConfig, error) {
 	config := defaults()
-	if reader != nil {
-		decoder := yaml.NewDecoder(reader)
-		decoder.KnownFields(true)
-		if err := decoder.Decode(&config); err != nil {
-			return ServiceConfig{}, fmt.Errorf("load FinConfig YAML: %w", err)
-		}
-		if err := rejectTrailingYAML(decoder); err != nil {
-			return ServiceConfig{}, err
-		}
+	if err := decodeStrict(reader, &config); err != nil {
+		return ServiceConfig{}, err
 	}
 	if err := applyEnvironment(&config, environment); err != nil {
 		return ServiceConfig{}, err
@@ -82,9 +82,26 @@ func Load(reader io.Reader, environment []string) (ServiceConfig, error) {
 	return config, nil
 }
 
+func LoadConfigServer(reader io.Reader, environment []string) (ConfigServerConfig, error) {
+	config := ConfigServerConfig{ServiceConfig: defaults()}
+	if err := decodeStrict(reader, &config); err != nil {
+		return ConfigServerConfig{}, err
+	}
+	if err := applyEnvironment(&config.ServiceConfig, environment); err != nil {
+		return ConfigServerConfig{}, err
+	}
+	if err := applyConfigServerEnvironment(&config, environment); err != nil {
+		return ConfigServerConfig{}, err
+	}
+	if err := config.Validate(); err != nil {
+		return ConfigServerConfig{}, err
+	}
+	return config, nil
+}
+
 func defaults() ServiceConfig {
 	return ServiceConfig{
-		Environment: "development", OperationsListenAddress: "127.0.0.1:9090",
+		RuntimeMode: "development", OperationsListenAddress: "127.0.0.1:9090",
 		ShutdownTimeout: Duration{30 * time.Second},
 		MySQL:           MySQLConfig{MaxOpenConnections: 20, MaxIdleConnections: 10, ConnectionMaxLifetime: Duration{5 * time.Minute}, ConnectionMaxIdleTime: Duration{time.Minute}},
 		Telemetry:       TelemetryConfig{TraceSampleRatio: 0.1},
@@ -95,10 +112,10 @@ func (config ServiceConfig) Validate() error {
 	if strings.TrimSpace(config.ServiceName) == "" || strings.TrimSpace(config.Version) == "" || strings.TrimSpace(config.InstanceID) == "" {
 		return errors.New("service name, version, and instance ID are required")
 	}
-	switch config.Environment {
+	switch config.RuntimeMode {
 	case "development", "test", "production":
 	default:
-		return errors.New("environment must be development, test, or production")
+		return errors.New("runtime mode must be development, test, or production")
 	}
 	if config.ShutdownTimeout.Duration <= 0 || config.ShutdownTimeout.Duration > 5*time.Minute {
 		return errors.New("shutdown timeout must be positive and at most five minutes")
@@ -124,12 +141,35 @@ func (config ServiceConfig) Validate() error {
 		if err != nil || endpoint.Host == "" || endpoint.Scheme != "http" && endpoint.Scheme != "https" {
 			return errors.New("OTLP endpoint must be an absolute HTTP(S) URL")
 		}
-		if config.Environment == "production" && endpoint.Scheme != "https" {
+		if config.RuntimeMode == "production" && endpoint.Scheme != "https" {
 			return errors.New("production OTLP endpoint must use HTTPS")
 		}
 	}
-	if config.Environment == "production" && config.Auth.DevAuthEnabled {
+	if config.RuntimeMode == "production" && config.Auth.DevAuthEnabled {
 		return errors.New("development authentication cannot be enabled in production")
+	}
+	return nil
+}
+
+func (config ConfigServerConfig) Validate() error {
+	if err := config.ServiceConfig.Validate(); err != nil {
+		return err
+	}
+	if config.ServiceName != "config-server" {
+		return errors.New("Config Server service name must be config-server")
+	}
+	if config.ManagedEnvironment == "" || config.ManagedEnvironment != strings.TrimSpace(config.ManagedEnvironment) {
+		return errors.New("Config Server managed environment is required without surrounding whitespace")
+	}
+	epoch, err := uuid.Parse(config.ServerEpoch)
+	if err != nil || epoch == uuid.Nil {
+		return errors.New("Config Server server epoch must be a non-zero UUID")
+	}
+	if config.MySQL.DSN == "" {
+		return errors.New("Config Server MySQL DSN is required")
+	}
+	if config.BackendSocket == "" {
+		return errors.New("Config Server backend Unix socket is required")
 	}
 	return nil
 }
@@ -143,7 +183,7 @@ func (config MySQLConfig) DatabaseConfig() platformmysql.Config {
 
 func (config ServiceConfig) SafeSummary() string {
 	summary := map[string]any{
-		"service": config.ServiceName, "version": config.Version, "environment": config.Environment, "instanceId": config.InstanceID,
+		"service": config.ServiceName, "version": config.Version, "runtimeMode": config.RuntimeMode, "instanceId": config.InstanceID,
 		"operationsListenAddress": config.OperationsListenAddress, "backendSocket": config.BackendSocket,
 		"shutdownTimeout": config.ShutdownTimeout.String(), "mysqlConfigured": config.MySQL.DSN != "",
 		"mysqlMaxOpenConnections": config.MySQL.MaxOpenConnections, "traceSampleRatio": config.Telemetry.TraceSampleRatio,
@@ -153,17 +193,20 @@ func (config ServiceConfig) SafeSummary() string {
 	return string(encoded)
 }
 
+func (config ConfigServerConfig) SafeSummary() string {
+	var summary map[string]any
+	_ = json.Unmarshal([]byte(config.ServiceConfig.SafeSummary()), &summary)
+	summary["managedEnvironment"] = config.ManagedEnvironment
+	summary["serverEpoch"] = config.ServerEpoch
+	encoded, _ := json.Marshal(summary)
+	return string(encoded)
+}
+
 func applyEnvironment(config *ServiceConfig, values []string) error {
-	environment := make(map[string]string, len(values))
-	for _, entry := range values {
-		parts := strings.SplitN(entry, "=", 2)
-		if len(parts) == 2 {
-			environment[parts[0]] = parts[1]
-		}
-	}
+	environment := environmentMap(values)
 	stringOverrides := map[string]*string{
 		"FINCONFIG_SERVICE_NAME": &config.ServiceName, "FINCONFIG_VERSION": &config.Version,
-		"FINCONFIG_ENVIRONMENT": &config.Environment, "FINCONFIG_INSTANCE_ID": &config.InstanceID,
+		"FINCONFIG_RUNTIME_MODE": &config.RuntimeMode, "FINCONFIG_INSTANCE_ID": &config.InstanceID,
 		"FINCONFIG_OPERATIONS_LISTEN_ADDRESS": &config.OperationsListenAddress, "FINCONFIG_BACKEND_SOCKET": &config.BackendSocket,
 		"FINCONFIG_MYSQL_DSN": &config.MySQL.DSN, "FINCONFIG_OTLP_ENDPOINT": &config.Telemetry.OTLPEndpoint,
 	}
@@ -212,6 +255,40 @@ func applyEnvironment(config *ServiceConfig, values []string) error {
 		config.Auth.DevAuthEnabled = parsed
 	}
 	return nil
+}
+
+func applyConfigServerEnvironment(config *ConfigServerConfig, values []string) error {
+	environment := environmentMap(values)
+	if value, exists := environment["FINCONFIG_MANAGED_ENVIRONMENT"]; exists {
+		config.ManagedEnvironment = value
+	}
+	if value, exists := environment["FINCONFIG_SERVER_EPOCH"]; exists {
+		config.ServerEpoch = value
+	}
+	return nil
+}
+
+func environmentMap(values []string) map[string]string {
+	environment := make(map[string]string, len(values))
+	for _, entry := range values {
+		parts := strings.SplitN(entry, "=", 2)
+		if len(parts) == 2 {
+			environment[parts[0]] = parts[1]
+		}
+	}
+	return environment
+}
+
+func decodeStrict(reader io.Reader, target any) error {
+	if reader == nil {
+		return nil
+	}
+	decoder := yaml.NewDecoder(reader)
+	decoder.KnownFields(true)
+	if err := decoder.Decode(target); err != nil {
+		return fmt.Errorf("load FinConfig YAML: %w", err)
+	}
+	return rejectTrailingYAML(decoder)
 }
 
 func rejectTrailingYAML(decoder *yaml.Decoder) error {

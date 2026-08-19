@@ -19,7 +19,7 @@ func TestRefreshHandlerAcceptsHintIntoReceiver(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	receiver, err := snapshot.NewHintReceiver(manager, snapshot.HintReceiverOptions{QueueSize: 1, CacheSize: 10, DedupTTL: time.Minute}, handlerClock{})
+	receiver, err := snapshot.NewHintReceiver(manager, snapshot.HintReceiverOptions{ManagedEnvironment: "production", QueueSize: 1, CacheSize: 10, DedupTTL: time.Minute}, handlerClock{})
 	if err != nil {
 		t.Fatal(err)
 	}

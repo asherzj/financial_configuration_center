@@ -17,6 +17,7 @@ tool (
 require (
 	github.com/cloudwego/kitex v0.16.2
 	github.com/go-sql-driver/mysql v1.10.0
+	github.com/google/uuid v1.6.0
 	github.com/pressly/goose/v3 v3.27.3
 	github.com/prometheus/client_golang v1.23.2
 	go.opentelemetry.io/otel v1.44.0
@@ -54,7 +55,6 @@ require (
 	github.com/go-logr/stdr v1.2.2 // indirect
 	github.com/golang/protobuf v1.5.4 // indirect
 	github.com/google/pprof v0.0.0-20240727154555-813a5fbdbec8 // indirect
-	github.com/google/uuid v1.6.0 // indirect
 	github.com/iancoleman/strcase v0.3.0 // indirect
 	github.com/jhump/protoreflect v1.8.2 // indirect
 	github.com/jinzhu/inflection v1.0.0 // indirect
@@ -68,6 +68,7 @@ require (
 	github.com/pmezard/go-difflib v1.0.1-0.20181226105442-5d4384ee4fb2 // indirect
 	github.com/prometheus/client_model v0.6.2 // indirect
 	github.com/prometheus/common v0.66.1 // indirect
+	github.com/prometheus/procfs v0.21.1 // indirect
 	github.com/sethvargo/go-retry v0.4.0 // indirect
 	github.com/stretchr/testify v1.11.1 // indirect
 	github.com/tidwall/gjson v1.17.3 // indirect

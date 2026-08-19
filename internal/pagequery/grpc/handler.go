@@ -54,7 +54,18 @@ func (handler *Handler) QueryPage(_ context.Context, request *configv1.QueryPage
 		Stage: request.Scope.Stage, PreviewBucket: request.PreviewBucket, Type: queryType, Page: page, Conditions: conditions,
 	})
 	if err != nil {
-		return nil, status.Error(codes.InvalidArgument, err.Error())
+		switch {
+		case errors.Is(err, pagequery.ErrManagedEnvironmentMismatch):
+			return nil, status.Error(codes.FailedPrecondition, err.Error())
+		case errors.Is(err, pagequery.ErrSnapshotUnavailable):
+			return nil, status.Error(codes.Unavailable, "page query snapshot is not available")
+		case errors.Is(err, pagequery.ErrNotFound):
+			return nil, status.Error(codes.NotFound, err.Error())
+		case errors.Is(err, pagequery.ErrInvalidArgument):
+			return nil, status.Error(codes.InvalidArgument, err.Error())
+		default:
+			return nil, status.Error(codes.Internal, "page query failed")
+		}
 	}
 	modelRevision, err := revisionInt64(result.ModelRevision)
 	if err != nil {

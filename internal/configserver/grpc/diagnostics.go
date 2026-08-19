@@ -16,17 +16,24 @@ type DiagnosticsProvider interface {
 	Diagnostics() snapshot.Diagnostics
 }
 
-type DiagnosticsHandler struct{ provider DiagnosticsProvider }
+type DiagnosticsHandler struct {
+	provider           DiagnosticsProvider
+	managedEnvironment string
+}
 
-func NewDiagnostics(provider DiagnosticsProvider) (*DiagnosticsHandler, error) {
-	if provider == nil {
-		return nil, errors.New("new diagnostics handler: provider is required")
+func NewDiagnostics(provider DiagnosticsProvider, managedEnvironment string) (*DiagnosticsHandler, error) {
+	managedEnvironment = strings.TrimSpace(managedEnvironment)
+	if provider == nil || managedEnvironment == "" {
+		return nil, errors.New("new diagnostics handler: provider and managed environment are required")
 	}
-	return &DiagnosticsHandler{provider: provider}, nil
+	return &DiagnosticsHandler{provider: provider, managedEnvironment: managedEnvironment}, nil
 }
 
 func (handler *DiagnosticsHandler) GetSnapshotStatus(context.Context, *configv1.GetSnapshotStatusRequest) (*configv1.GetSnapshotStatusResponse, error) {
 	diagnostics := handler.provider.Diagnostics()
+	if diagnostics.Environment != handler.managedEnvironment {
+		return nil, status.Error(codes.FailedPrecondition, "managed environment snapshot is not loaded")
+	}
 	failed := make([]string, len(diagnostics.FailedDependencyGroups))
 	for index, group := range diagnostics.FailedDependencyGroups {
 		failed[index] = strings.Join(group, ",")
@@ -43,9 +50,12 @@ func (handler *DiagnosticsHandler) GetCollectionStatus(_ context.Context, reques
 	if request == nil || strings.TrimSpace(request.Collection) == "" || strings.TrimSpace(request.Environment) == "" {
 		return nil, status.Error(codes.InvalidArgument, "collection and environment are required")
 	}
+	if request.Environment != handler.managedEnvironment {
+		return nil, status.Error(codes.FailedPrecondition, "requested environment is not managed by this server")
+	}
 	diagnostics := handler.provider.Diagnostics()
-	if diagnostics.Environment != request.Environment {
-		return nil, status.Error(codes.FailedPrecondition, "requested environment is not loaded")
+	if diagnostics.Environment != handler.managedEnvironment {
+		return nil, status.Error(codes.FailedPrecondition, "managed environment snapshot is not loaded")
 	}
 	for _, collection := range diagnostics.Collections {
 		if collection.Name != request.Collection {

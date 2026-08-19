@@ -2,6 +2,7 @@ package pagequery_test
 
 import (
 	"context"
+	"errors"
 	"reflect"
 	"testing"
 	"time"
@@ -16,7 +17,7 @@ func TestAllReturnsRowsAndModelDrivenInteractionMetadata(t *testing.T) {
 	t.Parallel()
 
 	manager, model, keys := querySnapshot(t)
-	querier := pagequery.New(manager)
+	querier := pagequery.New(manager, "production")
 	one := int32(1)
 	result, err := querier.Query(pagequery.Request{
 		ModelCode: model.Code(), Region: "cn", Environment: "production", Type: pagequery.TypeAll,
@@ -59,7 +60,7 @@ func TestOnlyDataOmitsInteractionMetadataAndRejectsInvalidPage(t *testing.T) {
 	t.Parallel()
 
 	manager, model, _ := querySnapshot(t)
-	querier := pagequery.New(manager)
+	querier := pagequery.New(manager, "production")
 	result, err := querier.Query(pagequery.Request{ModelCode: model.Code(), Region: "cn", Environment: "production", Type: pagequery.TypeOnlyData})
 	if err != nil {
 		t.Fatalf("Query ONLY_DATA: %v", err)
@@ -76,10 +77,50 @@ func TestOnlyDataOmitsInteractionMetadataAndRejectsInvalidPage(t *testing.T) {
 	}
 }
 
+func TestQueryRejectsSnapshotOutsideManagedEnvironment(t *testing.T) {
+	t.Parallel()
+	manager, err := snapshot.NewManager(source{}, snapshot.IdentitySeed{
+		ServerEpoch: "epoch", ServerInstanceID: "server", SnapshotInstance: "wrong-environment",
+	}, clock{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manager.Refresh(context.Background(), "staging"); err != nil {
+		t.Fatal(err)
+	}
+	_, err = pagequery.New(manager, "production").Query(pagequery.Request{
+		ModelCode: "payment-route-admin", Region: "cn", Environment: "staging", Type: pagequery.TypeOnlyData,
+	})
+	if !errors.Is(err, pagequery.ErrManagedEnvironmentMismatch) {
+		t.Fatalf("cross-environment query error = %v", err)
+	}
+}
+
+func TestQueryReportsUnavailableBeforeInitialSnapshot(t *testing.T) {
+	t.Parallel()
+	_, err := pagequery.New(emptySnapshotProvider{}, "production").Query(pagequery.Request{
+		ModelCode: "payment-route-admin", Region: "cn", Environment: "production", Type: pagequery.TypeOnlyData,
+	})
+	if !errors.Is(err, pagequery.ErrSnapshotUnavailable) {
+		t.Fatalf("missing snapshot error = %v", err)
+	}
+}
+
+func TestQueryReportsMissingModelAsNotFound(t *testing.T) {
+	t.Parallel()
+	manager, _, _ := querySnapshot(t)
+	_, err := pagequery.New(manager, "production").Query(pagequery.Request{
+		ModelCode: "missing-model", Region: "cn", Environment: "production", Type: pagequery.TypeOnlyData,
+	})
+	if !errors.Is(err, pagequery.ErrNotFound) {
+		t.Fatalf("missing model error = %v", err)
+	}
+}
+
 func TestOnlyDataCompilesTypedConditionsBeforePagination(t *testing.T) {
 	t.Parallel()
 	manager, model, keys := querySnapshot(t)
-	querier := pagequery.New(manager)
+	querier := pagequery.New(manager, "production")
 	pageNumber := int32(99)
 	result, err := querier.Query(pagequery.Request{
 		ModelCode: model.Code(), Region: "cn", Environment: "production", Type: pagequery.TypeOnlyData,
@@ -129,7 +170,7 @@ func TestQueryPageReturnsScopeEffectiveValuesAndBaseDiff(t *testing.T) {
 	if _, err := manager.Refresh(context.Background(), "production"); err != nil {
 		t.Fatal(err)
 	}
-	querier := pagequery.New(manager)
+	querier := pagequery.New(manager, "production")
 	blue, err := querier.Query(pagequery.Request{ModelCode: model.Code(), Region: "cn", Environment: "production", Stage: "blue", Type: pagequery.TypeAll})
 	if err != nil {
 		t.Fatalf("Query blue: %v", err)
@@ -194,7 +235,7 @@ func TestAllResolvesCollectionOptionsAndMasksSensitiveProjection(t *testing.T) {
 	if _, err := manager.Refresh(context.Background(), "production"); err != nil {
 		t.Fatal(err)
 	}
-	result, err := pagequery.New(manager).Query(pagequery.Request{ModelCode: model.Code(), Region: "cn", Environment: "production", Type: pagequery.TypeAll})
+	result, err := pagequery.New(manager, "production").Query(pagequery.Request{ModelCode: model.Code(), Region: "cn", Environment: "production", Type: pagequery.TypeAll})
 	if err != nil {
 		t.Fatalf("Query ALL: %v", err)
 	}
@@ -205,7 +246,7 @@ func TestAllResolvesCollectionOptionsAndMasksSensitiveProjection(t *testing.T) {
 	if _, leaked := result.Rows[0].Values["secret"]; leaked || !reflect.DeepEqual(result.Rows[0].MaskedFields, []string{"secret"}) {
 		t.Fatalf("sensitive row leaked = %+v", result.Rows[0])
 	}
-	if _, err := pagequery.New(manager).Query(pagequery.Request{
+	if _, err := pagequery.New(manager, "production").Query(pagequery.Request{
 		ModelCode: model.Code(), Region: "cn", Environment: "production", Type: pagequery.TypeOnlyData,
 		Conditions: []pagequery.FilterCondition{{Field: "provider", Operator: catalog.FilterExact, Value: &pagequery.ScalarValue{Canonical: "missing"}}},
 	}); err == nil {
@@ -218,6 +259,10 @@ type source struct{ input []snapshot.CollectionInput }
 func (source source) LoadEnvironment(context.Context, string) ([]snapshot.CollectionInput, error) {
 	return source.input, nil
 }
+
+type emptySnapshotProvider struct{}
+
+func (emptySnapshotProvider) Current() *snapshot.Snapshot { return nil }
 
 type clock struct{}
 

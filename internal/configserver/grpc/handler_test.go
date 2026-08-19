@@ -26,7 +26,7 @@ func TestWatchSendsInitialWatermarkAndHonorsCancellation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	handler, err := configgrpc.NewWithWatch(stubApplication{}, hub, watchAuthorizer{})
+	handler, err := configgrpc.NewWithWatch(stubApplication{}, hub, watchAuthorizer{}, "production")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -37,6 +37,26 @@ func TestWatchSendsInitialWatermarkAndHonorsCancellation(t *testing.T) {
 	}
 	if len(stream.sent) != 1 || stream.sent[0].Snapshot.ServerEpoch != "epoch" {
 		t.Fatalf("watch events = %+v", stream.sent)
+	}
+}
+
+func TestWatchRejectsAnotherManagedEnvironmentBeforeSubscription(t *testing.T) {
+	t.Parallel()
+	manager, err := snapshot.NewManager(hintHandlerSource{}, snapshot.IdentitySeed{ServerEpoch: "epoch", ServerInstanceID: "server", SnapshotInstance: "instance"}, handlerClock{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	hub, err := snapshot.NewWatchHub(manager, snapshot.WatchHubOptions{QueueSize: 1, MaxSubscribers: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler, err := configgrpc.NewWithWatch(stubApplication{}, hub, watchAuthorizer{}, "production")
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = handler.Watch(&configv1.WatchRequest{ConsumerId: "consumer", ClientId: "client", Scope: scope("staging")}, &watchStream{ctx: context.Background()})
+	if status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("managed-environment mismatch code = %s, err %v", status.Code(err), err)
 	}
 }
 
@@ -51,7 +71,7 @@ func TestGetSnapshotMapsDeterministicCollectionPayload(t *testing.T) {
 			Records: []configserver.Record{{RecordKey: "key", RecordRevision: 8, Data: map[string]string{"priority": "7", "route_code": "visa-cn"}}},
 		}},
 	}}
-	handler, err := configgrpc.New(application)
+	handler, err := configgrpc.New(application, "production")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -85,7 +105,7 @@ func TestGetSnapshotMapsDeterministicCollectionPayload(t *testing.T) {
 func TestGetSnapshotRejectsMissingScopeAtTransportBoundary(t *testing.T) {
 	t.Parallel()
 
-	handler, err := configgrpc.New(stubApplication{})
+	handler, err := configgrpc.New(stubApplication{}, "production")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -95,12 +115,59 @@ func TestGetSnapshotRejectsMissingScopeAtTransportBoundary(t *testing.T) {
 	}
 }
 
+func TestGetSnapshotMapsManagedEnvironmentMismatchToFailedPrecondition(t *testing.T) {
+	t.Parallel()
+	handler, err := configgrpc.New(stubApplication{err: configserver.ErrManagedEnvironmentMismatch}, "production")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = handler.GetSnapshot(context.Background(), &configv1.GetSnapshotRequest{
+		ConsumerId: "consumer", ClientId: "client", Scope: scope("staging"),
+	})
+	if status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("managed-environment mismatch code = %s, err %v", status.Code(err), err)
+	}
+}
+
+func TestGetSnapshotMapsMissingSnapshotToUnavailable(t *testing.T) {
+	t.Parallel()
+	handler, err := configgrpc.New(stubApplication{err: configserver.ErrSnapshotUnavailable}, "production")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = handler.GetSnapshot(context.Background(), &configv1.GetSnapshotRequest{
+		ConsumerId: "consumer", ClientId: "client", Scope: scope("production"),
+	})
+	if status.Code(err) != codes.Unavailable {
+		t.Fatalf("missing snapshot code = %s, err %v", status.Code(err), err)
+	}
+}
+
+func TestUnimplementedReadsStillRejectAnotherManagedEnvironment(t *testing.T) {
+	t.Parallel()
+	handler, err := configgrpc.New(stubApplication{}, "production")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := handler.DiffVersions(context.Background(), &configv1.DiffVersionsRequest{
+		ConsumerId: "consumer", ClientId: "client", Scope: scope("staging"),
+	}); status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("DiffVersions cross-environment code = %s, err %v", status.Code(err), err)
+	}
+	if _, err := handler.GetCollections(context.Background(), &configv1.GetCollectionsRequest{
+		ConsumerId: "consumer", ClientId: "client", Scope: scope("staging"), Collections: []string{"routes"},
+	}); status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("GetCollections cross-environment code = %s, err %v", status.Code(err), err)
+	}
+}
+
 type stubApplication struct {
 	response configserver.GetSnapshotResponse
+	err      error
 }
 
 func (application stubApplication) GetSnapshot(context.Context, configserver.GetSnapshotRequest) (configserver.GetSnapshotResponse, error) {
-	return application.response, nil
+	return application.response, application.err
 }
 
 func scope(environment string) *commonv1.Scope {
