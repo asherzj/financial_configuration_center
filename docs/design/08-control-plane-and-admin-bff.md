@@ -17,7 +17,7 @@ Control Plane 是唯一配置写入口，承载：
 
 ## 2. Control Plane 进程结构
 
-`cmd/control-plane` composition root 注入 MySQL UnitOfWork、catalog/release modules、identity policy、clock、ID generator、outbox relay 和 observability。内部 run groups 共享根 context，但错误策略不同：
+`admin/cmd/control-plane/main.go` 是薄进程入口；唯一 composition root 位于 `admin/internal/runtime/controlplane`，注入各 application 自己声明的事务端口及其 MySQL adapter、catalog/release modules、identity policy、clock、ID generator、outbox relay 和 observability。禁止构造覆盖所有 bounded context 的 god UnitOfWork。内部 run groups 共享根 context，但错误策略不同：
 
 - RPC server 启动失败：进程退出。
 - DB 启动 capability 失败：进程退出。
@@ -54,6 +54,8 @@ Control Plane 是唯一配置写入口，承载：
 ## 4. Admin BFF 定位
 
 Admin BFF 是浏览器与 Kitex 的协议 adapter，使用 Go 标准库 `net/http`。V1 不引入 Node 服务端或第二套领域实现。
+
+`admin/cmd/admin-bff/main.go` 也是薄进程入口，唯一装配位于 `admin/internal/runtime/bff`。BFF runtime 只能注入 BFF application 声明的 session、identity 和 RPC ports；禁止直接装配 Catalog/Release/Access/Audit/Outbox application 或 MySQL adapter。
 
 BFF 负责：
 
@@ -184,7 +186,7 @@ ChangeDraft 只在浏览器内存在。BFF 不提供草稿存储。创建发布�
 
 ## 10. 前端静态资源
 
-生产构建将 `web/admin-console/dist` 复制或 embed 到 BFF 镜像。除 `/api/`、health 和静态 asset 外的 GET 回退到 `index.html` 支持 React Router；带扩展名的不存在 asset 返回 404，不回退 HTML。
+生产构建将独立 `frontend/dist` artifact 复制到 BFF 镜像；Admin Go module 不通过源码相对 import 或 embed 指令耦合 Frontend 源目录。除 `/api/`、health 和静态 asset 外的 GET 回退到 `index.html` 支持 React Router；带扩展名的不存在 asset 返回 404，不回退 HTML。
 
 静态 asset 使用内容 hash 和一年 immutable cache；`index.html` no-cache。
 

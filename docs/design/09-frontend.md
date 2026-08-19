@@ -59,7 +59,7 @@ V1 不使用 Redux/Zustand。服务器状态进 TanStack Query；路由状态进
 ## 3. 目录结构
 
 ```text
-web/admin-console/src/
+frontend/src/
   app/                 # router、providers、error boundary
   api/                 # OpenAPI DTO/client、error mapping
   layouts/             # shell、navigation、scope switcher

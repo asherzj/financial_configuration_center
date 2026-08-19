@@ -2,13 +2,13 @@
 
 ## 1. 领域划分
 
-V1 使用一个 Go module 和三个核心领域模块，不拆成独立微服务领域仓库：
+V1 使用 multi-module monorepo。三个核心领域分别由产品 module 内的 bounded context 拥有，不拆成独立部署微服务，也不建立跨产品共享领域 module：
 
-- Catalog：CollectionDefinition、ConfigurationRecord、Subscription、ConfigurationModel。
-- Distribution：CollectionVersion、ChangeLogEntry、ConfigurationSnapshot、RefreshHint。
-- Release：ReleaseTemplate、ReleaseOrder、ReleaseItem、ReleaseStepState。
+- Admin/Catalog：CollectionDefinition、ConfigurationRecord、Subscription、ConfigurationModel。
+- Server/Snapshot：CollectionVersion 读取投影、ConfigurationSnapshot、RefreshHint 与 Watch。
+- Admin/Release：ReleaseTemplate、ReleaseOrder、ReleaseItem、ReleaseStepState。
 
-PageQuery 是消费 Catalog + Distribution 只读模型的深模块，不拥有写模型。Identity、Audit、Outbox 是支撑能力。
+ChangeLogEntry 与 CollectionVersion 的写入语义由 Admin 发布事务拥有，Server 只加载其 read projection。PageQuery 是 Server 内消费单一 Snapshot 的深模块，不拥有写模型。Identity、Audit、Outbox 是支撑能力，但 Audit/Outbox 的业务用例仍归 Admin，不能因共享基础设施而上移到 Platform。
 
 ## 2. 公共值对象
 

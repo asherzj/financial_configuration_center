@@ -4,13 +4,14 @@
 
 ## 当前设计门禁
 
-当前状态为 **IMPLEMENTATION_READY**：用户已明确要求按本文档完成全部实现。编码 Agent 按 `12-implementation-plan.md` 的垂直切片执行；遇到新的 P0 架构事实时先 grill、更新 ADR/设计和契约测试，再继续实现。
+当前状态为 **ARCHITECTURE_MIGRATION_REQUIRED**：用户已确认采用 multi-module monorepo。编码 Agent 必须先按 `00a-multi-module-monorepo.md` 完成模块迁移；迁移期间不得继续向旧的根 `internal/`、`cmd/`、`sdk/` 或 `web/admin-console/` 增加功能。每个迁移批次保持行为不变、独立测试、commit 并 push。迁移完成且独立 module 门禁通过后恢复垂直功能切片。
 
 ### 用户已明确确认
 
 - V1 只实现 MySQL，不实现 PostgreSQL。
 - Go RPC 框架使用官方开源版 CloudWeGo Kitex。
 - 数据访问使用 GORM；数据库结构仍由版本化 migration 管理，禁止 AutoMigrate。
+- 仓库使用 multi-module monorepo；Frontend、Admin、Server、Client SDK 是独立产品 package，其中三个 Go 产品各自拥有 `go.mod` 并按 DDD bounded context 拆分。
 - 本阶段先完成规划与设计，不直接进入实现。
 
 ### 已接受的实现基线
@@ -23,7 +24,7 @@
 
 ## 已冻结的 V1 技术基线
 
-- 后端：Go 1.26.6，单 Go module monorepo。
+- 后端：Go 1.26.6，multi-module monorepo；根目录使用 `go.work`，产品 module 独立依赖、测试和发布。
 - RPC：官方开源 CloudWeGo Kitex `v0.16.2`，Protocol Buffers proto3，标准 gRPC/HTTP/2 wire protocol。
 - 数据库：MySQL 8.4.11 LTS 为主，MySQL 8.0.46 为兼容目标；V1 不实现 PostgreSQL。
 - 数据访问：GORM `v1.31.2`、`gorm.io/driver/mysql v1.6.0`、`github.com/go-sql-driver/mysql v1.10.0`；特殊锁和 revision 分配允许参数化原生 SQL。
@@ -33,7 +34,7 @@
 - 前端：Node 24 LTS、pnpm 11.4、React 19.2.8、TypeScript 5.9.3、Vite 8.x、Ant Design 6.5.2、React Router 8.3、TanStack Query 5.x。TypeScript 暂不升 6，因为 OpenAPI 类型生成器当前声明的兼容范围是 5.x。
 - 浏览器接入：Admin BFF 提供 HTTP/JSON；浏览器不直接连接 Kitex。
 
-进入 IMPLEMENTATION_READY 后，依赖必须在 `go.mod`、`go.sum` 和 `pnpm-lock.yaml` 中固定。若工具初始化时所列版本已无法解析，只允许选择同一主版本的稳定替代版本，并在变更前更新本文件和 ADR；禁止静默使用 `latest`。
+进入功能实现阶段后，依赖必须在每个 Go module 自己的 `go.mod`、`go.sum` 和根 `pnpm-lock.yaml` 中固定；根 `go.work` 不替代发布依赖声明。若工具初始化时所列版本已无法解析，只允许选择同一主版本的稳定替代版本，并在变更前更新本文件和 ADR；禁止静默使用 `latest`。
 
 ### 技术名词说明
 
@@ -44,19 +45,20 @@
 
 1. 根目录 [CONTEXT.md](../../CONTEXT.md)、[V1 executable spec](../specs/finconfig-v1.md) 与 [ADR](../adr/)；三者中的明确决策优先于早期详细设计。
 2. [整体设计](./00-overall-design.md)
-3. [契约与 RPC](./01-contracts-and-rpc.md)
-4. [领域模型与一致性](./02-domain-and-consistency.md)
-5. [规范类型参考](./A-canonical-model-reference.md)
-6. [MySQL、GORM 与 migration](./03-mysql-persistence.md)
-7. [配置读取服务](./04-config-server.md)
-8. [Go 客户端 SDK](./05-go-client-sdk.md)
-9. [QueryPage 低代码查询](./06-query-page.md)
-10. [发布工作流](./07-release-workflow.md)
-11. [控制面与 Admin BFF](./08-control-plane-and-admin-bff.md)
-12. [管理控制台前端](./09-frontend.md)
-13. [安全、可观测性与运行](./10-security-observability-operations.md)
-14. [测试与交付标准](./11-testing-and-delivery.md)
-15. [实施顺序与 Agent 任务包](./12-implementation-plan.md)
+3. [Multi-module monorepo 与代码归属](./00a-multi-module-monorepo.md)
+4. [契约与 RPC](./01-contracts-and-rpc.md)
+5. [领域模型与一致性](./02-domain-and-consistency.md)
+6. [规范类型参考](./A-canonical-model-reference.md)
+7. [MySQL、GORM 与 migration](./03-mysql-persistence.md)
+8. [配置读取服务](./04-config-server.md)
+9. [Go 客户端 SDK](./05-go-client-sdk.md)
+10. [QueryPage 低代码查询](./06-query-page.md)
+11. [发布工作流](./07-release-workflow.md)
+12. [控制面与 Admin BFF](./08-control-plane-and-admin-bff.md)
+13. [管理控制台前端](./09-frontend.md)
+14. [安全、可观测性与运行](./10-security-observability-operations.md)
+15. [测试与交付标准](./11-testing-and-delivery.md)
+16. [实施顺序与 Agent 任务包](./12-implementation-plan.md)
 
 领域术语必须遵循仓库根目录的 [CONTEXT.md](../../CONTEXT.md)。
 
@@ -66,16 +68,16 @@
 
 | 模块 | 详细设计 | 主要代码边界 | 模块拥有的语义 | 必须先读 |
 |---|---|---|---|---|
-| Contract / Transport | `01-contracts-and-rpc.md` | `api/`、`gen/`、各 transport adapter | wire DTO、错误映射、兼容规则 | 00、02 |
-| Catalog | `02-domain-and-consistency.md`、`A-canonical-model-reference.md` | `internal/catalog/` | Collection、Record、Subscription、Model 与规范值 | 01 |
-| MySQL adapter | `03-mysql-persistence.md` | `internal/platform/mysql/`、`db/migrations/mysql/` | GORM 映射、事务、锁、约束、revision 分配 | 02、07 |
-| Distribution / Config Server | `04-config-server.md` | `internal/distribution/`、`cmd/config-server/` | 不可变 snapshot、刷新、版本、Watch | 02、03 |
-| Go SDK | `05-go-client-sdk.md` | `client/` | 本地 snapshot、索引查询、Watch/poll 自愈 | 01、04 |
-| PageQuery | `06-query-page.md` | `internal/pagequery/` | 模型编译、过滤、排序、分页、选项、脱敏 | 02、04 |
-| Release | `07-release-workflow.md` | `internal/release/` | ReleaseOrder 聚合、模板、步骤、效果与补偿 | 02、03 |
-| Control Plane / BFF | `08-control-plane-and-admin-bff.md` | `cmd/control-plane/`、`cmd/admin-bff/` | 用例装配、浏览器协议、安全边界 | 01、07、10 |
-| Admin Console | `09-frontend.md` | `web/admin-console/` | 动态页面、ChangeDraft、Diff、发布交互 | 01、06、08 |
-| Security / Operations | `10-security-observability-operations.md` | `internal/platform/identity/`、`internal/platform/observability/`、`deploy/` | 身份、审计、telemetry、运行生命周期 | 全部业务模块 |
+| Contract / Transport | `01-contracts-and-rpc.md` | `contracts/`、各产品 Interfaces adapter | wire DTO、错误映射、兼容规则 | 00、00a、02 |
+| Catalog | `02-domain-and-consistency.md`、`A-canonical-model-reference.md` | `admin/internal/catalog/` | Collection、Record、Subscription、Model 与规范值 | 00a、01 |
+| MySQL adapter | `03-mysql-persistence.md` | 各产品 `infrastructure/mysql/`、`platform/mysql/`、`admin/db/migrations/mysql/` | GORM 映射、事务、锁、约束、revision 分配 | 00a、02、07 |
+| Distribution / Config Server | `04-config-server.md` | `server/internal/snapshot/`、`server/internal/watch/`、`server/cmd/config-server/` | 不可变 snapshot、刷新、版本、Watch | 00a、02、03 |
+| Go SDK | `05-go-client-sdk.md` | `client_sdk/` | 本地 snapshot、索引查询、Watch/poll 自愈 | 00a、01、04 |
+| PageQuery | `06-query-page.md` | `server/internal/query/` | 模型编译、过滤、排序、分页、选项、脱敏 | 00a、02、04 |
+| Release | `07-release-workflow.md` | `admin/internal/release/` | ReleaseOrder 聚合、模板、步骤、效果与补偿 | 00a、02、03 |
+| Control Plane / BFF | `08-control-plane-and-admin-bff.md` | `admin/cmd/`、`admin/internal/` | 用例装配、浏览器协议、安全边界 | 00a、01、07、10 |
+| Admin Console | `09-frontend.md` | `frontend/` | 动态页面、ChangeDraft、Diff、发布交互 | 00a、01、06、08 |
+| Security / Operations | `10-security-observability-operations.md` | `platform/`、各产品 `runtime/`、`deploy/` | 通用认证机制、telemetry、运行生命周期；Audit 业务归 Admin | 00a、全部业务模块 |
 | Verification / Delivery | `11-testing-and-delivery.md`、`12-implementation-plan.md` | tests、CI、examples | tracer、contract、E2E、交付门禁 | 对应目标模块 |
 
 每个模块的公开 application 接口是主要测试表面；transport DTO、GORM struct 和 React DTO 只能在各自 adapter/UI 边界出现，不能成为跨模块共享模型。

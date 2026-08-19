@@ -2,7 +2,7 @@
 
 ## 1. 对外目标
 
-SDK 作为独立可 import 包 `client`，在业务进程内提供无网络热路径的结构化配置查询。所有状态属于 Client 实例，禁止 package 级可变单例。
+SDK module path 固定为 `github.com/asherzj/financial_configuration_center/client_sdk`，根 package 名固定为 `finconfig`。消费者使用 `import finconfig "github.com/asherzj/financial_configuration_center/client_sdk"`，在业务进程内获得无网络热路径的结构化配置查询。所有状态属于 Client 实例，禁止 package 级可变单例。
 
 ## 2. 对外接口
 

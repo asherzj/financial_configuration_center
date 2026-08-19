@@ -4,7 +4,7 @@
 
 V1 只支持 MySQL 8.4.11 LTS，并以 MySQL 8.0.46 作为兼容测试目标。所有表使用 InnoDB、`utf8mb4` 和显式二进制/大小写敏感 collation；标识字段优先 `ascii_bin`。
 
-GORM 只在 `internal/platform/mysql` adapter 中使用：
+GORM 只在产品 module 的 `infrastructure/mysql` adapter 中使用；`platform/mysql` 只提供连接、会话和 capability 检查原语等无领域语义的技术机制。Admin/Server 各自的 Infrastructure adapter 固定组合 `contracts/schema/mysql` manifest，形成调用方不能注入或跳过的完整 startup gate：
 
 - 禁止 AutoMigrate。
 - 禁止把 GORM model 传入领域或 application 模块。
@@ -201,10 +201,10 @@ relay 在短事务内使用 `SELECT ... FOR UPDATE SKIP LOCKED LIMIT ?` 领取�
 
 ## 8. Migration 策略
 
-- 路径 `db/migrations/mysql/`，文件名使用递增时间戳或六位序号，选定后不混用。
+- 路径 `admin/db/migrations/mysql/`，文件名使用递增时间戳或六位序号，选定后不混用。
 - 每个 migration 包含 Goose Up/Down；不可安全回退的数据 migration 可以让 Down 明确失败并在说明中记录。
 - 生产启动不自动执行 migration；独立命令或部署 job 执行。
-- `internal/platform/mysql/migrations` 维护构建内 expected version 与 16 张业务表 manifest；测试必须证明 version manifest 与 migration 文件集合完全一致、table manifest 与迁移后实际业务表完全一致，新增 migration/表时清单在同一提交更新。
+- `contracts/schema/mysql` 维护构建内 expected version 与 16 张业务表 manifest，Goose SQL 位于 `admin/db/migrations/mysql`；测试必须证明 version manifest 与 migration 文件集合完全一致、table manifest 与迁移后实际业务表完全一致，新增 migration/表时清单在同一协调变更中更新。
 - seed demo 与生产 migration 分开。生产 migration 除 global counter 不写业务数据。
 - migration contract test 从空库执行到最新，也从前一发布升级到最新。
 - 领域、审计与调度时间统一使用 `DATETIME(6)`，连接时区固定 UTC，避免 EffectiveUntil 的 2038 范围限制。

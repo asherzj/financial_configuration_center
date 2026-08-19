@@ -2,7 +2,7 @@
 
 ## 0. 启动门禁
 
-编码 Agent 首先读取 `docs/design/README.md` 的当前设计门禁。状态不是 `IMPLEMENTATION_READY` 时停止在设计审阅，不得执行 S0，不得把仓库内的草稿契约或实验代码视为已冻结实现。只有用户确认待确认技术栈和关键产品语义、并将门禁改为 IMPLEMENTATION_READY 后，才从 S0 开始。
+编码 Agent 首先读取 `docs/design/README.md` 的当前设计门禁。状态为 `ARCHITECTURE_MIGRATION_REQUIRED` 时，只执行 `00a-multi-module-monorepo.md` 的迁移批次，不得继续向旧单 module 路径增加功能。状态恢复为 `IMPLEMENTATION_READY` 后才继续下面的垂直切片。
 
 ## 1. 执行协议
 

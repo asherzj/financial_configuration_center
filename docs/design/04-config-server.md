@@ -6,7 +6,7 @@ Config Server 把 MySQL 中的可变事实转换为可并发读取的不可变 `
 
 ## 2. 进程组成
 
-`cmd/config-server` composition root 构造：
+`server/cmd/config-server/main.go` 是薄进程入口；唯一 composition root 位于 `server/internal/runtime`，负责构造：
 
 - 严格区分 RuntimeMode 与唯一的 ManagedEnvironment；
 - 只读 MySQL/GORM adapter；

@@ -107,6 +107,8 @@ format/lint
 -> dependency/license/secret/image scan
 ```
 
+Go 测试按 module 独立运行，随后再运行 workspace/compose 验收。根目录没有 `go.mod`，不得用根 `go test ./...` 假装覆盖全部 module；CI 必须显式枚举 Contracts、Platform、Admin、Server 和 Client SDK。每个支撑 module 先独立发布可解析 tag，依赖它的产品在后续 commit 更新精确版本，并从该 dependent commit 开始用 `GOWORK=off` 验证依赖闭合；`go.work` 测试不能代替这一门禁。依赖方向检查拒绝产品 module 之间的 Go import，并拒绝 Admin BFF 绕过自身 RPC port 导入 Control Plane 领域/application/infrastructure。
+
 命令由 Makefile 封装：
 
 ```bash

@@ -49,32 +49,22 @@ Outbox relay 在 V1 作为 `control-plane` 内的独立 run group 启动，接�
 
 ## 4. 仓库形态
 
+V1 使用 multi-module monorepo。Frontend、Admin、Server、Client SDK 是四个独立产品 package；Admin、Server、Client SDK 各自拥有 `go.mod`，根目录只用 `go.work` 做本地编排。完整依赖和发布规则见 `00a-multi-module-monorepo.md` 与 ADR 0008。
+
 ```text
-api/proto/finconfig/config/v1/       # Config、PageQuery RPC 契约
-api/proto/finconfig/control/v1/      # 元数据与 Release RPC 契约
-gen/go/                              # 固定版本工具生成，只读
-cmd/config-server/
-cmd/control-plane/
-cmd/admin-bff/
-client/                              # 可被外部 Go module import 的 SDK
-internal/catalog/                    # Collection、Record、Subscription、Model
-internal/distribution/               # Version、Snapshot、Refresh、Watch
-internal/pagequery/                   # 单快照 QueryPage 深模块
-internal/release/                     # ReleaseOrder 聚合与用例
-internal/access/                      # Sensitive reveal 跨域编排
-internal/platform/mysql/             # GORM persistence adapters
-internal/platform/identity/
-internal/platform/observability/
-internal/platform/outbox/
-web/admin-console/
-db/migrations/mysql/
+contracts/                           # 独立 Go module；proto/OpenAPI/generated/schema manifest
+platform/                            # 独立 Go module；无业务语义的技术模块
+admin/                               # 独立 Go module；Control Plane、BFF、migration
+server/                              # 独立 Go module；Snapshot、QueryPage、Watch
+client_sdk/                          # 独立、可外部 import 的 Go module
+frontend/                            # 独立 pnpm package
 deploy/
 examples/
 docs/design/
 docs/adr/
 ```
 
-领域包不得 import Kitex、protobuf、GORM、MySQL driver、HTTP framework 或具体日志实现。生成 DTO 只允许出现在 transport adapter。
+产品 module 不得互相 import。领域包不得 import Kitex、protobuf、GORM、MySQL driver、HTTP framework 或具体日志实现。生成 DTO 只允许出现在各产品 Interfaces adapter。
 
 ## 5. 模块图与依赖方向
 
@@ -90,13 +80,13 @@ flowchart TD
     DIST["Distribution module"] --> SNAP
     DIST --> READ["Catalog read model seam"]
     ACC["Access application"] --> APORT["Access-owned transaction port"]
-    CPORT --> MYSQL["MySQL/GORM adapter"]
+    CPORT --> MYSQL["Admin MySQL/GORM adapter"]
     RPORT --> MYSQL
     APORT --> MYSQL
-    READ --> MYSQL
+    READ --> SMYSQL["Server MySQL read adapter"]
 ```
 
-依赖只向领域和模块接口流动。每个 application package 声明它实际需要的 transaction port；禁止建立覆盖全系统的 god `UnitOfWork`/`Tx`。MySQL adapter 可以实现多个 application-owned port。MySQL、Kitex、HTTP 是 adapter，不向内层泄漏。
+依赖只向领域和模块接口流动。每个 application package 声明它实际需要的 transaction port；禁止建立覆盖全系统的 god `UnitOfWork`/`Tx`。同一产品内的 MySQL adapter 可以实现多个 application-owned port。MySQL、Kitex、HTTP 是 adapter，不向内层泄漏。Admin→Server 与 SDK→Server 只允许通过 RPC contract 建立运行时关系。
 
 ## 6. 核心写入路径
 
