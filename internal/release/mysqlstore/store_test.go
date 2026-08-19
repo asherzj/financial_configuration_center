@@ -1955,7 +1955,7 @@ type configTransport struct{ service *configserver.Service }
 func (transport configTransport) GetSnapshot(ctx context.Context, request finconfig.SnapshotRequest) (finconfig.SnapshotResponse, error) {
 	known := make([]configserver.Version, len(request.KnownVersions))
 	for index, version := range request.KnownVersions {
-		known[index] = configserver.Version{Collection: version.Collection, Revision: version.Revision, Digest: version.Digest}
+		known[index] = configserver.Version{Collection: version.Collection, Revision: catalog.ConfigRevision(version.Revision), Digest: version.Digest}
 	}
 	response, err := transport.service.GetSnapshot(ctx, configserver.GetSnapshotRequest{
 		ConsumerID: request.ConsumerID, ClientID: request.ClientID, Region: request.Region,
@@ -1973,9 +1973,9 @@ func (transport configTransport) GetSnapshot(ctx context.Context, request fincon
 		Collections: make([]finconfig.CollectionPayload, len(response.Collections)),
 	}
 	for index, collection := range response.Collections {
-		converted.Collections[index] = finconfig.CollectionPayload{Name: collection.Name, Revision: collection.Revision, Digest: collection.Digest, Records: make([]finconfig.Record, len(collection.Records))}
+		converted.Collections[index] = finconfig.CollectionPayload{Name: collection.Name, Revision: finconfig.ConfigRevision(collection.Revision), Digest: collection.Digest, Records: make([]finconfig.Record, len(collection.Records))}
 		for recordIndex, record := range collection.Records {
-			converted.Collections[index].Records[recordIndex] = finconfig.Record{Key: record.RecordKey, Revision: record.RecordRevision, Values: record.Data}
+			converted.Collections[index].Records[recordIndex] = finconfig.Record{Key: record.RecordKey, Revision: finconfig.ConfigRevision(record.RecordRevision), Values: record.Data}
 		}
 	}
 	return converted, nil

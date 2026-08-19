@@ -11,9 +11,6 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
-
-	catalog "github.com/asherzj/financial_configuration_center/internal/catalog/domain"
-	overlay "github.com/asherzj/financial_configuration_center/internal/overlay/domain"
 )
 
 type SnapshotIdentity struct {
@@ -25,7 +22,7 @@ type SnapshotIdentity struct {
 
 type Version struct {
 	Collection string
-	Revision   catalog.ConfigRevision
+	Revision   ConfigRevision
 	Digest     string
 }
 
@@ -40,13 +37,13 @@ type SnapshotRequest struct {
 
 type Record struct {
 	Key      string
-	Revision catalog.ConfigRevision
+	Revision ConfigRevision
 	Values   map[string]string
 }
 
 type CollectionPayload struct {
 	Name     string
-	Revision catalog.ConfigRevision
+	Revision ConfigRevision
 	Digest   string
 	Records  []Record
 }
@@ -115,7 +112,7 @@ type ChangeSet struct {
 }
 
 type collectionSnapshot struct {
-	revision catalog.ConfigRevision
+	revision ConfigRevision
 	digest   string
 	records  map[string]Record
 }
@@ -161,7 +158,7 @@ func New(config Config) (*Client, error) {
 	if config.ConsumerID == "" || config.ClientID == "" || config.Region == "" || config.Environment == "" || config.Transport == nil {
 		return nil, errors.New("new FinConfig client: consumer, client, region, environment, and transport are required")
 	}
-	bucket, err := overlay.ClientBucket(config.ConsumerID, config.ClientID)
+	bucket, err := clientBucket(config.ConsumerID, config.ClientID)
 	if err != nil {
 		return nil, fmt.Errorf("new FinConfig client: %w", err)
 	}
@@ -478,8 +475,8 @@ func buildCandidate(response SnapshotResponse, before *clientSnapshot) (*clientS
 			return nil, fmt.Errorf("FinConfig candidate: collection %q has invalid digest", payload.Name)
 		}
 		view := collectionSnapshot{revision: payload.Revision, digest: payload.Digest, records: make(map[string]Record, len(payload.Records))}
-		domainRecords := make([]catalog.ConfigurationRecord, len(payload.Records))
-		for index, source := range payload.Records {
+		digestRecords := make([]Record, 0, len(payload.Records))
+		for _, source := range payload.Records {
 			if source.Key == "" || source.Revision == 0 || source.Revision > payload.Revision {
 				return nil, fmt.Errorf("FinConfig candidate: collection %q has invalid record identity or revision", payload.Name)
 			}
@@ -488,13 +485,13 @@ func buildCandidate(response SnapshotResponse, before *clientSnapshot) (*clientS
 			}
 			record := cloneRecord(source)
 			view.records[record.Key] = record
-			domainRecords[index] = catalog.ConfigurationRecord{RecordKey: record.Key, Data: record.Values}
+			digestRecords = append(digestRecords, record)
 		}
-		digest, err := catalog.ComputeBaseDigest(domainRecords)
+		digest, err := computeBaseDigest(digestRecords)
 		if err != nil {
 			return nil, fmt.Errorf("FinConfig candidate: collection %q digest input: %w", payload.Name, err)
 		}
-		if digest.Value != payload.Digest {
+		if digest != payload.Digest {
 			return nil, fmt.Errorf("FinConfig candidate: collection %q digest mismatch", payload.Name)
 		}
 		candidate.collections[payload.Name] = view

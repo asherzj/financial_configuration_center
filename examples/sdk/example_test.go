@@ -2,10 +2,12 @@ package sdk_test
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"time"
 
-	catalog "github.com/asherzj/financial_configuration_center/internal/catalog/domain"
 	"github.com/asherzj/financial_configuration_center/sdk/finconfig"
 )
 
@@ -76,10 +78,12 @@ func (transport staticTransport) GetSnapshot(context.Context, finconfig.Snapshot
 
 func fixtureTransport(region string) finconfig.Transport {
 	record := finconfig.Record{Key: "route-a", Revision: 1, Values: map[string]string{"code": "route-a", "channel": "VISA", "priority": "1", "enabled": "true"}}
-	digest, _ := catalog.ComputeBaseDigest([]catalog.ConfigurationRecord{{RecordKey: record.Key, Data: record.Values}})
+	payload, _ := json.Marshal([]any{[]any{record.Key, record.Values}})
+	sum := sha256.Sum256(payload)
+	digest := hex.EncodeToString(sum[:])
 	return staticTransport{response: finconfig.SnapshotResponse{
 		Identity:    finconfig.SnapshotIdentity{ServerEpoch: "demo-epoch", ServerInstanceID: "demo-server-" + region, SnapshotInstance: "demo-snapshot-" + region, Generation: 1},
 		Environment: "production",
-		Collections: []finconfig.CollectionPayload{{Name: "payment_routes", Revision: 1, Digest: digest.Value, Records: []finconfig.Record{record}}},
+		Collections: []finconfig.CollectionPayload{{Name: "payment_routes", Revision: 1, Digest: digest, Records: []finconfig.Record{record}}},
 	}}
 }

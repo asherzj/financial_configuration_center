@@ -6,7 +6,6 @@ import (
 	"testing"
 	"time"
 
-	catalog "github.com/asherzj/financial_configuration_center/internal/catalog/domain"
 	"github.com/asherzj/financial_configuration_center/sdk/finconfig"
 )
 
@@ -117,7 +116,7 @@ func refreshedClient(t *testing.T, records []finconfig.Record) *finconfig.Client
 
 func snapshotForRecords(t *testing.T, generation uint64, records ...finconfig.Record) finconfig.SnapshotResponse {
 	t.Helper()
-	revision := catalog.ConfigRevision(generation)
+	revision := finconfig.ConfigRevision(generation)
 	for _, record := range records {
 		if record.Revision > revision {
 			revision = record.Revision

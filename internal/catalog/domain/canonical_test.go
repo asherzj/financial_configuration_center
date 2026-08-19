@@ -113,6 +113,9 @@ func TestBaseDigestIsStableAcrossInputAndMapOrder(t *testing.T) {
 	if first.Algorithm != "SHA-256" || len(first.Value) != 64 {
 		t.Fatalf("unexpected digest: %+v", first)
 	}
+	if first.Value != "70b79f915bffea02dbd2e1f92974af6c8d1b53585d89327a838cb5b2999e678d" {
+		t.Fatalf("non-empty protocol digest = %s", first.Value)
+	}
 
 	empty, err := domain.ComputeBaseDigest(nil)
 	if err != nil {

@@ -2,12 +2,15 @@ package finconfig_test
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
+	"sort"
 	"sync"
 	"testing"
 	"time"
 
-	catalog "github.com/asherzj/financial_configuration_center/internal/catalog/domain"
 	"github.com/asherzj/financial_configuration_center/sdk/finconfig"
 )
 
@@ -95,6 +98,7 @@ func TestClientRefreshPublishesImmutableSnapshotAndRetainsLastKnownGood(t *testi
 	if err := client.Refresh(context.Background()); err != nil {
 		t.Fatalf("Refresh: %v", err)
 	}
+	record.Values["priority"] = "mutated-transport-alias"
 	got, ok := client.GetByKey("payment_routes", record.Key)
 	if !ok || got.Values["priority"] != "7" {
 		t.Fatalf("GetByKey = %+v, %t", got, ok)
@@ -289,13 +293,16 @@ func (transport *stubTransport) GetSnapshot(_ context.Context, request finconfig
 
 func digestFor(t *testing.T, records ...finconfig.Record) string {
 	t.Helper()
-	domainRecords := make([]catalog.ConfigurationRecord, len(records))
-	for index, record := range records {
-		domainRecords[index] = catalog.ConfigurationRecord{RecordKey: record.Key, Data: record.Values}
+	ordered := append([]finconfig.Record(nil), records...)
+	sort.Slice(ordered, func(left, right int) bool { return ordered[left].Key < ordered[right].Key })
+	payload := make([]any, len(ordered))
+	for index, record := range ordered {
+		payload[index] = []any{record.Key, record.Values}
 	}
-	digest, err := catalog.ComputeBaseDigest(domainRecords)
+	encoded, err := json.Marshal(payload)
 	if err != nil {
 		t.Fatal(err)
 	}
-	return digest.Value
+	digest := sha256.Sum256(encoded)
+	return hex.EncodeToString(digest[:])
 }

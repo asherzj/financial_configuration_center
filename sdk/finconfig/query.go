@@ -8,8 +8,6 @@ import (
 	"strconv"
 	"strings"
 	"time"
-
-	catalog "github.com/asherzj/financial_configuration_center/internal/catalog/domain"
 )
 
 var (
@@ -57,7 +55,7 @@ func (row ReadonlyRow) CloneMap() map[string]string { return cloneValues(row.val
 
 type VersionView struct {
 	Collection string
-	Revision   catalog.ConfigRevision
+	Revision   ConfigRevision
 	Digest     string
 	Identity   SnapshotIdentity
 }
