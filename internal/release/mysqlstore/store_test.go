@@ -20,9 +20,11 @@ import (
 	"testing"
 	"time"
 
+	configv1 "github.com/asherzj/financial_configuration_center/contracts/kitex_gen/finconfig/config/v1"
 	access "github.com/asherzj/financial_configuration_center/internal/access/application"
 	accessmysqlstore "github.com/asherzj/financial_configuration_center/internal/access/mysqlstore"
 	"github.com/asherzj/financial_configuration_center/internal/adminbff"
+	bffrpc "github.com/asherzj/financial_configuration_center/internal/adminbff/infrastructure/rpc"
 	"github.com/asherzj/financial_configuration_center/internal/audit"
 	auditmysqlstore "github.com/asherzj/financial_configuration_center/internal/audit/mysqlstore"
 	catalogapp "github.com/asherzj/financial_configuration_center/internal/catalog/application"
@@ -35,12 +37,15 @@ import (
 	"github.com/asherzj/financial_configuration_center/internal/outbox"
 	outboxmysqlstore "github.com/asherzj/financial_configuration_center/internal/outbox/mysqlstore"
 	"github.com/asherzj/financial_configuration_center/internal/pagequery"
+	pagegrpc "github.com/asherzj/financial_configuration_center/internal/pagequery/grpc"
+	platformauth "github.com/asherzj/financial_configuration_center/internal/platform/auth"
 	platformmysql "github.com/asherzj/financial_configuration_center/internal/platform/mysql"
 	"github.com/asherzj/financial_configuration_center/internal/platform/mysql/migrations"
 	"github.com/asherzj/financial_configuration_center/internal/release/application"
 	release "github.com/asherzj/financial_configuration_center/internal/release/domain"
 	"github.com/asherzj/financial_configuration_center/internal/release/mysqlstore"
 	"github.com/asherzj/financial_configuration_center/sdk/finconfig"
+	"github.com/cloudwego/kitex/client/callopt"
 	drivermysql "github.com/go-sql-driver/mysql"
 )
 
@@ -1244,7 +1249,15 @@ func TestRealMySQLHTTPWalkingSkeleton(t *testing.T) {
 	if _, err := manager.Refresh(ctx, "production"); err != nil {
 		t.Fatal(err)
 	}
-	handler, err := adminbff.New(pagequery.New(manager, "production"), service, httpActor{})
+	pageHandler, err := pagegrpc.New(pagequery.New(manager, "production"), allowBFFPageQueryAuthorizer{}, "production")
+	if err != nil {
+		t.Fatal(err)
+	}
+	pageClient, err := bffrpc.NewPageQueryClient(inProcessPageQueryClient{handler: pageHandler})
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler, err := adminbff.New(pageClient, service, httpActor{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1961,6 +1974,20 @@ type httpActor struct{}
 
 func (httpActor) Authenticate(*http.Request) (adminbff.Principal, error) {
 	return adminbff.Principal{Subject: "operator@example.com"}, nil
+}
+
+type allowBFFPageQueryAuthorizer struct{}
+
+func (allowBFFPageQueryAuthorizer) AuthorizePageQuery(context.Context, platformauth.Scope) error {
+	return nil
+}
+
+type inProcessPageQueryClient struct {
+	handler *pagegrpc.Handler
+}
+
+func (client inProcessPageQueryClient) QueryPage(ctx context.Context, request *configv1.QueryPageRequest, _ ...callopt.Option) (*configv1.QueryPageResponse, error) {
+	return client.handler.QueryPage(ctx, request)
 }
 
 func postJSON(t *testing.T, handler http.Handler, path, idempotency string, body any) *httptest.ResponseRecorder {

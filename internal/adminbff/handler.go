@@ -7,18 +7,18 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"reflect"
 	"strconv"
 	"strings"
 	"time"
 
 	access "github.com/asherzj/financial_configuration_center/internal/access/application"
+	bffapp "github.com/asherzj/financial_configuration_center/internal/adminbff/application"
 	"github.com/asherzj/financial_configuration_center/internal/audit"
 	catalogapp "github.com/asherzj/financial_configuration_center/internal/catalog/application"
 	catalog "github.com/asherzj/financial_configuration_center/internal/catalog/domain"
-	readmodel "github.com/asherzj/financial_configuration_center/internal/distribution/readmodel"
 	"github.com/asherzj/financial_configuration_center/internal/distribution/snapshot"
 	"github.com/asherzj/financial_configuration_center/internal/outbox"
-	"github.com/asherzj/financial_configuration_center/internal/pagequery"
 	platformauth "github.com/asherzj/financial_configuration_center/internal/platform/auth"
 	"github.com/asherzj/financial_configuration_center/internal/release/application"
 	release "github.com/asherzj/financial_configuration_center/internal/release/domain"
@@ -35,10 +35,6 @@ type Principal struct {
 
 type Authenticator interface {
 	Authenticate(*http.Request) (Principal, error)
-}
-
-type PageQueries interface {
-	Query(pagequery.Request) (pagequery.Result, error)
 }
 
 type ReleaseCommands interface {
@@ -83,7 +79,7 @@ type CatalogAdmin interface {
 }
 
 type Handler struct {
-	queries     PageQueries
+	queries     bffapp.PageQueryPort
 	releases    ReleaseCommands
 	sensitive   SensitiveAccess
 	outbox      OutboxOperations
@@ -94,32 +90,32 @@ type Handler struct {
 	mux         *http.ServeMux
 }
 
-func NewWithOutbox(queries PageQueries, releases ReleaseCommands, auth Authenticator, operations OutboxOperations, sensitive ...SensitiveAccess) (*Handler, error) {
+func NewWithOutbox(queries bffapp.PageQueryPort, releases ReleaseCommands, auth Authenticator, operations OutboxOperations, sensitive ...SensitiveAccess) (*Handler, error) {
 	return newWithOperations(queries, releases, auth, operations, nil, nil, nil, sensitive...)
 }
 
-func NewWithOperations(queries PageQueries, releases ReleaseCommands, auth Authenticator, operations OutboxOperations, diagnostics SnapshotDiagnostics, sensitive ...SensitiveAccess) (*Handler, error) {
+func NewWithOperations(queries bffapp.PageQueryPort, releases ReleaseCommands, auth Authenticator, operations OutboxOperations, diagnostics SnapshotDiagnostics, sensitive ...SensitiveAccess) (*Handler, error) {
 	if diagnostics == nil {
 		return nil, errors.New("new Admin BFF: snapshot diagnostics are required")
 	}
 	return newWithOperations(queries, releases, auth, operations, diagnostics, nil, nil, sensitive...)
 }
 
-func NewWithAdminOperations(queries PageQueries, releases ReleaseCommands, auth Authenticator, operations OutboxOperations, diagnostics SnapshotDiagnostics, audits AuditQueries, sensitive ...SensitiveAccess) (*Handler, error) {
+func NewWithAdminOperations(queries bffapp.PageQueryPort, releases ReleaseCommands, auth Authenticator, operations OutboxOperations, diagnostics SnapshotDiagnostics, audits AuditQueries, sensitive ...SensitiveAccess) (*Handler, error) {
 	if diagnostics == nil || audits == nil {
 		return nil, errors.New("new Admin BFF: snapshot diagnostics and audit queries are required")
 	}
 	return newWithOperations(queries, releases, auth, operations, diagnostics, audits, nil, sensitive...)
 }
 
-func NewWithCatalogOperations(queries PageQueries, releases ReleaseCommands, auth Authenticator, operations OutboxOperations, diagnostics SnapshotDiagnostics, audits AuditQueries, catalogAdmin CatalogAdmin, sensitive ...SensitiveAccess) (*Handler, error) {
+func NewWithCatalogOperations(queries bffapp.PageQueryPort, releases ReleaseCommands, auth Authenticator, operations OutboxOperations, diagnostics SnapshotDiagnostics, audits AuditQueries, catalogAdmin CatalogAdmin, sensitive ...SensitiveAccess) (*Handler, error) {
 	if diagnostics == nil || audits == nil || catalogAdmin == nil {
 		return nil, errors.New("new Admin BFF: diagnostics, audit queries, and catalog admin are required")
 	}
 	return newWithOperations(queries, releases, auth, operations, diagnostics, audits, catalogAdmin, sensitive...)
 }
 
-func newWithOperations(queries PageQueries, releases ReleaseCommands, auth Authenticator, operations OutboxOperations, diagnostics SnapshotDiagnostics, audits AuditQueries, catalogAdmin CatalogAdmin, sensitive ...SensitiveAccess) (*Handler, error) {
+func newWithOperations(queries bffapp.PageQueryPort, releases ReleaseCommands, auth Authenticator, operations OutboxOperations, diagnostics SnapshotDiagnostics, audits AuditQueries, catalogAdmin CatalogAdmin, sensitive ...SensitiveAccess) (*Handler, error) {
 	if operations == nil {
 		return nil, errors.New("new Admin BFF: outbox operations are required")
 	}
@@ -765,8 +761,8 @@ func outboxEventResponse(event outbox.Event) map[string]any {
 	return result
 }
 
-func New(queries PageQueries, releases ReleaseCommands, auth Authenticator, sensitive ...SensitiveAccess) (*Handler, error) {
-	if queries == nil || releases == nil || auth == nil {
+func New(queries bffapp.PageQueryPort, releases ReleaseCommands, auth Authenticator, sensitive ...SensitiveAccess) (*Handler, error) {
+	if queries == nil || isNilDependency(queries) || releases == nil || auth == nil {
 		return nil, errors.New("new Admin BFF: queries, releases, and authenticator are required")
 	}
 	if len(sensitive) > 1 {
@@ -784,6 +780,16 @@ func New(queries PageQueries, releases ReleaseCommands, auth Authenticator, sens
 		handler.mux.HandleFunc("POST /api/v1/sensitive-fields/reveal", handler.revealSensitiveField)
 	}
 	return handler, nil
+}
+
+func isNilDependency(value any) bool {
+	reflected := reflect.ValueOf(value)
+	switch reflected.Kind() {
+	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Pointer, reflect.Slice:
+		return reflected.IsNil()
+	default:
+		return false
+	}
 }
 
 type revealSensitiveFieldRequest struct {
@@ -885,28 +891,28 @@ func (handler *Handler) queryPage(writer http.ResponseWriter, request *http.Requ
 	if !decodeJSON(writer, request, &body) {
 		return
 	}
-	queryType := pagequery.QueryType(body.QueryType)
-	conditions := make([]pagequery.FilterCondition, len(body.Conditions))
+	queryType := bffapp.QueryType(body.QueryType)
+	conditions := make([]bffapp.FilterCondition, len(body.Conditions))
 	for index, condition := range body.Conditions {
-		mapped := pagequery.FilterCondition{Field: condition.Field, Operator: readmodel.FilterOperator(condition.Operator), Set: make([]pagequery.ScalarValue, len(condition.Set))}
+		mapped := bffapp.FilterCondition{Field: condition.Field, Operator: bffapp.FilterOperator(condition.Operator), Set: make([]bffapp.ScalarValue, len(condition.Set))}
 		if condition.Value != nil {
-			mapped.Value = &pagequery.ScalarValue{Canonical: *condition.Value}
+			mapped.Value = &bffapp.ScalarValue{Canonical: *condition.Value}
 		}
 		if condition.Lower != nil {
-			mapped.Lower = &pagequery.ScalarValue{Canonical: *condition.Lower}
+			mapped.Lower = &bffapp.ScalarValue{Canonical: *condition.Lower}
 		}
 		if condition.Upper != nil {
-			mapped.Upper = &pagequery.ScalarValue{Canonical: *condition.Upper}
+			mapped.Upper = &bffapp.ScalarValue{Canonical: *condition.Upper}
 		}
 		for valueIndex, value := range condition.Set {
-			mapped.Set[valueIndex] = pagequery.ScalarValue{Canonical: value}
+			mapped.Set[valueIndex] = bffapp.ScalarValue{Canonical: value}
 		}
 		conditions[index] = mapped
 	}
-	result, err := handler.queries.Query(pagequery.Request{
+	result, err := handler.queries.QueryPage(request.Context(), bffapp.QueryRequest{
 		ModelCode: body.ModelCode, Region: body.Scope.Region, Environment: body.Scope.Environment,
 		Stage: body.Scope.Stage, PreviewBucket: body.PreviewBucket, Type: queryType,
-		Page: pagequery.PageSpec{Number: body.PageNumber, Size: body.PageSize}, Conditions: conditions,
+		Page: bffapp.PageSpec{Number: body.PageNumber, Size: body.PageSize}, Conditions: conditions,
 	})
 	if err != nil {
 		writeDomainError(writer, err)
@@ -1122,7 +1128,7 @@ func writeDomainError(writer http.ResponseWriter, err error) {
 		writeError(writer, http.StatusNotFound, "NOT_FOUND", err.Error())
 	case errors.Is(err, access.ErrFailedPrecondition):
 		writeError(writer, http.StatusPreconditionFailed, "FAILED_PRECONDITION", err.Error())
-	case errors.Is(err, pagequery.ErrInvalidArgument):
+	case errors.Is(err, bffapp.ErrPageQueryInvalid):
 		writeError(writer, http.StatusBadRequest, "INVALID_ARGUMENT", err.Error())
 	case errors.Is(err, release.ErrIdempotencyKeyReused):
 		writeError(writer, http.StatusConflict, "IDEMPOTENCY_KEY_REUSED", err.Error())
@@ -1190,7 +1196,7 @@ func releaseDetail(view application.OrderView) map[string]any {
 	}
 }
 
-func queryPageResponse(result pagequery.Result) map[string]any {
+func queryPageResponse(result bffapp.QueryResult) map[string]any {
 	rows := make([]map[string]any, len(result.Rows))
 	for index, row := range result.Rows {
 		rows[index] = map[string]any{

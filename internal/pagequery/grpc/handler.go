@@ -203,6 +203,11 @@ func fromScalar(source *configv1.ScalarValue) (pagequery.ScalarValue, error) {
 
 func fromFieldType(value commonv1.FieldType) (readmodel.FieldType, error) {
 	switch value {
+	case commonv1.FieldType_FIELD_TYPE_UNSPECIFIED:
+		// Admin HTTP filter values are canonical strings and do not repeat the
+		// model field type. The application validates and canonicalizes them
+		// against the compiled model field.
+		return "", nil
 	case commonv1.FieldType_FIELD_TYPE_STRING:
 		return readmodel.FieldTypeString, nil
 	case commonv1.FieldType_FIELD_TYPE_INT64:

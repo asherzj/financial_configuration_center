@@ -11,13 +11,13 @@ import (
 
 	access "github.com/asherzj/financial_configuration_center/internal/access/application"
 	"github.com/asherzj/financial_configuration_center/internal/adminbff"
+	bffapp "github.com/asherzj/financial_configuration_center/internal/adminbff/application"
 	"github.com/asherzj/financial_configuration_center/internal/audit"
 	catalogapp "github.com/asherzj/financial_configuration_center/internal/catalog/application"
 	catalog "github.com/asherzj/financial_configuration_center/internal/catalog/domain"
 	readmodel "github.com/asherzj/financial_configuration_center/internal/distribution/readmodel"
 	"github.com/asherzj/financial_configuration_center/internal/distribution/snapshot"
 	"github.com/asherzj/financial_configuration_center/internal/outbox"
-	"github.com/asherzj/financial_configuration_center/internal/pagequery"
 	"github.com/asherzj/financial_configuration_center/internal/release/application"
 	release "github.com/asherzj/financial_configuration_center/internal/release/domain"
 )
@@ -25,14 +25,14 @@ import (
 func TestBrowserBaseReleaseJourneyRoutes(t *testing.T) {
 	t.Parallel()
 
-	queries := &queryStub{result: pagequery.Result{
-		ModelCode: "model", ModelName: "Model", QueryType: pagequery.TypeAll, PageNumber: 1, PageSize: 20,
-		InteractionFields: []pagequery.InteractionField{{
-			Name: "id", DisplayName: "ID", Type: readmodel.FieldTypeString, UIControl: readmodel.UIControlInput,
-			AutoFill:        &readmodel.AutoFillRule{Field: "id", Source: readmodel.AutoFillUUID},
-			ValidationRules: []readmodel.ValidationRule{{Kind: readmodel.ValidationRegex, Params: map[string]string{"pattern": "^[a-z]+$"}, Message: "lowercase"}},
+	queries := &queryStub{result: bffapp.QueryResult{
+		ModelCode: "model", ModelName: "Model", QueryType: bffapp.QueryTypeAll, PageNumber: 1, PageSize: 20,
+		InteractionFields: []bffapp.InteractionField{{
+			Name: "id", DisplayName: "ID", Type: bffapp.FieldTypeString, UIControl: bffapp.UIControlInput,
+			AutoFill:        &bffapp.AutoFillRule{Source: bffapp.AutoFillUUID},
+			ValidationRules: []bffapp.ValidationRule{{Kind: bffapp.ValidationRegex, Params: map[string]string{"pattern": "^[a-z]+$"}, Message: "lowercase"}},
 		}},
-		ReleaseTypes: []pagequery.ReleaseType{{Code: "direct", Name: "Direct", TemplateCode: "base-final", Available: true}},
+		ReleaseTypes: []bffapp.ReleaseType{{Code: "direct", Name: "Direct", TemplateCode: "base-final", Available: true}},
 	}}
 	releases := &releaseStub{
 		created: application.OrderView{ID: "order-1", Status: release.OrderInProgress, CurrentStepCode: "base-apply", CurrentStep: release.StepBaseApply, Revision: 1},
@@ -47,7 +47,7 @@ func TestBrowserBaseReleaseJourneyRoutes(t *testing.T) {
 		"modelCode": "model", "scope": map[string]any{"region": "cn", "environment": "production"}, "queryType": "ALL",
 		"conditions": []any{map[string]any{"field": "id", "operator": "EXACT", "value": "active"}},
 	})
-	if queryResponse.Code != http.StatusOK || queries.last.Region != "cn" || queries.last.Environment != "production" || queries.last.Type != pagequery.TypeAll {
+	if queryResponse.Code != http.StatusOK || queries.last.Region != "cn" || queries.last.Environment != "production" || queries.last.Type != bffapp.QueryTypeAll {
 		t.Fatalf("query response=%d command=%+v body=%s", queryResponse.Code, queries.last, queryResponse.Body.String())
 	}
 	if !bytes.Contains(queryResponse.Body.Bytes(), []byte(`"releaseTypes":[{"available":true,"code":"direct","name":"Direct","templateCode":"base-final"}]`)) {
@@ -104,9 +104,17 @@ func TestBFFRequiresAuthenticationAndStrictJSON(t *testing.T) {
 	}
 }
 
+func TestBFFRejectsTypedNilPageQueryPort(t *testing.T) {
+	t.Parallel()
+	var queries *queryStub
+	if _, err := adminbff.New(queries, &releaseStub{}, authenticator{}); err == nil {
+		t.Fatal("expected typed nil PageQuery port rejection")
+	}
+}
+
 func TestBFFMapsInvalidPageQueryToBadRequest(t *testing.T) {
 	t.Parallel()
-	handler, err := adminbff.New(&queryStub{err: pagequery.ErrInvalidArgument}, &releaseStub{}, authenticator{})
+	handler, err := adminbff.New(&queryStub{err: bffapp.ErrPageQueryInvalid}, &releaseStub{}, authenticator{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -357,12 +365,12 @@ func (authenticator authenticator) Authenticate(*http.Request) (adminbff.Princip
 }
 
 type queryStub struct {
-	result pagequery.Result
-	last   pagequery.Request
+	result bffapp.QueryResult
+	last   bffapp.QueryRequest
 	err    error
 }
 
-func (stub *queryStub) Query(request pagequery.Request) (pagequery.Result, error) {
+func (stub *queryStub) QueryPage(_ context.Context, request bffapp.QueryRequest) (bffapp.QueryResult, error) {
 	stub.last = request
 	return stub.result, stub.err
 }

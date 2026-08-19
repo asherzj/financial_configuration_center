@@ -75,6 +75,30 @@ func TestQueryPageMapsCompleteAllMetadata(t *testing.T) {
 	}
 }
 
+func TestQueryPageAllowsOmittedScalarTypeForModelInference(t *testing.T) {
+	t.Parallel()
+
+	application := &stubQuerier{result: pagequery.Result{QueryType: pagequery.TypeOnlyData}}
+	handler, err := pagegrpc.New(application, allowPageQueryAuthorizer{}, "production")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = handler.QueryPage(t.Context(), &configv1.QueryPageRequest{
+		ModelCode: "model", Scope: &commonv1.Scope{Region: "cn", Environment: "production"},
+		QueryType: commonv1.QueryPageType_QUERY_PAGE_TYPE_ONLY_DATA,
+		Conditions: []*configv1.FilterCondition{{
+			Field: "code", Operator: commonv1.FilterOperator_FILTER_OPERATOR_EXACT,
+			Value: &configv1.ScalarValue{Canonical: "active"},
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if application.last.Conditions[0].Value == nil || application.last.Conditions[0].Value.Type != "" || application.last.Conditions[0].Value.Canonical != "active" {
+		t.Fatalf("condition = %+v", application.last.Conditions[0])
+	}
+}
+
 func TestQueryPageMapsManagedEnvironmentMismatchToFailedPrecondition(t *testing.T) {
 	t.Parallel()
 	handler, err := pagegrpc.New(&stubQuerier{err: pagequery.ErrManagedEnvironmentMismatch}, allowPageQueryAuthorizer{}, "production")
