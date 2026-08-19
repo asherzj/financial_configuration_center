@@ -79,6 +79,8 @@ export function OperationPage({ api = operationApi }: { api?: OperationApi }) {
   const [releaseTypeCode, setReleaseTypeCode] = useState<string>();
   const [description, setDescription] = useState("");
   const [comment, setComment] = useState("");
+	const [compensationOpen, setCompensationOpen] = useState(false);
+	const [compensationDescription, setCompensationDescription] = useState("");
   const [replaceSensitive, setReplaceSensitive] = useState<Record<string, boolean>>({});
 	const [filterDrafts, setFilterDrafts] = useState<Record<string, FilterDraft>>({});
 	const [activeConditions, setActiveConditions] = useState<QueryCondition[]>([]);
@@ -404,6 +406,22 @@ export function OperationPage({ api = operationApi }: { api?: OperationApi }) {
     }
   };
 
+	const createCompensation = async () => {
+		if (!release?.order.canCompensate || !api.createCompensatingRelease || compensationDescription.trim() === "") return;
+		setSubmitting(true);
+		try {
+			const next = await api.createCompensatingRelease(release.order.id, compensationDescription.trim(), crypto.randomUUID());
+			setRelease(next);
+			setCompensationOpen(false);
+			setCompensationDescription("");
+			message.success("补偿发布单已创建，原发布历史保持不变");
+		} catch (cause) {
+			message.error(cause instanceof Error ? cause.message : "创建补偿发布失败");
+		} finally {
+			setSubmitting(false);
+		}
+	};
+
   if (loading && !page) {
     return <Spin fullscreen description="加载配置模型" />;
   }
@@ -630,6 +648,8 @@ export function OperationPage({ api = operationApi }: { api?: OperationApi }) {
             <Card title="发布进度">
               <Descriptions column={1} size="small">
                 <Descriptions.Item label="Release ID">{release.order.id}</Descriptions.Item>
+				<Descriptions.Item label="发布说明">{release.order.description || "—"}</Descriptions.Item>
+				{release.order.compensatesOrderId ? <Descriptions.Item label="补偿原单">{release.order.compensatesOrderId}</Descriptions.Item> : null}
                 <Descriptions.Item label="状态">{release.order.status}</Descriptions.Item>
                 <Descriptions.Item label="当前步骤">{release.order.currentStep} · {release.order.currentStepType}</Descriptions.Item>
                 <Descriptions.Item label="步骤状态">{release.order.currentStepStatus}</Descriptions.Item>
@@ -702,11 +722,36 @@ export function OperationPage({ api = operationApi }: { api?: OperationApi }) {
                     {actionLabel(action, release)}
                   </Button>
                 ))}
+				{release.order.canCompensate && api.createCompensatingRelease ? (
+					<Button danger disabled={submitting} onClick={() => setCompensationOpen(true)}>创建补偿发布</Button>
+				) : null}
               </Space>
             </Card>
           )}
         </Space>
       </Drawer>
+	  <Modal
+		title="创建补偿发布"
+		open={compensationOpen}
+		onCancel={() => { setCompensationOpen(false); setCompensationDescription(""); }}
+		footer={[
+			<Button key="cancel" onClick={() => { setCompensationOpen(false); setCompensationDescription(""); }}>取消</Button>,
+			<Button key="confirm" danger type="primary" loading={submitting} disabled={compensationDescription.trim() === ""} onClick={() => void createCompensation()}>确认创建补偿单</Button>,
+		]}
+	  >
+		<Space orientation="vertical" className="operation-full-width">
+			<Alert type="warning" showIcon title="不会修改成功原单；系统将生成一张新的、需要重新审核的反向发布单。" />
+			<label htmlFor="compensation-description">补偿原因</label>
+			<Input.TextArea
+				id="compensation-description"
+				aria-label="补偿原因"
+				value={compensationDescription}
+				onChange={(event) => setCompensationDescription(event.target.value)}
+				placeholder="说明为何需要恢复，以及影响范围"
+				autoSize={{ minRows: 3, maxRows: 6 }}
+			/>
+		</Space>
+	  </Modal>
     </Space>
   );
 }

@@ -108,6 +108,9 @@ export interface RevealSensitiveRequest {
 export interface ReleaseDetail {
   order: {
     id: string;
+	description?: string;
+	compensatesOrderId?: string;
+	canCompensate?: boolean;
     status: "IN_PROGRESS" | "SUCCEEDED" | "REJECTED" | "ROLLED_BACK";
     currentStep: string;
     currentStepType: "MANUAL_REVIEW" | "OVERLAY_APPLY" | "PERCENT_ROLLOUT" | "BASE_APPLY" | "COMPARE" | "COMPLETE";
@@ -143,6 +146,7 @@ export interface OperationApi {
 	pageSize?: number;
   }): Promise<PageResult>;
   createRelease(request: CreateReleaseRequest, idempotencyKey: string): Promise<ReleaseDetail>;
+	createCompensatingRelease?(orderId: string, description: string, idempotencyKey: string): Promise<ReleaseDetail>;
   revealSensitive(request: RevealSensitiveRequest, requestId: string): Promise<{ value: string; expiresAt: string }>;
   actOnRelease(
     orderId: string,

@@ -346,7 +346,7 @@ describe("OperationPage", () => {
     };
     const succeeded: ReleaseDetail = {
       ...completePending,
-      order: { ...completePending.order, status: "SUCCEEDED", currentStepStatus: "EXECUTED", entityRevision: 7 },
+	  order: { ...completePending.order, status: "SUCCEEDED", currentStepStatus: "EXECUTED", entityRevision: 7, canCompensate: true },
       steps: [
         completePending.steps[0]!,
         completePending.steps[1]!,
@@ -354,6 +354,15 @@ describe("OperationPage", () => {
       ],
       allowedActions: [],
     };
+	const compensation: ReleaseDetail = {
+		...approvalCreated,
+		order: {
+			...approvalCreated.order,
+			id: "compensation-order",
+			description: "restore after incident",
+			compensatesOrderId: "approval-order",
+		},
+	};
     const createRelease = vi.fn().mockResolvedValue(approvalCreated);
     const actOnRelease = vi.fn()
       .mockResolvedValueOnce(submitted)
@@ -362,11 +371,13 @@ describe("OperationPage", () => {
       .mockResolvedValueOnce(applyExecuted)
       .mockResolvedValueOnce(completePending)
       .mockResolvedValueOnce(succeeded);
+	const createCompensatingRelease = vi.fn().mockResolvedValue(compensation);
     const api: OperationApi = {
       queryPage: vi.fn().mockResolvedValue(approvalPage),
       createRelease,
       revealSensitive: vi.fn(),
       actOnRelease,
+	  createCompensatingRelease,
     };
 
     render(<OperationPage api={api} />);
@@ -420,6 +431,13 @@ describe("OperationPage", () => {
       { action: "EXECUTE", expectedOrderRevision: 6, expectedCurrentStep: "done" },
     ]);
     expect(await screen.findByText("草稿 0")).toBeInTheDocument();
+	fireEvent.click(await screen.findByRole("button", { name: "创建补偿发布" }));
+	expect(await screen.findByText("不会修改成功原单；系统将生成一张新的、需要重新审核的反向发布单。")).toBeInTheDocument();
+	fireEvent.change(screen.getByLabelText("补偿原因"), { target: { value: "restore after incident" } });
+	fireEvent.click(screen.getByRole("button", { name: "确认创建补偿单" }));
+	await waitFor(() => expect(createCompensatingRelease).toHaveBeenCalledWith("approval-order", "restore after incident", expect.any(String)));
+	expect(await screen.findByText("compensation-order")).toBeInTheDocument();
+	expect(screen.getByText("approval-order")).toBeInTheDocument();
   });
 
   it("changes full scope and creates a modify draft from base, effective, and after states", async () => {

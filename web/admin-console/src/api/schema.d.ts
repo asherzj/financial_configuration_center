@@ -397,9 +397,15 @@ export interface components {
             expectedCurrentStep: string;
             comment?: string;
         };
+        CreateCompensatingRelease: {
+            description: string;
+        };
         ReleaseOrderDetail: {
             order: {
                 id: string;
+                description?: string;
+                compensatesOrderId?: string;
+                canCompensate?: boolean;
                 /** @enum {string} */
                 status: "IN_PROGRESS" | "SUCCEEDED" | "REJECTED" | "ROLLED_BACK";
                 /** @description Stable step code from the template snapshot. */
@@ -849,15 +855,22 @@ export interface operations {
             };
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateCompensatingRelease"];
+            };
+        };
         responses: {
             /** @description Compensation release created */
             201: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["ReleaseOrderDetail"];
+                };
             };
+            default: components["responses"]["Error"];
         };
     };
     revealSensitiveField: {

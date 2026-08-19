@@ -21,6 +21,8 @@ export const operationApi: OperationApi = {
   queryPage: (request) => requestJson<PageResult>("/api/v1/query-page", request),
   createRelease: (request: CreateReleaseRequest, idempotencyKey: string) =>
     requestJson<ReleaseDetail>("/api/v1/releases", request, { "Idempotency-Key": idempotencyKey }),
+	createCompensatingRelease: (orderId, description, idempotencyKey) =>
+		requestJson<ReleaseDetail>(`/api/v1/releases/${encodeURIComponent(orderId)}/compensations`, { description }, { "Idempotency-Key": idempotencyKey }),
   revealSensitive: (request: RevealSensitiveRequest, requestId: string) =>
     requestJson<{ value: string; expiresAt: string }>("/api/v1/sensitive-fields/reveal", request, { "X-Request-ID": requestId }),
   actOnRelease: (orderId, actionRequestId, request) =>

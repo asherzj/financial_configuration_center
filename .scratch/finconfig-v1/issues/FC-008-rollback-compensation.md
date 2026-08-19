@@ -1,6 +1,6 @@
 # FC-008 Rollback and compensating release
 
-- Status: in-progress
+- Status: done
 - Blocked by: FC-007
 - Spec: acceptance scenario 12
 
@@ -29,4 +29,8 @@ Every mutable in-progress effect is exactly reversible and successful history is
 - Verified linked, manually reviewed compensation, idempotent replay, successful-order rollback refusal, and target-drift refusal on MySQL 8.0 and 8.4.
 - `go test ./... -count=1`
 - `go test -race ./internal/release/... ./internal/adminbff -count=1`
-- Remaining: compensation UI and visible diff lineage.
+- Completed the compensation confirmation flow in the admin console: reason is required, the successful source is explicitly immutable, the response switches to the new reviewed order, and `compensatesOrderId` is visible in its detail.
+- `pnpm --dir web/admin-console test`
+- `pnpm --dir web/admin-console typecheck`
+- `pnpm --dir web/admin-console lint`
+- `pnpm --dir web/admin-console build`
