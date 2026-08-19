@@ -877,9 +877,10 @@ func TestRealMySQLPercentageRolloutTransaction(t *testing.T) {
 		t.Fatalf("rolled back promotion view = %+v", rolledBack)
 	}
 	assertCount(t, raw, `SELECT COUNT(*) FROM configuration_records WHERE collection_name = 'payment_routes' AND environment = 'production'`, 0)
-	assertCount(t, raw, `SELECT COUNT(*) FROM configuration_overlays WHERE release_order_id = '`+created.ID+`' AND JSON_EXTRACT(rollout_ranges, '$[0].start') = 0 AND JSON_EXTRACT(rollout_ranges, '$[0].end') = 9`, 1)
+	assertCount(t, raw, `SELECT COUNT(*) FROM configuration_overlays WHERE release_order_id = '`+created.ID+`'`, 0)
 	assertCount(t, raw, `SELECT COUNT(*) FROM configuration_versions WHERE collection_name = 'payment_routes' AND environment = 'production' AND config_revision = 10`, 1)
 	assertCount(t, raw, `SELECT COUNT(*) FROM outbox_events WHERE aggregate_id = '`+created.ID+`'`, 3)
+	assertCount(t, raw, `SELECT COUNT(*) FROM release_step_states WHERE release_order_id = '`+created.ID+`' AND step_code IN ('percent-10', 'promote') AND status = 'ROLLED_BACK'`, 2)
 	if _, err := manager.Refresh(ctx, "production"); err != nil {
 		t.Fatal(err)
 	}
@@ -888,6 +889,12 @@ func TestRealMySQLPercentageRolloutTransaction(t *testing.T) {
 	}
 	if _, ok := unselectedClient.GetByKey("payment_routes", rolloutRecord.RecordKey); ok {
 		t.Fatal("promotion rollback did not restore unselected SDK view")
+	}
+	if err := selectedClient.Refresh(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := selectedClient.GetByKey("payment_routes", rolloutRecord.RecordKey); ok {
+		t.Fatal("full rollback left an executed rollout visible to the selected SDK")
 	}
 	if err := store.WithinTransaction(ctx, func(transaction application.Transaction) error {
 		return transaction.RecordAction(ctx, application.ActionRecord{

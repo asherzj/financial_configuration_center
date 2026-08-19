@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"sort"
 	"strings"
 	"time"
@@ -684,6 +685,194 @@ func (order *Order) RollbackBase(expected EntityRevision, authority BaseAuthorit
 	order.completedAt = timePointer(at)
 	order.bump(actor, at)
 	return *cloneBaseEffectPointer(&compensation), nil
+}
+
+// RollbackAll plans one atomic inverse batch for every persisted mutable
+// effect, walking the effect chain from newest to oldest before mutating the
+// aggregate. Percent effects are represented as overlay changes in the batch.
+func (order *Order) RollbackAll(expected EntityRevision, authority BaseAuthority, newRevision catalog.ConfigRevision, actor string, at time.Time) (StepEffectEnvelope, error) {
+	if order.revision != expected {
+		return StepEffectEnvelope{}, fmt.Errorf("%w: order revision is %d, expected %d", ErrAborted, order.revision, expected)
+	}
+	if order.status != OrderInProgress || strings.TrimSpace(actor) == "" || at.IsZero() || newRevision <= authority.CollectionRevision {
+		return StepEffectEnvelope{}, fmt.Errorf("%w: order cannot be rolled back", ErrInvalid)
+	}
+	effectIndexes := make([]int, 0, len(order.steps))
+	for index := len(order.steps) - 1; index >= 0; index-- {
+		if order.steps[index].Effect != nil {
+			if err := ValidateStepEffect(order.steps[index].Effect); err != nil {
+				return StepEffectEnvelope{}, fmt.Errorf("%w: step %q effect: %v", ErrFailedPrecondition, order.steps[index].Code, err)
+			}
+			effectIndexes = append(effectIndexes, index)
+		}
+	}
+	if len(effectIndexes) == 0 {
+		return StepEffectEnvelope{}, fmt.Errorf("%w: order has no compensable effects", ErrInvalid)
+	}
+
+	records := cloneRecordAuthority(authority.Records)
+	rules := cloneRuleAuthority(authority.Rules)
+	baseChanges := make([]BaseChange, 0)
+	overlayChanges := make([]OverlayRuleChange, 0)
+	hasBase := false
+	expectedAppliedRevision := authority.CollectionRevision
+	collection := ""
+	scope := order.scope
+	for _, stepIndex := range effectIndexes {
+		effect := order.steps[stepIndex].Effect
+		var effectCollection string
+		var effectScope Scope
+		var previousRevision, appliedRevision catalog.ConfigRevision
+		switch effect.EffectType {
+		case StepEffectBase:
+			hasBase = true
+			effectCollection, effectScope = effect.Base.Collection, effect.Base.Scope
+			previousRevision, appliedRevision = effect.Base.PreviousRevision, effect.Base.AppliedRevision
+			changes, err := inverseBaseChanges(effect.Base, records)
+			if err != nil {
+				return StepEffectEnvelope{}, err
+			}
+			baseChanges = append(baseChanges, changes...)
+			changesOverlay, err := inverseOverlayChanges(effect.Base.OverlayChanges, rules)
+			if err != nil {
+				return StepEffectEnvelope{}, err
+			}
+			overlayChanges = append(overlayChanges, changesOverlay...)
+		case StepEffectOverlay:
+			effectCollection, effectScope = effect.Overlay.Collection, effect.Overlay.Scope
+			previousRevision, appliedRevision = effect.Overlay.PreviousRevision, effect.Overlay.AppliedRevision
+			changes, err := inverseOverlayChanges(effect.Overlay.Changes, rules)
+			if err != nil {
+				return StepEffectEnvelope{}, err
+			}
+			overlayChanges = append(overlayChanges, changes...)
+		case StepEffectPercent:
+			effectCollection, effectScope = effect.Percent.Collection, effect.Percent.Scope
+			previousRevision, appliedRevision = effect.Percent.PreviousRevision, effect.Percent.AppliedRevision
+			changes, err := inverseOverlayChanges(effect.Percent.Changes, rules)
+			if err != nil {
+				return StepEffectEnvelope{}, err
+			}
+			overlayChanges = append(overlayChanges, changes...)
+		}
+		if appliedRevision != expectedAppliedRevision {
+			return StepEffectEnvelope{}, fmt.Errorf("%w: effect chain revision is %d, expected %d", ErrAborted, appliedRevision, expectedAppliedRevision)
+		}
+		if collection == "" {
+			collection = effectCollection
+		}
+		if effectCollection != collection || effectScope != scope {
+			return StepEffectEnvelope{}, fmt.Errorf("%w: effect chain identity is inconsistent", ErrFailedPrecondition)
+		}
+		expectedAppliedRevision = previousRevision
+	}
+
+	at = at.UTC()
+	plan := StepEffectEnvelope{EffectVersion: 1}
+	if hasBase {
+		plan.EffectType = StepEffectBase
+		plan.Base = &BaseEffect{
+			EffectVersion: 1, Collection: collection, Scope: scope,
+			PreviousRevision: authority.CollectionRevision, AppliedRevision: newRevision,
+			Changes: baseChanges, OverlayChanges: overlayChanges, ExecutedAt: at, ExecutedBy: actor,
+		}
+	} else {
+		plan.EffectType = StepEffectOverlay
+		plan.Overlay = &OverlayEffect{
+			EffectVersion: 1, Collection: collection, Scope: scope,
+			PreviousRevision: authority.CollectionRevision, AppliedRevision: newRevision,
+			Changes: overlayChanges, ExecutedAt: at, ExecutedBy: actor,
+		}
+	}
+	if err := ValidateStepEffect(&plan); err != nil {
+		return StepEffectEnvelope{}, fmt.Errorf("%w: inverse effect batch: %v", ErrFailedPrecondition, err)
+	}
+	for _, stepIndex := range effectIndexes {
+		step := &order.steps[stepIndex]
+		step.Status = StepRolledBack
+		step.RolledBackAt = timePointer(at)
+		step.RolledBackBy = actor
+	}
+	for index := range order.items {
+		order.items[index].Status = ItemRolledBack
+		order.items[index].ActiveConflictKey = ""
+	}
+	order.currentStep = effectIndexes[len(effectIndexes)-1]
+	order.status = OrderRolledBack
+	order.completedAt = timePointer(at)
+	order.bump(actor, at)
+	return *cloneStepEffect(&plan), nil
+}
+
+func inverseBaseChanges(effect *BaseEffect, records map[string]*catalog.ConfigurationRecord) ([]BaseChange, error) {
+	changes := make([]BaseChange, 0, len(effect.Changes))
+	for index := len(effect.Changes) - 1; index >= 0; index-- {
+		source := effect.Changes[index]
+		switch source.Action {
+		case ChangeAdd:
+			if source.After == nil {
+				return nil, fmt.Errorf("%w: base ADD effect is incomplete", ErrFailedPrecondition)
+			}
+			current := records[source.After.RecordKey]
+			if current == nil || current.ConfigRevision != effect.AppliedRevision || !equalData(current.Data, source.After.Data) {
+				return nil, fmt.Errorf("%w: base record %q drifted", ErrAborted, source.After.RecordKey)
+			}
+			changes = append(changes, BaseChange{Action: ChangeDelete, Before: cloneRecordPointer(current)})
+			records[source.After.RecordKey] = nil
+		case ChangeModify:
+			if source.Before == nil || source.After == nil {
+				return nil, fmt.Errorf("%w: base MODIFY effect is incomplete", ErrFailedPrecondition)
+			}
+			current := records[source.After.RecordKey]
+			if current == nil || current.ConfigRevision != effect.AppliedRevision || !equalData(current.Data, source.After.Data) {
+				return nil, fmt.Errorf("%w: base record %q drifted", ErrAborted, source.After.RecordKey)
+			}
+			previous := cloneRecordPointer(source.Before)
+			changes = append(changes, BaseChange{Action: ChangeModify, Before: cloneRecordPointer(current), After: previous})
+			records[source.After.RecordKey] = cloneRecordPointer(previous)
+		case ChangeDelete:
+			if source.Before == nil || records[source.Before.RecordKey] != nil {
+				return nil, fmt.Errorf("%w: deleted base record drifted", ErrAborted)
+			}
+			previous := cloneRecordPointer(source.Before)
+			changes = append(changes, BaseChange{Action: ChangeAdd, After: previous})
+			records[source.Before.RecordKey] = cloneRecordPointer(previous)
+		default:
+			return nil, fmt.Errorf("%w: unsupported base effect action %q", ErrFailedPrecondition, source.Action)
+		}
+	}
+	return changes, nil
+}
+
+func inverseOverlayChanges(source []OverlayRuleChange, rules map[string]*overlay.Rule) ([]OverlayRuleChange, error) {
+	changes := make([]OverlayRuleChange, 0, len(source))
+	for index := len(source) - 1; index >= 0; index-- {
+		original := source[index]
+		current := rules[original.RecordKey]
+		if !reflect.DeepEqual(current, original.NewRule) {
+			return nil, fmt.Errorf("%w: overlay rule %q drifted", ErrAborted, original.RecordKey)
+		}
+		change := OverlayRuleChange{RecordKey: original.RecordKey, PreviousRule: cloneOverlayRulePointer(current), NewRule: cloneOverlayRulePointer(original.PreviousRule)}
+		changes = append(changes, change)
+		rules[original.RecordKey] = cloneOverlayRulePointer(original.PreviousRule)
+	}
+	return changes, nil
+}
+
+func cloneRecordAuthority(source map[string]*catalog.ConfigurationRecord) map[string]*catalog.ConfigurationRecord {
+	cloned := make(map[string]*catalog.ConfigurationRecord, len(source))
+	for key, record := range source {
+		cloned[key] = cloneRecordPointer(record)
+	}
+	return cloned
+}
+
+func cloneRuleAuthority(source map[string]*overlay.Rule) map[string]*overlay.Rule {
+	cloned := make(map[string]*overlay.Rule, len(source))
+	for key, rule := range source {
+		cloned[key] = cloneOverlayRulePointer(rule)
+	}
+	return cloned
 }
 
 func (order *Order) ExecuteOverlay(authority OverlayAuthority, newRevision catalog.ConfigRevision, actor string, at time.Time) (OverlayEffect, error) {

@@ -136,6 +136,87 @@ func TestPercentagePromotionAndRollbackRestoreBaseAndRanges(t *testing.T) {
 	}
 }
 
+func TestRollbackAllInvertsEveryExecutedEffectInReverseOrder(t *testing.T) {
+	t.Parallel()
+	order, after := newPercentageOrder(t)
+	now := time.Date(2026, 8, 20, 2, 0, 0, 0, time.UTC)
+	first, err := order.ExecutePercentRollout(release.OverlayAuthority{
+		CollectionRevision: 7, BaseRecords: map[string]*catalog.ConfigurationRecord{after.RecordKey: nil}, Rules: map[string]*overlay.Rule{after.RecordKey: nil},
+	}, 8, "operator", now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := order.Advance(2, "operator", now); err != nil {
+		t.Fatal(err)
+	}
+	second, err := order.ExecutePercentRollout(release.OverlayAuthority{
+		CollectionRevision: 8, BaseRecords: map[string]*catalog.ConfigurationRecord{after.RecordKey: nil}, Rules: map[string]*overlay.Rule{after.RecordKey: first.Changes[0].NewRule},
+	}, 9, "operator", now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := order.Advance(4, "operator", now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := order.ExecuteBase(release.BaseAuthority{
+		CollectionRevision: 9, Records: map[string]*catalog.ConfigurationRecord{after.RecordKey: nil}, Rules: map[string]*overlay.Rule{after.RecordKey: second.Changes[0].NewRule},
+	}, 10, "operator", now); err != nil {
+		t.Fatal(err)
+	}
+	applied := after
+	applied.ConfigRevision = 10
+	plan, err := order.RollbackAll(6, release.BaseAuthority{
+		CollectionRevision: 10, Records: map[string]*catalog.ConfigurationRecord{after.RecordKey: &applied}, Rules: map[string]*overlay.Rule{after.RecordKey: nil},
+	}, 11, "operator", now.Add(time.Minute))
+	if err != nil {
+		t.Fatalf("RollbackAll: %v", err)
+	}
+	if plan.EffectType != release.StepEffectBase || plan.Base == nil || plan.Base.Changes[0].Action != release.ChangeDelete {
+		t.Fatalf("rollback plan = %+v", plan)
+	}
+	if len(plan.Base.OverlayChanges) != 3 {
+		t.Fatalf("inverse overlay chain = %+v", plan.Base.OverlayChanges)
+	}
+	if first := plan.Base.OverlayChanges[0]; first.PreviousRule != nil || first.NewRule == nil || !reflect.DeepEqual(first.NewRule.RolloutRanges, []overlay.BucketRange{{Start: 0, End: 49}}) {
+		t.Fatalf("base inverse = %+v", first)
+	}
+	if last := plan.Base.OverlayChanges[2]; last.PreviousRule == nil || last.NewRule != nil {
+		t.Fatalf("oldest percent inverse = %+v", last)
+	}
+	state := order.State()
+	if order.Status() != release.OrderRolledBack || order.CurrentStep().Code != "percent-10" {
+		t.Fatalf("rolled back order = status %s current %+v", order.Status(), order.CurrentStep())
+	}
+	for _, step := range state.Steps[:3] {
+		if step.Status != release.StepRolledBack {
+			t.Fatalf("effect step was not rolled back: %+v", step)
+		}
+	}
+}
+
+func TestRollbackAllRejectsThirdPartyDriftWithoutMutatingOrder(t *testing.T) {
+	t.Parallel()
+	order, after := newPercentageOrder(t)
+	now := time.Date(2026, 8, 20, 2, 30, 0, 0, time.UTC)
+	first, err := order.ExecutePercentRollout(release.OverlayAuthority{
+		CollectionRevision: 7, BaseRecords: map[string]*catalog.ConfigurationRecord{after.RecordKey: nil}, Rules: map[string]*overlay.Rule{after.RecordKey: nil},
+	}, 8, "operator", now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	thirdParty := *first.Changes[0].NewRule
+	thirdParty.ReleaseOrderID = "other-order"
+	before := order.State()
+	if _, err := order.RollbackAll(2, release.BaseAuthority{
+		CollectionRevision: 8, Records: map[string]*catalog.ConfigurationRecord{after.RecordKey: nil}, Rules: map[string]*overlay.Rule{after.RecordKey: &thirdParty},
+	}, 9, "operator", now.Add(time.Minute)); !errors.Is(err, release.ErrAborted) {
+		t.Fatalf("third-party rollback = %v", err)
+	}
+	if !reflect.DeepEqual(order.State(), before) {
+		t.Fatal("failed rollback mutated order")
+	}
+}
+
 func TestComparePersistsDigestsAndKeepsMismatchPending(t *testing.T) {
 	t.Parallel()
 	order, after := newCompareOrder(t)

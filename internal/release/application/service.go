@@ -992,41 +992,29 @@ func (service *Service) Act(ctx context.Context, command ActCommand) (OrderView,
 				return err
 			}
 		case ActionRollback:
-			switch order.CurrentStep().Type {
-			case release.StepOverlayApply:
-				authority, err := loadOverlayAuthority(ctx, transaction, order)
-				if err != nil {
-					return err
+			authority, err := loadBaseApplyAuthority(ctx, transaction, order)
+			if err != nil {
+				return err
+			}
+			revision, err := transaction.AllocateConfigRevision(ctx)
+			if err != nil {
+				return fmt.Errorf("allocate config revision: %w", err)
+			}
+			plan, err := order.RollbackAll(command.ExpectedRevision, authority, revision, command.Actor, now)
+			if err != nil {
+				return err
+			}
+			switch plan.EffectType {
+			case release.StepEffectBase:
+				if err := transaction.ApplyBaseEffect(ctx, order.ID(), *plan.Base); err != nil {
+					return fmt.Errorf("apply base rollback batch: %w", err)
 				}
-				revision, err := transaction.AllocateConfigRevision(ctx)
-				if err != nil {
-					return fmt.Errorf("allocate config revision: %w", err)
-				}
-				effect, err := order.RollbackOverlay(command.ExpectedRevision, authority.CollectionRevision, revision, command.Actor, now)
-				if err != nil {
-					return err
-				}
-				if err := transaction.ApplyOverlayEffect(ctx, order.ID(), effect); err != nil {
-					return fmt.Errorf("apply overlay compensation: %w", err)
-				}
-			case release.StepBaseApply:
-				authority, err := loadBaseApplyAuthority(ctx, transaction, order)
-				if err != nil {
-					return err
-				}
-				revision, err := transaction.AllocateConfigRevision(ctx)
-				if err != nil {
-					return fmt.Errorf("allocate config revision: %w", err)
-				}
-				effect, err := order.RollbackBase(command.ExpectedRevision, authority, revision, command.Actor, now)
-				if err != nil {
-					return err
-				}
-				if err := transaction.ApplyBaseEffect(ctx, order.ID(), effect); err != nil {
-					return fmt.Errorf("apply base compensation: %w", err)
+			case release.StepEffectOverlay:
+				if err := transaction.ApplyOverlayEffect(ctx, order.ID(), *plan.Overlay); err != nil {
+					return fmt.Errorf("apply overlay rollback batch: %w", err)
 				}
 			default:
-				return fmt.Errorf("%w: current step cannot be rolled back", release.ErrInvalid)
+				return fmt.Errorf("%w: unsupported rollback effect %q", release.ErrFailedPrecondition, plan.EffectType)
 			}
 		default:
 			return fmt.Errorf("%w: unsupported action %q", release.ErrInvalid, command.Action)
@@ -1197,6 +1185,14 @@ func project(order *release.Order) OrderView {
 	}
 	view := OrderView{ID: order.ID(), Status: order.Status(), CurrentStepCode: step.Code, CurrentStep: step.Type, CurrentStepStatus: step.Status, Revision: order.Revision(), Steps: steps}
 	applyCapabilities(&view)
+	if view.Status == release.OrderInProgress {
+		for _, step := range state.Steps {
+			if step.Effect != nil {
+				view.CanRollback = true
+				break
+			}
+		}
+	}
 	return view
 }
 
@@ -1212,7 +1208,6 @@ func applyCapabilities(view *OrderView) {
 		view.CanReject = true
 	case view.CurrentStepStatus == release.StepApproved || view.CurrentStepStatus == release.StepExecuted:
 		view.CanAdvance = view.CurrentStep != release.StepComplete
-		view.CanRollback = (view.CurrentStep == release.StepOverlayApply || view.CurrentStep == release.StepBaseApply) && view.CurrentStepStatus == release.StepExecuted
 	case (view.CurrentStep == release.StepBaseApply || view.CurrentStep == release.StepOverlayApply || view.CurrentStep == release.StepPercentRollout || view.CurrentStep == release.StepCompare || view.CurrentStep == release.StepComplete) && view.CurrentStepStatus == release.StepPending:
 		view.CanExecute = true
 	}
