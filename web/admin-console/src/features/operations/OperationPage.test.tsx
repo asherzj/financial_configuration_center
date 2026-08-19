@@ -230,6 +230,45 @@ describe("OperationPage", () => {
 	expect(queryPage.mock.calls[2]?.[0].conditions).toEqual([]);
   });
 
+  it("discards filters and reloads ALL metadata when a data query crosses snapshot identity", async () => {
+	const changedData: PageResult = {
+		...page,
+		queryType: "ONLY_DATA",
+		rows: [],
+		projectionFields: [],
+		interactionFields: [],
+		releaseTypes: [],
+		snapshot: { ...page.snapshot, snapshotGeneration: 2 },
+	};
+	const refreshed: PageResult = {
+		...page,
+		rows: [{ ...page.rows[0]!, values: { ...page.rows[0]!.values, route_code: "mastercard-cn" } }],
+		snapshot: { ...page.snapshot, snapshotGeneration: 2 },
+		collectionRevision: 8,
+	};
+	const queryPage = vi.fn()
+		.mockResolvedValueOnce(page)
+		.mockResolvedValueOnce(changedData)
+		.mockResolvedValueOnce(refreshed);
+	const api: OperationApi = {
+		queryPage,
+		createRelease: vi.fn().mockResolvedValue(created),
+		revealSensitive: vi.fn(),
+		actOnRelease: vi.fn().mockResolvedValue(created),
+	};
+	render(<OperationPage api={api} />);
+
+	await screen.findByText("visa-cn");
+	fireEvent.change(screen.getByLabelText("筛选 Route code"), { target: { value: "visa-cn" } });
+	fireEvent.click(screen.getByRole("button", { name: /查\s*询/ }));
+
+	expect(await screen.findByText("mastercard-cn")).toBeInTheDocument();
+	await waitFor(() => expect(queryPage).toHaveBeenCalledTimes(3));
+	expect(queryPage.mock.calls[2]?.[0].queryType).toBe("ALL");
+	expect(screen.getByLabelText("筛选 Route code")).toHaveValue("");
+	expect(screen.getByText("Collection revision 8")).toBeInTheDocument();
+  });
+
   it("selects an approval release type and drives manual review from server actions", async () => {
     const approvalPage: PageResult = {
       ...page,

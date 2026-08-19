@@ -1,6 +1,6 @@
 # FC-008 Rollback and compensating release
 
-- Status: blocked
+- Status: ready
 - Blocked by: FC-007
 - Spec: acceptance scenario 12
 
