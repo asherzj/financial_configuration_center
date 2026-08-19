@@ -11,6 +11,7 @@ import (
 
 	access "github.com/asherzj/financial_configuration_center/internal/access/application"
 	"github.com/asherzj/financial_configuration_center/internal/adminbff"
+	"github.com/asherzj/financial_configuration_center/internal/audit"
 	catalog "github.com/asherzj/financial_configuration_center/internal/catalog/domain"
 	"github.com/asherzj/financial_configuration_center/internal/distribution/snapshot"
 	"github.com/asherzj/financial_configuration_center/internal/outbox"
@@ -281,6 +282,35 @@ func TestBFFListsSafeOutboxMetadataAndMapsReplay(t *testing.T) {
 	}
 }
 
+func TestBFFListsFilteredPayloadFreeAuditRecords(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 8, 20, 10, 0, 0, 0, time.UTC)
+	operations := &outboxStub{}
+	diagnostics := diagnosticsStub{}
+	audits := &auditStub{page: audit.Page{
+		Records: []audit.Record{{
+			ID: 7, OccurredAt: now, PrincipalSubject: "alice", Action: "UPDATE", ResourceType: "COLLECTION",
+			ResourceID: "routes", Region: "cn", Environment: "production", Result: "SUCCEEDED", TraceID: "trace-a",
+		}},
+		PageNumber: 1, PageSize: 20, TotalNumber: 1, TotalPages: 1,
+	}}
+	handler, err := adminbff.NewWithAdminOperations(
+		&queryStub{}, &releaseStub{}, authenticator{roles: []string{audit.AuditViewerRole}}, operations, diagnostics, audits,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodGet, "/api/v1/audit-records?principalSubject=alice&resourceType=COLLECTION&resourceId=routes&from=2026-08-20T09:00:00Z&until=2026-08-20T11:00:00Z&page=1&size=20", nil)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK || audits.principal.Subject != "operator@example.com" || audits.query.PrincipalSubject != "alice" || audits.query.ResourceType != "COLLECTION" || audits.query.ResourceID != "routes" || audits.query.From == nil || audits.query.Until == nil {
+		t.Fatalf("response=%d principal=%+v query=%+v body=%s", response.Code, audits.principal, audits.query, response.Body.String())
+	}
+	if !bytes.Contains(response.Body.Bytes(), []byte(`"traceId":"trace-a"`)) || bytes.Contains(response.Body.Bytes(), []byte("beforeData")) || bytes.Contains(response.Body.Bytes(), []byte("afterData")) || bytes.Contains(response.Body.Bytes(), []byte("metadata")) {
+		t.Fatalf("unsafe audit response = %s", response.Body.String())
+	}
+}
+
 type authenticator struct {
 	reject bool
 	roles  []string
@@ -336,6 +366,17 @@ type outboxStub struct {
 type diagnosticsStub struct{ value snapshot.Diagnostics }
 
 func (stub diagnosticsStub) Diagnostics() snapshot.Diagnostics { return stub.value }
+
+type auditStub struct {
+	page      audit.Page
+	principal audit.Principal
+	query     audit.Query
+}
+
+func (stub *auditStub) List(_ context.Context, principal audit.Principal, query audit.Query) (audit.Page, error) {
+	stub.principal, stub.query = principal, query
+	return stub.page, nil
+}
 
 func (stub *outboxStub) List(_ context.Context, principal outbox.Principal, request outbox.ListRequest) (outbox.EventPage, error) {
 	stub.lastPrincipal, stub.lastList = principal, request

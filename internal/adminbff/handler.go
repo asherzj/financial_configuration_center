@@ -9,8 +9,10 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	access "github.com/asherzj/financial_configuration_center/internal/access/application"
+	"github.com/asherzj/financial_configuration_center/internal/audit"
 	catalog "github.com/asherzj/financial_configuration_center/internal/catalog/domain"
 	"github.com/asherzj/financial_configuration_center/internal/distribution/snapshot"
 	"github.com/asherzj/financial_configuration_center/internal/outbox"
@@ -54,28 +56,40 @@ type SnapshotDiagnostics interface {
 	Diagnostics() snapshot.Diagnostics
 }
 
+type AuditQueries interface {
+	List(context.Context, audit.Principal, audit.Query) (audit.Page, error)
+}
+
 type Handler struct {
 	queries     PageQueries
 	releases    ReleaseCommands
 	sensitive   SensitiveAccess
 	outbox      OutboxOperations
 	diagnostics SnapshotDiagnostics
+	audits      AuditQueries
 	auth        Authenticator
 	mux         *http.ServeMux
 }
 
 func NewWithOutbox(queries PageQueries, releases ReleaseCommands, auth Authenticator, operations OutboxOperations, sensitive ...SensitiveAccess) (*Handler, error) {
-	return newWithOperations(queries, releases, auth, operations, nil, sensitive...)
+	return newWithOperations(queries, releases, auth, operations, nil, nil, sensitive...)
 }
 
 func NewWithOperations(queries PageQueries, releases ReleaseCommands, auth Authenticator, operations OutboxOperations, diagnostics SnapshotDiagnostics, sensitive ...SensitiveAccess) (*Handler, error) {
 	if diagnostics == nil {
 		return nil, errors.New("new Admin BFF: snapshot diagnostics are required")
 	}
-	return newWithOperations(queries, releases, auth, operations, diagnostics, sensitive...)
+	return newWithOperations(queries, releases, auth, operations, diagnostics, nil, sensitive...)
 }
 
-func newWithOperations(queries PageQueries, releases ReleaseCommands, auth Authenticator, operations OutboxOperations, diagnostics SnapshotDiagnostics, sensitive ...SensitiveAccess) (*Handler, error) {
+func NewWithAdminOperations(queries PageQueries, releases ReleaseCommands, auth Authenticator, operations OutboxOperations, diagnostics SnapshotDiagnostics, audits AuditQueries, sensitive ...SensitiveAccess) (*Handler, error) {
+	if diagnostics == nil || audits == nil {
+		return nil, errors.New("new Admin BFF: snapshot diagnostics and audit queries are required")
+	}
+	return newWithOperations(queries, releases, auth, operations, diagnostics, audits, sensitive...)
+}
+
+func newWithOperations(queries PageQueries, releases ReleaseCommands, auth Authenticator, operations OutboxOperations, diagnostics SnapshotDiagnostics, audits AuditQueries, sensitive ...SensitiveAccess) (*Handler, error) {
 	if operations == nil {
 		return nil, errors.New("new Admin BFF: outbox operations are required")
 	}
@@ -85,13 +99,65 @@ func newWithOperations(queries PageQueries, releases ReleaseCommands, auth Authe
 	}
 	handler.outbox = operations
 	handler.diagnostics = diagnostics
+	handler.audits = audits
 	handler.mux.HandleFunc("GET /api/v1/outbox-events", handler.listOutboxEvents)
 	handler.mux.HandleFunc("POST /api/v1/outbox-events/{id}/replay", handler.replayOutboxEvent)
 	if diagnostics != nil {
 		handler.mux.HandleFunc("GET /api/v1/diagnostics/snapshot", handler.getSnapshotDiagnostics)
 		handler.mux.HandleFunc("GET /api/v1/diagnostics/collections/{name}", handler.getCollectionDiagnostics)
 	}
+	if audits != nil {
+		handler.mux.HandleFunc("GET /api/v1/audit-records", handler.listAuditRecords)
+	}
 	return handler, nil
+}
+
+func (handler *Handler) listAuditRecords(writer http.ResponseWriter, request *http.Request) {
+	principal, ok := handler.authenticate(writer, request)
+	if !ok {
+		return
+	}
+	pageNumber, err := positiveQueryInt(request, "page", 1)
+	if err != nil {
+		writeError(writer, http.StatusBadRequest, "INVALID_ARGUMENT", err.Error())
+		return
+	}
+	pageSize, err := positiveQueryInt(request, "size", 20)
+	if err != nil {
+		writeError(writer, http.StatusBadRequest, "INVALID_ARGUMENT", err.Error())
+		return
+	}
+	from, err := optionalQueryTime(request, "from")
+	if err != nil {
+		writeError(writer, http.StatusBadRequest, "INVALID_ARGUMENT", err.Error())
+		return
+	}
+	until, err := optionalQueryTime(request, "until")
+	if err != nil {
+		writeError(writer, http.StatusBadRequest, "INVALID_ARGUMENT", err.Error())
+		return
+	}
+	page, err := handler.audits.List(request.Context(), audit.Principal{Subject: principal.Subject, Roles: append([]string(nil), principal.Roles...)}, audit.Query{
+		PrincipalSubject: request.URL.Query().Get("principalSubject"), ResourceType: request.URL.Query().Get("resourceType"), ResourceID: request.URL.Query().Get("resourceId"),
+		From: from, Until: until, PageNumber: pageNumber, PageSize: pageSize,
+	})
+	if err != nil {
+		writeDomainError(writer, err)
+		return
+	}
+	records := make([]map[string]any, len(page.Records))
+	for index, record := range page.Records {
+		records[index] = map[string]any{
+			"id": record.ID, "occurredAt": record.OccurredAt, "principalSubject": record.PrincipalSubject,
+			"action": record.Action, "resourceType": record.ResourceType, "resourceId": record.ResourceID,
+			"scope":  map[string]any{"region": record.Region, "environment": record.Environment, "stage": record.Stage},
+			"result": record.Result, "traceId": record.TraceID,
+		}
+	}
+	writeJSON(writer, http.StatusOK, map[string]any{
+		"records": records,
+		"page":    map[string]any{"number": page.PageNumber, "size": page.PageSize, "totalNumber": page.TotalNumber, "totalPages": page.TotalPages},
+	})
 }
 
 func (handler *Handler) getSnapshotDiagnostics(writer http.ResponseWriter, request *http.Request) {
@@ -210,6 +276,19 @@ func positiveQueryInt(request *http.Request, name string, fallback int) (int, er
 		return 0, fmt.Errorf("%s must be a positive integer", name)
 	}
 	return value, nil
+}
+
+func optionalQueryTime(request *http.Request, name string) (*time.Time, error) {
+	raw := strings.TrimSpace(request.URL.Query().Get(name))
+	if raw == "" {
+		return nil, nil
+	}
+	value, err := time.Parse(time.RFC3339, raw)
+	if err != nil {
+		return nil, fmt.Errorf("%s must be an RFC3339 timestamp", name)
+	}
+	value = value.UTC()
+	return &value, nil
 }
 
 func outboxEventResponse(event outbox.Event) map[string]any {
@@ -529,6 +608,10 @@ func decodeJSON(writer http.ResponseWriter, request *http.Request, target any) b
 
 func writeDomainError(writer http.ResponseWriter, err error) {
 	switch {
+	case errors.Is(err, audit.ErrInvalid):
+		writeError(writer, http.StatusBadRequest, "INVALID_ARGUMENT", err.Error())
+	case errors.Is(err, audit.ErrForbidden):
+		writeError(writer, http.StatusForbidden, "PERMISSION_DENIED", err.Error())
 	case errors.Is(err, outbox.ErrOperationsInvalid):
 		writeError(writer, http.StatusBadRequest, "INVALID_ARGUMENT", err.Error())
 	case errors.Is(err, outbox.ErrOperationsForbidden):

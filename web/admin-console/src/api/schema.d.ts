@@ -439,6 +439,30 @@ export interface components {
         CreateCompensatingRelease: {
             description: string;
         };
+        AuditRecord: {
+            /** Format: int64 */
+            id: number;
+            /** Format: date-time */
+            occurredAt: string;
+            principalSubject: string;
+            action: string;
+            resourceType: string;
+            resourceId: string;
+            scope: components["schemas"]["Scope"];
+            /** @enum {string} */
+            result: "SUCCEEDED" | "FAILED";
+            traceId: string;
+        };
+        AuditRecordPage: {
+            records: components["schemas"]["AuditRecord"][];
+            page: {
+                number: number;
+                size: number;
+                /** Format: int64 */
+                totalNumber: number;
+                totalPages: number;
+            };
+        };
         OutboxEvent: {
             /** Format: uuid */
             id: string;
@@ -1019,20 +1043,31 @@ export interface operations {
     };
     listAuditRecords: {
         parameters: {
-            query?: never;
+            query?: {
+                principalSubject?: string;
+                resourceType?: string;
+                resourceId?: string;
+                from?: string;
+                until?: string;
+                page?: number;
+                size?: number;
+            };
             header?: never;
             path?: never;
             cookie?: never;
         };
         requestBody?: never;
         responses: {
-            /** @description Masked audit records */
+            /** @description Payload-free audit metadata */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["AuditRecordPage"];
+                };
             };
+            default: components["responses"]["Error"];
         };
     };
     listOutboxEvents: {

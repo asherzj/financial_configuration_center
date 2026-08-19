@@ -23,6 +23,8 @@ import (
 	access "github.com/asherzj/financial_configuration_center/internal/access/application"
 	accessmysqlstore "github.com/asherzj/financial_configuration_center/internal/access/mysqlstore"
 	"github.com/asherzj/financial_configuration_center/internal/adminbff"
+	"github.com/asherzj/financial_configuration_center/internal/audit"
+	auditmysqlstore "github.com/asherzj/financial_configuration_center/internal/audit/mysqlstore"
 	catalog "github.com/asherzj/financial_configuration_center/internal/catalog/domain"
 	"github.com/asherzj/financial_configuration_center/internal/configserver"
 	"github.com/asherzj/financial_configuration_center/internal/distribution/mysqlsource"
@@ -123,6 +125,51 @@ func TestRealMySQLSensitiveRevealUsesCurrentAuthorityAndCommitsAudit(t *testing.
 		t.Fatalf("stale reveal = %+v, %v", result, err)
 	}
 	assertCount(t, raw, `SELECT COUNT(*) FROM audit_records WHERE action = 'SENSITIVE_FIELD_REVEALED'`, 1)
+}
+
+func TestRealMySQLAuditListFiltersWithoutLoadingSensitiveBodies(t *testing.T) {
+	dsn := isolatedDatabase(t)
+	raw, err := sql.Open("mysql", dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer raw.Close()
+	now := time.Date(2026, 8, 20, 10, 0, 0, 0, time.UTC)
+	if _, err := raw.Exec(`
+		INSERT INTO audit_records (
+			occurred_at, principal_subject, principal_display_name, action,
+			resource_type, resource_id, region, environment, stage, result,
+			before_data, after_data, metadata, request_id, trace_id
+		) VALUES
+			(?, 'alice', 'Alice', 'UPDATE', 'COLLECTION', 'routes', 'cn', 'production', '', 'SUCCEEDED', JSON_OBJECT('secret', 'before-secret'), JSON_OBJECT('secret', 'after-secret'), JSON_OBJECT('secret', 'metadata-secret'), 'request-a', 'trace-a'),
+			(?, 'bob', 'Bob', 'REPLAY', 'OUTBOX_EVENT', 'event', '', '', '', 'SUCCEEDED', NULL, NULL, JSON_OBJECT(), 'request-b', 'trace-b')
+	`, now, now.Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	database, err := platformmysql.Open(ctx, platformmysql.Config{DSN: dsn, MaxOpenConns: 4, MaxIdleConns: 2, ConnMaxLifetime: time.Minute, ConnMaxIdleTime: time.Minute})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = database.Close() })
+	store, err := auditmysqlstore.New(database)
+	if err != nil {
+		t.Fatal(err)
+	}
+	service, err := audit.NewService(store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	page, err := service.List(ctx, audit.Principal{Subject: "auditor", Roles: []string{audit.AuditViewerRole}}, audit.Query{
+		PrincipalSubject: "alice", ResourceType: "COLLECTION", ResourceID: "routes", PageNumber: 1, PageSize: 20,
+	})
+	if err != nil || page.TotalNumber != 1 || len(page.Records) != 1 || page.Records[0].PrincipalSubject != "alice" || page.Records[0].TraceID != "trace-a" {
+		t.Fatalf("audit page = %+v, %v", page, err)
+	}
+	encoded, _ := json.Marshal(page)
+	if bytes.Contains(encoded, []byte("before-secret")) || bytes.Contains(encoded, []byte("after-secret")) || bytes.Contains(encoded, []byte("metadata-secret")) {
+		t.Fatalf("audit query leaked bodies: %s", encoded)
+	}
 }
 
 func TestRealMySQLSnapshotRefreshRetainsFailedOptionDependencyGroup(t *testing.T) {

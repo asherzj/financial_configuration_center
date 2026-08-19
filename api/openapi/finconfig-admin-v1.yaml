@@ -228,8 +228,21 @@ paths:
   /audit-records:
     get:
       operationId: listAuditRecords
+      parameters:
+        - {name: principalSubject, in: query, schema: {type: string}}
+        - {name: resourceType, in: query, schema: {type: string}}
+        - {name: resourceId, in: query, schema: {type: string}}
+        - {name: from, in: query, schema: {type: string, format: date-time}}
+        - {name: until, in: query, schema: {type: string, format: date-time}}
+        - {name: page, in: query, schema: {type: integer, minimum: 1, default: 1}}
+        - {name: size, in: query, schema: {type: integer, minimum: 1, maximum: 100, default: 20}}
       responses:
-        '200': {description: Masked audit records}
+        '200':
+          description: Payload-free audit metadata
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/AuditRecordPage'}
+        default: {$ref: '#/components/responses/Error'}
   /outbox-events:
     get:
       operationId: listOutboxEvents
@@ -470,6 +483,35 @@ components:
       required: [description]
       properties:
         description: {type: string, minLength: 1}
+    AuditRecord:
+      type: object
+      additionalProperties: false
+      required: [id, occurredAt, principalSubject, action, resourceType, resourceId, scope, result, traceId]
+      properties:
+        id: {type: integer, format: int64, minimum: 1}
+        occurredAt: {type: string, format: date-time}
+        principalSubject: {type: string}
+        action: {type: string}
+        resourceType: {type: string}
+        resourceId: {type: string}
+        scope: {$ref: '#/components/schemas/Scope'}
+        result: {type: string, enum: [SUCCEEDED, FAILED]}
+        traceId: {type: string}
+    AuditRecordPage:
+      type: object
+      additionalProperties: false
+      required: [records, page]
+      properties:
+        records: {type: array, items: {$ref: '#/components/schemas/AuditRecord'}}
+        page:
+          type: object
+          additionalProperties: false
+          required: [number, size, totalNumber, totalPages]
+          properties:
+            number: {type: integer, minimum: 1}
+            size: {type: integer, minimum: 1, maximum: 100}
+            totalNumber: {type: integer, format: int64, minimum: 0}
+            totalPages: {type: integer, minimum: 0}
     OutboxEvent:
       type: object
       additionalProperties: false

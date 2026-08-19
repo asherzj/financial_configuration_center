@@ -2,7 +2,7 @@ import { Alert, Button, Card, Descriptions, Flex, Input, Modal, Select, Space, T
 import { useCallback, useEffect, useState } from "react";
 
 import { diagnosticsApi } from "./api";
-import type { DiagnosticsApi, OutboxEventMetadata, OutboxEventPage, OutboxStatus, SnapshotDiagnostics } from "./types";
+import type { AuditFilters, AuditRecordMetadata, AuditRecordPage, DiagnosticsApi, OutboxEventMetadata, OutboxEventPage, OutboxStatus, SnapshotDiagnostics } from "./types";
 
 const pageSize = 20;
 
@@ -11,6 +11,10 @@ export function DiagnosticsPage({ api = diagnosticsApi }: { api?: DiagnosticsApi
 	const [pageNumber, setPageNumber] = useState(1);
 	const [page, setPage] = useState<OutboxEventPage>();
 	const [snapshotStatus, setSnapshotStatus] = useState<SnapshotDiagnostics>();
+	const [auditFilters, setAuditFilters] = useState<AuditFilters>({});
+	const [appliedAuditFilters, setAppliedAuditFilters] = useState<AuditFilters>({});
+	const [auditPageNumber, setAuditPageNumber] = useState(1);
+	const [auditPage, setAuditPage] = useState<AuditRecordPage>();
 	const [loading, setLoading] = useState(true);
 	const [error, setError] = useState<string>();
 	const [replayTarget, setReplayTarget] = useState<OutboxEventMetadata>();
@@ -35,6 +39,10 @@ export function DiagnosticsPage({ api = diagnosticsApi }: { api?: DiagnosticsApi
 	useEffect(() => {
 		api.getSnapshotDiagnostics().then(setSnapshotStatus).catch((cause: unknown) => setError(cause instanceof Error ? cause.message : "加载 Snapshot 诊断失败"));
 	}, [api]);
+
+	useEffect(() => {
+		api.listAuditRecords(appliedAuditFilters, auditPageNumber, pageSize).then(setAuditPage).catch((cause: unknown) => setError(cause instanceof Error ? cause.message : "加载审计记录失败"));
+	}, [api, appliedAuditFilters, auditPageNumber]);
 
 	const closeReplay = () => {
 		setReplayTarget(undefined);
@@ -130,6 +138,39 @@ export function DiagnosticsPage({ api = diagnosticsApi }: { api?: DiagnosticsApi
 							total: page?.page.totalNumber ?? 0,
 							showSizeChanger: false,
 							onChange: setPageNumber,
+						}}
+					/>
+				</Space>
+			</Card>
+			<Card title="审计日志">
+				<Space orientation="vertical" className="operation-full-width">
+					<Flex gap={8} wrap>
+						<Input aria-label="审计主体" placeholder="主体" value={auditFilters.principalSubject ?? ""} onChange={(event) => setAuditFilters((current) => ({ ...current, principalSubject: event.target.value }))} />
+						<Input aria-label="审计资源类型" placeholder="资源类型" value={auditFilters.resourceType ?? ""} onChange={(event) => setAuditFilters((current) => ({ ...current, resourceType: event.target.value }))} />
+						<Input aria-label="审计资源 ID" placeholder="资源 ID" value={auditFilters.resourceId ?? ""} onChange={(event) => setAuditFilters((current) => ({ ...current, resourceId: event.target.value }))} />
+						<Input aria-label="审计开始时间" placeholder="开始时间（RFC3339）" value={auditFilters.from ?? ""} onChange={(event) => setAuditFilters((current) => ({ ...current, from: event.target.value }))} />
+						<Input aria-label="审计结束时间" placeholder="结束时间（RFC3339）" value={auditFilters.until ?? ""} onChange={(event) => setAuditFilters((current) => ({ ...current, until: event.target.value }))} />
+						<Button type="primary" onClick={() => { setAuditPageNumber(1); setAppliedAuditFilters({ ...auditFilters }); }}>筛选审计</Button>
+					</Flex>
+					<Typography.Text type="secondary">仅展示审计元数据，不返回变更前后正文或内部 metadata。</Typography.Text>
+					<Table<AuditRecordMetadata>
+						rowKey="id"
+						dataSource={auditPage?.records ?? []}
+						columns={[
+							{ title: "发生时间", dataIndex: "occurredAt" },
+							{ title: "主体", dataIndex: "principalSubject" },
+							{ title: "动作", dataIndex: "action" },
+							{ title: "资源", render: (_: unknown, record) => `${record.resourceType} / ${record.resourceId}` },
+							{ title: "作用域", render: (_: unknown, record) => [record.scope.region, record.scope.environment, record.scope.stage].filter(Boolean).join(" / ") || "—" },
+							{ title: "结果", dataIndex: "result", render: (value: AuditRecordMetadata["result"]) => <Tag color={value === "SUCCEEDED" ? "green" : "red"}>{value}</Tag> },
+							{ title: "Trace ID", dataIndex: "traceId", render: (value: string) => <Typography.Text code>{value}</Typography.Text> },
+						]}
+						pagination={{
+							current: auditPage?.page.number ?? auditPageNumber,
+							pageSize,
+							total: auditPage?.page.totalNumber ?? 0,
+							showSizeChanger: false,
+							onChange: setAuditPageNumber,
 						}}
 					/>
 				</Space>
