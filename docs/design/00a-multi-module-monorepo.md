@@ -23,6 +23,7 @@ financial_configuration_center/
 │   ├── proto/
 │   ├── openapi/
 │   ├── gen/go/
+│   ├── kitex_gen/                # Kitex 固定生成根，仍属于 Contracts module
 │   └── schema/mysql/             # schema version/table compatibility manifest
 │
 ├── platform/                    # Go module: .../platform
@@ -277,7 +278,7 @@ use (
 ## 7. Contract 与生成代码所有权
 
 - proto/OpenAPI 源文件和生成配置属于 Contracts。
-- 生成 Go DTO、Kitex client/server transport binding 进入 `contracts/gen/go`，生成代码只依赖 Contracts module。
+- 标准 grpc-go DTO/binding 进入 `contracts/gen/go`；Kitex client/server binding 进入工具要求的 `contracts/kitex_gen`。两类生成代码都只依赖 Contracts module，不属于产品实现。
 - Admin/Server handler 在各自 Interfaces layer 映射生成 DTO；生成 DTO 不进入 Domain/Application。
 - Frontend OpenAPI client 生成到 Frontend 自己的 `src/api/generated`，不从 Admin 源目录做相对 import。
 - schema manifest 属于 Contracts；Goose SQL migration 属于 Admin。Platform 只提供 MySQL capability/session 检查原语，Admin/Server 各自在自己的 Infrastructure layer 以固定 import 的 Contracts manifest 组成不可注入的完整 startup gate。CI 必须验证 migration 集合、最新 schema version、表 manifest 三者一致。

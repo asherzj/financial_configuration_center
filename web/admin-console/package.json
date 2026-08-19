@@ -6,7 +6,7 @@
   "scripts": {
     "build": "tsc --noEmit && vite build",
     "dev": "vite",
-    "generate:api": "openapi-typescript ../../api/openapi/finconfig-admin-v1.yaml --output src/api/schema.d.ts",
+    "generate:api": "openapi-typescript ../../contracts/openapi/finconfig-admin-v1.yaml --output src/api/schema.d.ts",
     "lint": "eslint .",
     "test": "vitest run",
     "typecheck": "tsc --noEmit"
