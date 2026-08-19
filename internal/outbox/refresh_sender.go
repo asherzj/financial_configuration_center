@@ -5,25 +5,39 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-
-	readmodel "github.com/asherzj/financial_configuration_center/internal/distribution/readmodel"
-	"github.com/asherzj/financial_configuration_center/internal/distribution/snapshot"
+	"reflect"
 )
 
-type HintNotifier interface {
-	Notify(snapshot.RefreshHint) error
+type RefreshTarget struct {
+	Collection        string
+	MinConfigRevision uint64
+	TargetCursor      uint64
 }
 
-type RefreshSender struct{ notifier HintNotifier }
+type RefreshNotification struct {
+	EventID        string
+	Environment    string
+	Targets        []RefreshTarget
+	ReleaseOrderID string
+	TraceID        string
+}
 
-func NewRefreshSender(notifier HintNotifier) (*RefreshSender, error) {
-	if notifier == nil {
+// RefreshNotifier is the Outbox application port for asking Config Server to
+// converge on an authoritative revision. Infrastructure owns the wire client.
+type RefreshNotifier interface {
+	Notify(context.Context, RefreshNotification) error
+}
+
+type RefreshSender struct{ notifier RefreshNotifier }
+
+func NewRefreshSender(notifier RefreshNotifier) (*RefreshSender, error) {
+	if notifier == nil || isNilRefreshNotifier(notifier) {
 		return nil, errors.New("new refresh sender: notifier is required")
 	}
 	return &RefreshSender{notifier: notifier}, nil
 }
 
-func (sender *RefreshSender) Send(_ context.Context, event Event) error {
+func (sender *RefreshSender) Send(ctx context.Context, event Event) error {
 	if event.Type != "CONFIGURATION_CHANGED" || event.PayloadVersion != 1 {
 		return fmt.Errorf("unsupported outbox event %q version %d", event.Type, event.PayloadVersion)
 	}
@@ -41,10 +55,20 @@ func (sender *RefreshSender) Send(_ context.Context, event Event) error {
 	if payload.SchemaVersion != 1 || payload.Collection == "" || payload.Environment == "" || payload.ConfigRevision == 0 {
 		return errors.New("configuration changed event is incomplete")
 	}
-	return sender.notifier.Notify(snapshot.RefreshHint{
+	return sender.notifier.Notify(ctx, RefreshNotification{
 		EventID: event.ID, Environment: payload.Environment, ReleaseOrderID: payload.ReleaseOrderID, TraceID: payload.TraceID,
-		Targets: []snapshot.HintTarget{{Collection: payload.Collection, MinRevision: readmodel.ConfigRevision(payload.ConfigRevision)}},
+		Targets: []RefreshTarget{{Collection: payload.Collection, MinConfigRevision: payload.ConfigRevision}},
 	})
+}
+
+func isNilRefreshNotifier(notifier RefreshNotifier) bool {
+	value := reflect.ValueOf(notifier)
+	switch value.Kind() {
+	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Pointer, reflect.Slice:
+		return value.IsNil()
+	default:
+		return false
+	}
 }
 
 var _ Sender = (*RefreshSender)(nil)
