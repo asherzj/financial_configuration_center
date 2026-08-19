@@ -32,3 +32,7 @@ The entire V1 runs securely and observably, survives lifecycle faults and is doc
 - Added an injected OpenTelemetry trace provider with service resource attributes, parent-based ratio sampling and W3C TraceContext/Baggage propagation without mutating global providers.
 - Added payload-free `/healthz`, bounded `/readyz`, private `/metrics`, an atomic readiness gate and ordered global-timeout shutdown phases (stop, cancel, drain, flush, close).
 - Verified with `go test ./...` and `go test -race ./internal/platform/observability ./internal/platform/health ./internal/platform/lifecycle`.
+- Added the production browser OIDC Authorization Code + S256 PKCE flow with an AEAD-sealed, short-lived login transaction; callback validation binds state, nonce, redirect URI and code verifier before issuing the existing rotating session/CSRF cookies.
+- Added strict RS256 OIDC ID-token verification (issuer, audience/azp, subject, nonce, iat, exp), bounded HTTPS JWKS loading/caching with key rotation, a confidential token endpoint client, payload-free auth errors, logout and session routes.
+- Added CSP, HSTS, nosniff, no-referrer and frame denial headers to all Admin BFF responses; updated the OpenAPI authentication/session contract.
+- Verified OIDC/auth with `go test ./...` and `go test -race ./internal/platform/auth ./internal/adminbff`.

@@ -4,6 +4,7 @@ import (
 	"errors"
 	"net/http"
 	"strings"
+	"time"
 
 	platformauth "github.com/asherzj/financial_configuration_center/internal/platform/auth"
 )
@@ -15,6 +16,38 @@ type SessionAuthenticator struct {
 	csrfHeaderName string
 	csrfKey        []byte
 	allowedOrigins []string
+}
+
+func (authenticator *SessionAuthenticator) Issue(writer http.ResponseWriter, session platformauth.Session, maxAge time.Duration) error {
+	if authenticator == nil || maxAge <= 0 {
+		return errors.New("session authenticator and positive max age are required")
+	}
+	sealed, err := authenticator.codec.Seal(session)
+	if err != nil {
+		return err
+	}
+	csrf, err := platformauth.CSRFToken(authenticator.csrfKey, session.SessionID)
+	if err != nil {
+		return err
+	}
+	seconds := int(maxAge / time.Second)
+	http.SetCookie(writer, &http.Cookie{Name: authenticator.cookieName, Value: sealed, Path: "/", MaxAge: seconds, Expires: session.ExpiresAt, Secure: true, HttpOnly: true, SameSite: http.SameSiteLaxMode})
+	http.SetCookie(writer, &http.Cookie{Name: authenticator.csrfCookieName, Value: csrf, Path: "/", MaxAge: seconds, Expires: session.ExpiresAt, Secure: true, HttpOnly: false, SameSite: http.SameSiteStrictMode})
+	return nil
+}
+
+func (authenticator *SessionAuthenticator) Clear(writer http.ResponseWriter) {
+	if authenticator == nil {
+		return
+	}
+	for _, cookie := range []http.Cookie{
+		{Name: authenticator.cookieName, Path: "/", Secure: true, HttpOnly: true, SameSite: http.SameSiteLaxMode},
+		{Name: authenticator.csrfCookieName, Path: "/", Secure: true, SameSite: http.SameSiteStrictMode},
+	} {
+		cookie.MaxAge = -1
+		cookie.Expires = time.Unix(1, 0)
+		http.SetCookie(writer, &cookie)
+	}
 }
 
 type SessionAuthConfig struct {

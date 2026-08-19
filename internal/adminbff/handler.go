@@ -831,7 +831,24 @@ func (handler *Handler) revealSensitiveField(writer http.ResponseWriter, request
 }
 
 func (handler *Handler) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
-	handler.mux.ServeHTTP(writer, request)
+	SecurityHeaders(handler.mux).ServeHTTP(writer, request)
+}
+
+// EnableOIDC mounts the browser authentication surface on the same BFF mux.
+// It must be called during composition, before the handler begins serving.
+func (handler *Handler) EnableOIDC(flow *OIDCFlow) error {
+	if handler == nil || flow == nil {
+		return errors.New("Admin BFF and OIDC flow are required")
+	}
+	for _, pattern := range []string{
+		"GET /api/v1/auth/login",
+		"GET /api/v1/auth/callback",
+		"POST /api/v1/auth/logout",
+		"GET /api/v1/session",
+	} {
+		handler.mux.Handle(pattern, flow)
+	}
+	return nil
 }
 
 type scopeRequest struct {

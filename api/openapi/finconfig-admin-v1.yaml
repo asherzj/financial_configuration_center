@@ -8,6 +8,31 @@ servers:
 security:
   - sessionCookie: []
 paths:
+  /auth/login:
+    get:
+      operationId: beginOIDCLogin
+      security: []
+      responses:
+        '302': {description: Redirect to the configured OIDC authorization endpoint with PKCE, state and nonce.}
+        default: {$ref: '#/components/responses/Error'}
+  /auth/callback:
+    get:
+      operationId: completeOIDCLogin
+      security: []
+      parameters:
+        - {name: code, in: query, required: true, schema: {type: string}}
+        - {name: state, in: query, required: true, schema: {type: string}}
+      responses:
+        '302': {description: Session cookies issued and browser redirected to the local success path.}
+        default: {$ref: '#/components/responses/Error'}
+  /auth/logout:
+    post:
+      operationId: logout
+      parameters:
+        - {name: X-CSRF-Token, in: header, required: true, schema: {type: string}}
+      responses:
+        '204': {description: Session and CSRF cookies cleared.}
+        default: {$ref: '#/components/responses/Error'}
   /session:
     get:
       operationId: getSession
@@ -503,13 +528,14 @@ components:
         lastErrorCode: {type: string}
     Session:
       type: object
-      required: [subject, displayName, roles, scopes, expiresAt]
+      additionalProperties: false
+      required: [subject, displayName, roles, allowedScopes, featureFlags]
       properties:
         subject: {type: string}
         displayName: {type: string}
         roles: {type: array, items: {type: string}}
-        scopes: {type: array, items: {$ref: '#/components/schemas/Scope'}}
-        expiresAt: {type: string, format: date-time}
+        allowedScopes: {type: array, items: {$ref: '#/components/schemas/Scope'}}
+        featureFlags: {type: object, additionalProperties: {type: boolean}}
     Collection:
       type: object
       additionalProperties: false
