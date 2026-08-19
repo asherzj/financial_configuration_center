@@ -27,3 +27,8 @@ The entire V1 runs securely and observably, survives lifecycle faults and is doc
 - Added exact whole-segment ScopePattern matching; partial glob syntax is rejected.
 - Added Ed25519 JWT signing/verification with strict algorithm/key ID, issuer/audience/lifetime/JTI validation, 60-second internal-token enforcement, and Consumer subject/ClientID binding.
 - Added rotating AES-256-GCM session cookies plus session-bound double-submit CSRF and exact HTTPS Origin validation; Admin BFF session authentication enforces CSRF on every unsafe method.
+- Added a private Prometheus registry with the full V1 metric surface and constructor-time bounded vocabularies; every recording method rejects unknown dynamic labels before a series can be created.
+- Added a recursive slog JSON redaction handler for credentials, tokens, cookies, configuration payloads, before/after data and nested groups, including defensive URI/Bearer/JWT scrubbing for error text.
+- Added an injected OpenTelemetry trace provider with service resource attributes, parent-based ratio sampling and W3C TraceContext/Baggage propagation without mutating global providers.
+- Added payload-free `/healthz`, bounded `/readyz`, private `/metrics`, an atomic readiness gate and ordered global-timeout shutdown phases (stop, cancel, drain, flush, close).
+- Verified with `go test ./...` and `go test -race ./internal/platform/observability ./internal/platform/health ./internal/platform/lifecycle`.
