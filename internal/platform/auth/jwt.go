@@ -29,6 +29,15 @@ type Claims struct {
 	ExpiresAt int64          `json:"exp"`
 }
 
+type InternalCallerIdentity struct {
+	Subject   string
+	JWTID     string
+	Roles     []string
+	Scopes    []ScopePattern
+	IssuedAt  time.Time
+	ExpiresAt time.Time
+}
+
 type KeyResolver interface {
 	Resolve(context.Context, string) (ed25519.PublicKey, error)
 }
@@ -101,15 +110,19 @@ func (verifier *InternalJWTVerifier) verify(ctx context.Context, token string) (
 	return claims, nil
 }
 
-func (verifier *InternalJWTVerifier) Verify(ctx context.Context, token string) (Claims, error) {
+func (verifier *InternalJWTVerifier) Verify(ctx context.Context, token string) (InternalCallerIdentity, error) {
 	claims, err := verifier.verify(ctx, token)
 	if err != nil {
-		return Claims{}, err
+		return InternalCallerIdentity{}, err
 	}
 	if claims.IssuedAt < 0 || claims.ExpiresAt <= claims.IssuedAt || claims.ExpiresAt-claims.IssuedAt > 60 {
-		return Claims{}, ErrTokenInvalid
+		return InternalCallerIdentity{}, ErrTokenInvalid
 	}
-	return claims, nil
+	return InternalCallerIdentity{
+		Subject: claims.Subject, JWTID: claims.JWTID,
+		Roles: append([]string(nil), claims.Roles...), Scopes: append([]ScopePattern(nil), claims.Scopes...),
+		IssuedAt: time.Unix(claims.IssuedAt, 0).UTC(), ExpiresAt: time.Unix(claims.ExpiresAt, 0).UTC(),
+	}, nil
 }
 
 func SignJWT(keyID string, privateKey ed25519.PrivateKey, claims Claims) (string, error) {
