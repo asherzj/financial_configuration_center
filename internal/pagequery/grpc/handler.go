@@ -12,8 +12,8 @@ import (
 	"github.com/asherzj/financial_configuration_center/internal/distribution/snapshot"
 	"github.com/asherzj/financial_configuration_center/internal/pagequery"
 	platformauth "github.com/asherzj/financial_configuration_center/internal/platform/auth"
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/status"
+	kitexcodes "github.com/cloudwego/kitex/pkg/remote/trans/nphttp2/codes"
+	kitexstatus "github.com/cloudwego/kitex/pkg/remote/trans/nphttp2/status"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
@@ -41,21 +41,21 @@ func New(application Application, authorizer RequestAuthorizer, managedEnvironme
 
 func (handler *Handler) QueryPage(ctx context.Context, request *configv1.QueryPageRequest) (*configv1.QueryPageResponse, error) {
 	if request == nil || request.Scope == nil {
-		return nil, status.Error(codes.InvalidArgument, "model_code and scope are required")
+		return nil, kitexstatus.Err(kitexcodes.InvalidArgument, "model_code and scope are required")
 	}
 	scope, err := platformauth.CompileScope(request.Scope.Region, request.Scope.Environment, request.Scope.Stage)
 	if err != nil {
-		return nil, status.Error(codes.InvalidArgument, "scope must contain concrete region and environment segments")
+		return nil, kitexstatus.Err(kitexcodes.InvalidArgument, "scope must contain concrete region and environment segments")
 	}
 	if scope.Environment != handler.managedEnvironment {
-		return nil, status.Error(codes.FailedPrecondition, "requested environment is not managed by this server")
+		return nil, kitexstatus.Err(kitexcodes.FailedPrecondition, "requested environment is not managed by this server")
 	}
 	if err := handler.authorizer.AuthorizePageQuery(ctx, scope); err != nil {
 		return nil, err
 	}
 	queryType, err := fromQueryType(request.QueryType)
 	if err != nil {
-		return nil, status.Error(codes.InvalidArgument, err.Error())
+		return nil, kitexstatus.Err(kitexcodes.InvalidArgument, err.Error())
 	}
 	page := pagequery.PageSpec{}
 	if request.Page != nil {
@@ -65,7 +65,7 @@ func (handler *Handler) QueryPage(ctx context.Context, request *configv1.QueryPa
 	for index, condition := range request.Conditions {
 		mapped, err := fromFilterCondition(condition)
 		if err != nil {
-			return nil, status.Error(codes.InvalidArgument, fmt.Sprintf("condition %d: %v", index, err))
+			return nil, kitexstatus.Err(kitexcodes.InvalidArgument, fmt.Sprintf("condition %d: %v", index, err))
 		}
 		conditions[index] = mapped
 	}
@@ -76,24 +76,24 @@ func (handler *Handler) QueryPage(ctx context.Context, request *configv1.QueryPa
 	if err != nil {
 		switch {
 		case errors.Is(err, pagequery.ErrManagedEnvironmentMismatch):
-			return nil, status.Error(codes.FailedPrecondition, err.Error())
+			return nil, kitexstatus.Err(kitexcodes.FailedPrecondition, err.Error())
 		case errors.Is(err, pagequery.ErrSnapshotUnavailable):
-			return nil, status.Error(codes.Unavailable, "page query snapshot is not available")
+			return nil, kitexstatus.Err(kitexcodes.Unavailable, "page query snapshot is not available")
 		case errors.Is(err, pagequery.ErrNotFound):
-			return nil, status.Error(codes.NotFound, err.Error())
+			return nil, kitexstatus.Err(kitexcodes.NotFound, err.Error())
 		case errors.Is(err, pagequery.ErrInvalidArgument):
-			return nil, status.Error(codes.InvalidArgument, err.Error())
+			return nil, kitexstatus.Err(kitexcodes.InvalidArgument, err.Error())
 		default:
-			return nil, status.Error(codes.Internal, "page query failed")
+			return nil, kitexstatus.Err(kitexcodes.Internal, "page query failed")
 		}
 	}
 	modelRevision, err := revisionInt64(result.ModelRevision)
 	if err != nil {
-		return nil, status.Error(codes.Internal, "model revision exceeds RPC range")
+		return nil, kitexstatus.Err(kitexcodes.Internal, "model revision exceeds RPC range")
 	}
 	collectionRevision, err := revisionInt64(result.CollectionRevision)
 	if err != nil {
-		return nil, status.Error(codes.Internal, "collection revision exceeds RPC range")
+		return nil, kitexstatus.Err(kitexcodes.Internal, "collection revision exceeds RPC range")
 	}
 	response := &configv1.QueryPageResponse{
 		ModelCode: result.ModelCode, ModelName: result.ModelName, QueryType: toQueryType(result.QueryType),
@@ -106,7 +106,7 @@ func (handler *Handler) QueryPage(ctx context.Context, request *configv1.QueryPa
 	for index, row := range result.Rows {
 		revision, err := revisionInt64(row.RecordRevision)
 		if err != nil {
-			return nil, status.Error(codes.Internal, "record revision exceeds RPC range")
+			return nil, kitexstatus.Err(kitexcodes.Internal, "record revision exceeds RPC range")
 		}
 		response.Rows[index] = &configv1.PageRow{
 			RecordKey: row.RecordKey, RecordRevision: revision, Values: cloneMap(row.Values),

@@ -8,8 +8,8 @@ import (
 	controlv1 "github.com/asherzj/financial_configuration_center/contracts/kitex_gen/finconfig/control/v1"
 	access "github.com/asherzj/financial_configuration_center/internal/access/application"
 	catalog "github.com/asherzj/financial_configuration_center/internal/catalog/domain"
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/status"
+	kitexcodes "github.com/cloudwego/kitex/pkg/remote/trans/nphttp2/codes"
+	kitexstatus "github.com/cloudwego/kitex/pkg/remote/trans/nphttp2/status"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
@@ -41,15 +41,15 @@ func New(application Application, identity IdentityResolver) (*Handler, error) {
 
 func (handler *Handler) RevealField(ctx context.Context, request *controlv1.RevealFieldRequest) (*controlv1.RevealFieldResponse, error) {
 	if request == nil || request.Scope == nil || request.ExpectedRecordRevision <= 0 || request.ExpectedCollectionRevision <= 0 || request.ExpectedModelRevision <= 0 {
-		return nil, status.Error(codes.InvalidArgument, "reveal request and positive revisions are required")
+		return nil, kitexstatus.Err(kitexcodes.InvalidArgument, "reveal request and positive revisions are required")
 	}
 	subject, err := handler.identity.Subject(ctx)
 	if err != nil || strings.TrimSpace(subject) == "" {
-		return nil, status.Error(codes.Unauthenticated, "authenticated subject is required")
+		return nil, kitexstatus.Err(kitexcodes.Unauthenticated, "authenticated subject is required")
 	}
 	roles, err := handler.identity.Roles(ctx)
 	if err != nil {
-		return nil, status.Error(codes.Unauthenticated, "authenticated roles are required")
+		return nil, kitexstatus.Err(kitexcodes.Unauthenticated, "authenticated roles are required")
 	}
 	displayName := ""
 	if resolver, ok := handler.identity.(DisplayNameResolver); ok {
@@ -76,17 +76,17 @@ func (handler *Handler) RevealField(ctx context.Context, request *controlv1.Reve
 func mapError(err error) error {
 	switch {
 	case errors.Is(err, access.ErrInvalid):
-		return status.Error(codes.InvalidArgument, err.Error())
+		return kitexstatus.Err(kitexcodes.InvalidArgument, err.Error())
 	case errors.Is(err, access.ErrForbidden):
-		return status.Error(codes.PermissionDenied, err.Error())
+		return kitexstatus.Err(kitexcodes.PermissionDenied, err.Error())
 	case errors.Is(err, access.ErrAborted):
-		return status.Error(codes.Aborted, err.Error())
+		return kitexstatus.Err(kitexcodes.Aborted, err.Error())
 	case errors.Is(err, access.ErrNotFound):
-		return status.Error(codes.NotFound, err.Error())
+		return kitexstatus.Err(kitexcodes.NotFound, err.Error())
 	case errors.Is(err, access.ErrFailedPrecondition):
-		return status.Error(codes.FailedPrecondition, err.Error())
+		return kitexstatus.Err(kitexcodes.FailedPrecondition, err.Error())
 	default:
-		return status.Error(codes.Internal, "sensitive reveal failed")
+		return kitexstatus.Err(kitexcodes.Internal, "sensitive reveal failed")
 	}
 }
 

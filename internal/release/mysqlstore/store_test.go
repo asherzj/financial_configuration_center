@@ -95,7 +95,7 @@ func TestRealMySQLSensitiveRevealUsesCurrentAuthorityAndCommitsAudit(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	service := access.NewService(accessStore, manager, fixedClock{now: now})
+	service := access.NewService(accessStore, accessSnapshotAuthority{manager: manager}, fixedClock{now: now})
 	command := access.RevealCommand{
 		ModelCode: "payment-route-admin", Scope: access.Scope{Region: "cn", Environment: "production"},
 		RecordKey: page.Rows[0].RecordKey, FieldName: "api_secret",
@@ -1903,6 +1903,34 @@ func assertDatabaseCount(t *testing.T, dsn, query string, want int) {
 type fixedClock struct{ now time.Time }
 
 func (clock fixedClock) Now() time.Time { return clock.now }
+
+// accessSnapshotAuthority keeps this pre-module cross-product acceptance test
+// behind Access's application port until the test moves to integration/e2e.
+type accessSnapshotAuthority struct{ manager *snapshot.Manager }
+
+func (reader accessSnapshotAuthority) ReadSnapshotAuthority(_ context.Context, query access.SnapshotAuthorityQuery) (access.SnapshotAuthority, error) {
+	current := reader.manager.Current()
+	if current == nil {
+		return access.SnapshotAuthority{}, access.ErrSnapshotUnavailable
+	}
+	if current.Environment() != query.Scope.Environment {
+		return access.SnapshotAuthority{Found: false}, nil
+	}
+	model, exists := current.Model(query.ModelCode)
+	if !exists {
+		return access.SnapshotAuthority{Found: false}, nil
+	}
+	collectionRevision, exists := current.CollectionVersion(model.Collection())
+	if !exists {
+		return access.SnapshotAuthority{Found: false}, nil
+	}
+	identity := current.Identity()
+	return access.SnapshotAuthority{
+		Found: true, Environment: current.Environment(), ServerEpoch: identity.ServerEpoch,
+		SnapshotInstance: identity.SnapshotInstance, SnapshotGeneration: identity.Generation,
+		ModelRevision: catalog.ConfigRevision(model.ConfigRevision()), CollectionRevision: catalog.ConfigRevision(collectionRevision),
+	}, nil
+}
 
 type ids struct {
 	values []string

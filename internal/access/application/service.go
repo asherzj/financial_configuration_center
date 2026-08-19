@@ -6,28 +6,47 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"reflect"
 	"slices"
 	"strings"
 	"time"
 
 	catalog "github.com/asherzj/financial_configuration_center/internal/catalog/domain"
-	"github.com/asherzj/financial_configuration_center/internal/distribution/snapshot"
 	overlay "github.com/asherzj/financial_configuration_center/internal/overlay/domain"
 )
 
 var (
-	ErrInvalid            = errors.New("invalid sensitive access request")
-	ErrForbidden          = errors.New("sensitive access forbidden")
-	ErrAborted            = errors.New("sensitive access authority is stale")
-	ErrNotFound           = errors.New("sensitive field value not found")
-	ErrFailedPrecondition = errors.New("sensitive access precondition failed")
+	ErrInvalid             = errors.New("invalid sensitive access request")
+	ErrForbidden           = errors.New("sensitive access forbidden")
+	ErrAborted             = errors.New("sensitive access authority is stale")
+	ErrNotFound            = errors.New("sensitive field value not found")
+	ErrFailedPrecondition  = errors.New("sensitive access precondition failed")
+	ErrSnapshotUnavailable = errors.New("snapshot authority is unavailable")
 )
 
 const SensitiveViewerRole = "SENSITIVE_VIEWER"
 
 type Clock interface{ Now() time.Time }
 
-type SnapshotProvider interface{ Current() *snapshot.Snapshot }
+type SnapshotAuthorityReader interface {
+	ReadSnapshotAuthority(context.Context, SnapshotAuthorityQuery) (SnapshotAuthority, error)
+}
+
+type SnapshotAuthorityQuery struct {
+	ModelCode     string
+	Scope         Scope
+	PreviewBucket *int32
+}
+
+type SnapshotAuthority struct {
+	Found              bool
+	Environment        string
+	ServerEpoch        string
+	SnapshotInstance   string
+	SnapshotGeneration uint64
+	ModelRevision      catalog.ConfigRevision
+	CollectionRevision catalog.ConfigRevision
+}
 
 type UnitOfWork interface {
 	WithinTransaction(context.Context, func(Transaction) error) error
@@ -100,16 +119,16 @@ type AuditEntry struct {
 
 type Service struct {
 	unitOfWork UnitOfWork
-	snapshots  SnapshotProvider
+	snapshots  SnapshotAuthorityReader
 	clock      Clock
 }
 
-func NewService(unitOfWork UnitOfWork, snapshots SnapshotProvider, clock Clock) *Service {
+func NewService(unitOfWork UnitOfWork, snapshots SnapshotAuthorityReader, clock Clock) *Service {
 	return &Service{unitOfWork: unitOfWork, snapshots: snapshots, clock: clock}
 }
 
 func (service *Service) Reveal(ctx context.Context, command RevealCommand) (RevealResult, error) {
-	if service == nil || service.unitOfWork == nil || service.snapshots == nil || service.clock == nil {
+	if service == nil || service.unitOfWork == nil || service.snapshots == nil || isNilSnapshotAuthorityReader(service.snapshots) || service.clock == nil {
 		return RevealResult{}, errors.New("sensitive access service dependencies are required")
 	}
 	if err := validateCommand(command); err != nil {
@@ -118,26 +137,28 @@ func (service *Service) Reveal(ctx context.Context, command RevealCommand) (Reve
 	if !slices.Contains(command.Principal.Roles, SensitiveViewerRole) {
 		return RevealResult{}, ErrForbidden
 	}
-	current := service.snapshots.Current()
-	if current == nil {
+	authority, err := service.snapshots.ReadSnapshotAuthority(ctx, SnapshotAuthorityQuery{
+		ModelCode: command.ModelCode, Scope: command.Scope, PreviewBucket: command.PreviewBucket,
+	})
+	if errors.Is(err, ErrSnapshotUnavailable) {
 		return RevealResult{}, ErrFailedPrecondition
 	}
-	identity := current.Identity()
-	if current.Environment() != command.Scope.Environment || identity.ServerEpoch != command.ExpectedServerEpoch || identity.SnapshotInstance != command.ExpectedSnapshotInstance || identity.Generation != command.ExpectedSnapshotGeneration {
+	if err != nil {
+		return RevealResult{}, fmt.Errorf("load sensitive access snapshot authority: %w", err)
+	}
+	if !authority.Found || authority.Environment != command.Scope.Environment || authority.ServerEpoch != command.ExpectedServerEpoch || authority.SnapshotInstance != command.ExpectedSnapshotInstance || authority.SnapshotGeneration != command.ExpectedSnapshotGeneration {
 		return RevealResult{}, ErrAborted
 	}
-	model, exists := current.Model(command.ModelCode)
-	if !exists || catalog.ConfigRevision(model.ConfigRevision()) != command.ExpectedModelRevision {
+	if authority.ModelRevision != command.ExpectedModelRevision {
 		return RevealResult{}, ErrAborted
 	}
-	collectionRevision, exists := current.CollectionVersion(model.Collection())
-	if !exists || catalog.ConfigRevision(collectionRevision) != command.ExpectedCollectionRevision {
+	if authority.CollectionRevision != command.ExpectedCollectionRevision {
 		return RevealResult{}, ErrAborted
 	}
 
 	now := service.clock.Now().UTC()
 	var revealed string
-	err := service.unitOfWork.WithinTransaction(ctx, func(transaction Transaction) error {
+	err = service.unitOfWork.WithinTransaction(ctx, func(transaction Transaction) error {
 		catalogAuthority, err := transaction.LoadCatalog(ctx, command.ModelCode)
 		if err != nil {
 			return fmt.Errorf("load sensitive access catalog: %w", err)
@@ -203,6 +224,16 @@ func (service *Service) Reveal(ctx context.Context, command RevealCommand) (Reve
 		return RevealResult{}, err
 	}
 	return RevealResult{Value: revealed, ExpiresAt: now.Add(60 * time.Second)}, nil
+}
+
+func isNilSnapshotAuthorityReader(reader SnapshotAuthorityReader) bool {
+	value := reflect.ValueOf(reader)
+	switch value.Kind() {
+	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Pointer, reflect.Slice:
+		return value.IsNil()
+	default:
+		return false
+	}
 }
 
 func validateCommand(command RevealCommand) error {

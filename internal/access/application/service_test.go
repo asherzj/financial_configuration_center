@@ -10,8 +10,6 @@ import (
 
 	access "github.com/asherzj/financial_configuration_center/internal/access/application"
 	catalog "github.com/asherzj/financial_configuration_center/internal/catalog/domain"
-	readmodel "github.com/asherzj/financial_configuration_center/internal/distribution/readmodel"
-	"github.com/asherzj/financial_configuration_center/internal/distribution/snapshot"
 	overlay "github.com/asherzj/financial_configuration_center/internal/overlay/domain"
 )
 
@@ -25,9 +23,33 @@ func TestRevealReturnsPlaintextOnlyAfterAuthorityAndAuditSucceed(t *testing.T) {
 	if result.Value != "authority-secret" || !result.ExpiresAt.Equal(fixture.now.Add(time.Minute)) || len(fixture.store.audits) != 1 {
 		t.Fatalf("result=%+v audits=%+v", result, fixture.store.audits)
 	}
+	if fixture.snapshot.query.ModelCode != fixture.command.ModelCode || fixture.snapshot.query.Scope != fixture.command.Scope {
+		t.Fatalf("snapshot query = %+v", fixture.snapshot.query)
+	}
 	encoded, _ := json.Marshal(fixture.store.audits[0].Metadata)
 	if string(encoded) == "" || strings.Contains(string(encoded), "authority-secret") {
 		t.Fatalf("audit leaked plaintext: %s", encoded)
+	}
+}
+
+func TestRevealFailsClosedWhenSnapshotAuthorityIsUnavailable(t *testing.T) {
+	t.Parallel()
+	fixture := newFixture(t)
+	fixture.snapshot.err = access.ErrSnapshotUnavailable
+	result, err := fixture.service.Reveal(context.Background(), fixture.command)
+	if !errors.Is(err, access.ErrFailedPrecondition) || result.Value != "" || fixture.store.transactions != 0 {
+		t.Fatalf("result=%+v error=%v transactions=%d", result, err, fixture.store.transactions)
+	}
+}
+
+func TestRevealRejectsTypedNilSnapshotAuthorityReader(t *testing.T) {
+	t.Parallel()
+	fixture := newFixture(t)
+	var reader *snapshotAuthorityReader
+	service := access.NewService(fixture.store, reader, fixedClock{fixture.now})
+	result, err := service.Reveal(context.Background(), fixture.command)
+	if err == nil || result.Value != "" || fixture.store.transactions != 0 {
+		t.Fatalf("result=%+v error=%v transactions=%d", result, err, fixture.store.transactions)
 	}
 }
 
@@ -41,21 +63,25 @@ func TestRevealRejectsForbiddenAndEveryStaleAuthorityFact(t *testing.T) {
 		}
 	})
 	for _, test := range []struct {
-		name   string
-		mutate func(*fixture)
+		name             string
+		mutate           func(*fixture)
+		wantTransactions int
 	}{
+		{name: "snapshot not found", mutate: func(f *fixture) { f.snapshot.authority.Found = false }},
+		{name: "environment", mutate: func(f *fixture) { f.snapshot.authority.Environment = "staging" }},
 		{name: "server epoch", mutate: func(f *fixture) { f.command.ExpectedServerEpoch = "old" }},
+		{name: "snapshot instance", mutate: func(f *fixture) { f.snapshot.authority.SnapshotInstance = "other" }},
 		{name: "snapshot generation", mutate: func(f *fixture) { f.command.ExpectedSnapshotGeneration++ }},
 		{name: "model revision", mutate: func(f *fixture) { f.command.ExpectedModelRevision-- }},
 		{name: "collection revision", mutate: func(f *fixture) { f.command.ExpectedCollectionRevision-- }},
-		{name: "record revision", mutate: func(f *fixture) { f.store.record.BaseRecords[0].ConfigRevision++ }},
+		{name: "record revision", mutate: func(f *fixture) { f.store.record.BaseRecords[0].ConfigRevision++ }, wantTransactions: 1},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			fixture := newFixture(t)
 			test.mutate(fixture)
 			result, err := fixture.service.Reveal(context.Background(), fixture.command)
-			if !errors.Is(err, access.ErrAborted) || result.Value != "" || len(fixture.store.audits) != 0 {
-				t.Fatalf("result=%+v error=%v audits=%d", result, err, len(fixture.store.audits))
+			if !errors.Is(err, access.ErrAborted) || result.Value != "" || len(fixture.store.audits) != 0 || fixture.store.transactions != test.wantTransactions {
+				t.Fatalf("result=%+v error=%v audits=%d transactions=%d", result, err, len(fixture.store.audits), fixture.store.transactions)
 			}
 		})
 	}
@@ -72,10 +98,11 @@ func TestRevealAuditFailureReturnsNoPlaintext(t *testing.T) {
 }
 
 type fixture struct {
-	now     time.Time
-	store   *fakeStore
-	service *access.Service
-	command access.RevealCommand
+	now      time.Time
+	store    *fakeStore
+	snapshot *snapshotAuthorityReader
+	service  *access.Service
+	command  access.RevealCommand
 }
 
 func newFixture(t *testing.T) *fixture {
@@ -103,43 +130,17 @@ func newFixture(t *testing.T) *fixture {
 	}
 	record, _ := definition.NewRecord("production", map[string]string{"name": "primary", "secret": "authority-secret"})
 	record.ConfigRevision = 8
-	snapshotDefinition, err := readmodel.CompileCollection(readmodel.CollectionSpec{
-		Name: "credentials", KeyFields: []string{"name"}, SchemaVersion: 1,
-		Fields: []readmodel.FieldDefinition{
-			{Name: "name", DisplayName: "Name", Type: readmodel.FieldTypeString, Required: true, DisplayOrder: 0},
-			{Name: "secret", DisplayName: "Secret", Type: readmodel.FieldTypeString, Required: true, Sensitive: true, DisplayOrder: 1},
-		},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	snapshotModel, err := readmodel.CompileModel(snapshotDefinition, readmodel.ModelSpec{
-		Code: "credential-admin", Name: "Credentials", Collection: snapshotDefinition.Name(),
-		Fields: []readmodel.ModelField{
-			{Name: "name", Type: readmodel.FieldTypeString, Required: true, Editable: true, UIControl: readmodel.UIControlInput},
-			{Name: "secret", Type: readmodel.FieldTypeString, Required: true, Sensitive: true, Editable: true, UIControl: readmodel.UIControlInput},
-		},
-		ProjectionFields: []string{"name", "secret"}, KeyFields: []string{"name"}, DefaultPageSize: 20, MaxPageSize: 100, ConfigRevision: 7,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	snapshotRecord, _ := snapshotDefinition.NewRecord("production", map[string]string{"name": "primary", "secret": "authority-secret"})
-	snapshotRecord.ConfigRevision = 8
 	now := time.Date(2026, 8, 19, 23, 30, 0, 0, time.UTC)
-	manager, err := snapshot.NewManager(snapshotSource{inputs: []snapshot.CollectionInput{{Definition: snapshotDefinition, Models: []readmodel.CompiledModel{snapshotModel}, Version: 8, Records: []readmodel.ConfigurationRecord{snapshotRecord}}}}, snapshot.IdentitySeed{ServerEpoch: "epoch", ServerInstanceID: "server", SnapshotInstance: "instance"}, fixedClock{now})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := manager.Refresh(context.Background(), "production"); err != nil {
-		t.Fatal(err)
-	}
 	store := &fakeStore{
 		catalog: access.CatalogAuthority{Definition: definition, Model: model},
 		record:  access.RecordAuthority{CollectionRevision: 8, BaseRecords: []catalog.ConfigurationRecord{record}},
 	}
+	snapshot := &snapshotAuthorityReader{authority: access.SnapshotAuthority{
+		Found: true, Environment: "production", ServerEpoch: "epoch", SnapshotInstance: "instance",
+		SnapshotGeneration: 1, ModelRevision: 7, CollectionRevision: 8,
+	}}
 	return &fixture{
-		now: now, store: store, service: access.NewService(store, manager, fixedClock{now}),
+		now: now, store: store, snapshot: snapshot, service: access.NewService(store, snapshot, fixedClock{now}),
 		command: access.RevealCommand{
 			ModelCode: model.Code(), Scope: access.Scope{Region: "cn", Environment: "production"}, RecordKey: record.RecordKey, FieldName: "secret",
 			ExpectedRecordRevision: 8, ExpectedCollectionRevision: 8, ExpectedModelRevision: 7,
@@ -184,10 +185,15 @@ func (transaction *fakeTransaction) InsertRevealAudit(_ context.Context, entry a
 	return nil
 }
 
-type snapshotSource struct{ inputs []snapshot.CollectionInput }
+type snapshotAuthorityReader struct {
+	authority access.SnapshotAuthority
+	err       error
+	query     access.SnapshotAuthorityQuery
+}
 
-func (source snapshotSource) LoadEnvironment(context.Context, string) ([]snapshot.CollectionInput, error) {
-	return source.inputs, nil
+func (reader *snapshotAuthorityReader) ReadSnapshotAuthority(_ context.Context, query access.SnapshotAuthorityQuery) (access.SnapshotAuthority, error) {
+	reader.query = query
+	return reader.authority, reader.err
 }
 
 type fixedClock struct{ now time.Time }
