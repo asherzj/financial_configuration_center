@@ -188,6 +188,7 @@ WatchHub 在 snapshot 成功发布后接收 UpdateEvent。每个 subscriber 有�
 - DiagnosticsService 使用 60 秒 Internal JWT，并要求 PLATFORM_OPERATOR 或 AUDITOR。
 - 一个 Kitex server 必须启用 unary-compatible middleware 并同时挂 unary/stream policy；无 token、重复 Authorization、错误 profile、issuer/audience/alg/kid/lifetime 全部在读取配置正文前拒绝。
 - application/domain 层只接收类型化 ConsumerIdentity 或 InternalCallerIdentity，不读取 gRPC metadata。
+- production composition 只通过不暴露依赖注入的 runtime security factory 构造两套 verifier、Kitex Authenticator 与 RequestAuthorizer；固定真实时钟、受控 regular-file key loader 与 TLS 1.2+ bounded HTTP transport，禁止把开发 verifier 或测试 Clock/FileReader/RoundTripper 注入生产 server。Consumer JWKS fetch 使用配置的总 HTTP timeout 且禁止 redirect，Internal key ring 在 UDS bind 前从 mounted PKIX Ed25519 public-key files 完整加载，任一文件失败则启动失败。
 
 ## 14. 接口级测试
 

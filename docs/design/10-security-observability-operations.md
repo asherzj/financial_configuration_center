@@ -121,6 +121,28 @@ finconfig_sdk_callback_total{result}
 
 配置至少覆盖：监听地址、MySQL DSN/池、TLS、auth、timeouts、poll/backoff、容量限制、OTel endpoint、Prometheus、graceful shutdown。未知 YAML 字段拒绝。
 
+Config Server production RPC auth 使用以下严格配置；缺项、边界外 timeout/TTL、非 HTTPS issuer/JWKS、相对 key path、重复 role/subject 均启动失败：
+
+```yaml
+auth:
+  devAuthEnabled: false
+  consumerJwt:
+    issuer: https://identity.example.com
+    audience: finconfig-config-server
+    jwksUrl: https://identity.example.com/.well-known/jwks.json
+    jwksCacheTtl: 5m       # > 0 且 <= 24h
+    httpTimeout: 3s        # > 0 且 <= 30s
+  internalJwt:
+    issuer: finconfig-control-plane
+    audience: finconfig-config-server
+    publicKeyFiles:        # 1..32 个 kid -> mounted PKIX Ed25519 PUBLIC KEY PEM
+      relay-2026-08: /run/secrets/finconfig/relay-2026-08.pem
+  refreshRelaySubjects: [control-plane-relay]
+  additionalPageQueryRoles: []
+```
+
+标量可由 `FINCONFIG_AUTH_CONSUMER_ISSUER`、`_AUDIENCE`、`_JWKS_URL`、`_JWKS_CACHE_TTL`、`_HTTP_TIMEOUT` 及 `FINCONFIG_AUTH_INTERNAL_ISSUER`、`_AUDIENCE` 覆盖。公钥映射使用 `FINCONFIG_AUTH_INTERNAL_PUBLIC_KEY_FILES` JSON object；relay subjects 与附加 roles 分别使用 `FINCONFIG_AUTH_REFRESH_RELAY_SUBJECTS`、`FINCONFIG_AUTH_ADDITIONAL_PAGE_QUERY_ROLES` JSON array，禁止 `null` 与有歧义的逗号分隔。JWKS client 固定真实时钟和 TLS 1.2+ 标准 transport，禁止 redirect，并同时限制 connect/TLS/header/总请求时间；production constructor 不暴露 Clock/FileReader/RoundTripper 注入。Internal 公钥以 nonblocking open 获取 fd 后验证最终对象是 regular file、不可 group/world write，再以 16 KiB+1 limit 读取；内容只接受单个 PKIX `PUBLIC KEY` PEM 且算法必须 Ed25519。安全摘要只记录完整 `ValidateRPC` 是否通过、key/subject/role 数量以及 issuer/audience/JWKS URL 的不可逆短 hash，不输出 URL、subject、role、secret path 或 key 内容。
+
 Kitex backend UDS 额外配置规范绝对路径、四位八进制字符串 `backendSocketMode`（默认 `0660`）和 numeric `backendSocketGroupId`。mode 必须包含 owner read/write 与 group write，可额外授予 group read，禁止 world/execute/special bits；production 必须显式给出共享 GID，development/test 未给出时使用进程 effective GID。socket 根目录及后续父目录必须由服务运行 UID 所有、属于该共享 GID、具有 group execute 且不得 group/world writable；Envoy 仅通过共享 GID 获得目录 traverse 和 socket connect 权限，不得获得父目录写权限。不得降级到 `0777`。
 
 运行时不热更新核心安全/数据库配置；变更通过重启部署。ReleaseTemplate/Model 是业务元数据，不混入进程 YAML。

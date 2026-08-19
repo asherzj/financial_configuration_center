@@ -2,6 +2,7 @@ package config
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -9,6 +10,7 @@ import (
 	"net"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -68,7 +70,25 @@ type TelemetryConfig struct {
 }
 
 type AuthConfig struct {
-	DevAuthEnabled bool `yaml:"devAuthEnabled"`
+	DevAuthEnabled           bool              `yaml:"devAuthEnabled"`
+	ConsumerJWT              ConsumerJWTConfig `yaml:"consumerJwt"`
+	InternalJWT              InternalJWTConfig `yaml:"internalJwt"`
+	RefreshRelaySubjects     []string          `yaml:"refreshRelaySubjects"`
+	AdditionalPageQueryRoles []string          `yaml:"additionalPageQueryRoles"`
+}
+
+type ConsumerJWTConfig struct {
+	Issuer       string   `yaml:"issuer"`
+	Audience     string   `yaml:"audience"`
+	JWKSURL      string   `yaml:"jwksUrl"`
+	JWKSCacheTTL Duration `yaml:"jwksCacheTtl"`
+	HTTPTimeout  Duration `yaml:"httpTimeout"`
+}
+
+type InternalJWTConfig struct {
+	Issuer         string            `yaml:"issuer"`
+	Audience       string            `yaml:"audience"`
+	PublicKeyFiles map[string]string `yaml:"publicKeyFiles"`
 }
 
 func Load(reader io.Reader, environment []string) (ServiceConfig, error) {
@@ -180,6 +200,88 @@ func (config ConfigServerConfig) Validate() error {
 	if config.BackendSocket == "" {
 		return errors.New("Config Server backend Unix socket is required")
 	}
+	if config.RuntimeMode == "production" {
+		if err := config.Auth.ValidateRPC(); err != nil {
+			return fmt.Errorf("Config Server production RPC authentication: %w", err)
+		}
+	}
+	return nil
+}
+
+func (config AuthConfig) ValidateRPC() error {
+	if config.DevAuthEnabled {
+		return errors.New("development authentication is not a production RPC profile")
+	}
+	if err := exactConfigValue("Consumer JWT issuer", config.ConsumerJWT.Issuer); err != nil {
+		return err
+	}
+	issuer, err := url.Parse(config.ConsumerJWT.Issuer)
+	if err != nil || issuer.Scheme != "https" || issuer.Host == "" || issuer.User != nil || issuer.Fragment != "" {
+		return errors.New("Consumer JWT issuer must be an absolute HTTPS URL")
+	}
+	if err := exactConfigValue("Consumer JWT audience", config.ConsumerJWT.Audience); err != nil {
+		return err
+	}
+	if err := exactConfigValue("Consumer JWT JWKS URL", config.ConsumerJWT.JWKSURL); err != nil {
+		return err
+	}
+	jwksURL, err := url.Parse(config.ConsumerJWT.JWKSURL)
+	if err != nil || jwksURL.Scheme != "https" || jwksURL.Host == "" || jwksURL.User != nil || jwksURL.Fragment != "" {
+		return errors.New("Consumer JWT JWKS URL must be an absolute HTTPS URL")
+	}
+	if config.ConsumerJWT.JWKSCacheTTL.Duration <= 0 || config.ConsumerJWT.JWKSCacheTTL.Duration > 24*time.Hour {
+		return errors.New("Consumer JWT JWKS cache TTL must be positive and at most 24 hours")
+	}
+	if config.ConsumerJWT.HTTPTimeout.Duration <= 0 || config.ConsumerJWT.HTTPTimeout.Duration > 30*time.Second {
+		return errors.New("Consumer JWT HTTP timeout must be positive and at most 30 seconds")
+	}
+	if err := exactConfigValue("Internal JWT issuer", config.InternalJWT.Issuer); err != nil {
+		return err
+	}
+	if err := exactConfigValue("Internal JWT audience", config.InternalJWT.Audience); err != nil {
+		return err
+	}
+	if len(config.InternalJWT.PublicKeyFiles) == 0 || len(config.InternalJWT.PublicKeyFiles) > 32 {
+		return errors.New("Internal JWT public key ring must contain between one and 32 keys")
+	}
+	for keyID, path := range config.InternalJWT.PublicKeyFiles {
+		if err := exactConfigValue("Internal JWT key ID", keyID); err != nil || len(keyID) > 128 || strings.ContainsAny(keyID, " \t\r\n") {
+			return errors.New("Internal JWT key IDs must be non-empty bounded values without whitespace")
+		}
+		if path == "" || path != strings.TrimSpace(path) || !filepath.IsAbs(path) || filepath.Clean(path) != path {
+			return errors.New("Internal JWT public key file paths must be clean absolute paths")
+		}
+	}
+	if err := exactConfigList("refresh relay subjects", config.RefreshRelaySubjects, true); err != nil {
+		return err
+	}
+	return exactConfigList("additional PageQuery roles", config.AdditionalPageQueryRoles, false)
+}
+
+func exactConfigValue(name, value string) error {
+	if value == "" || value != strings.TrimSpace(value) || len(value) > 512 {
+		return fmt.Errorf("%s must be a non-empty bounded value without surrounding whitespace", name)
+	}
+	return nil
+}
+
+func exactConfigList(name string, values []string, required bool) error {
+	if required && len(values) == 0 {
+		return fmt.Errorf("%s must contain at least one value", name)
+	}
+	if len(values) > 128 {
+		return fmt.Errorf("%s may contain at most 128 values", name)
+	}
+	seen := make(map[string]struct{}, len(values))
+	for _, value := range values {
+		if err := exactConfigValue(name, value); err != nil {
+			return err
+		}
+		if _, duplicate := seen[value]; duplicate {
+			return fmt.Errorf("%s contains a duplicate value", name)
+		}
+		seen[value] = struct{}{}
+	}
 	return nil
 }
 
@@ -191,6 +293,7 @@ func (config MySQLConfig) DatabaseConfig() platformmysql.Config {
 }
 
 func (config ServiceConfig) SafeSummary() string {
+	rpcAuthConfigured := config.Auth.ValidateRPC() == nil
 	summary := map[string]any{
 		"service": config.ServiceName, "version": config.Version, "runtimeMode": config.RuntimeMode, "instanceId": config.InstanceID,
 		"operationsListenAddress": config.OperationsListenAddress, "backendSocket": config.BackendSocket,
@@ -198,9 +301,23 @@ func (config ServiceConfig) SafeSummary() string {
 		"shutdownTimeout": config.ShutdownTimeout.String(), "mysqlConfigured": config.MySQL.DSN != "",
 		"mysqlMaxOpenConnections": config.MySQL.MaxOpenConnections, "traceSampleRatio": config.Telemetry.TraceSampleRatio,
 		"otlpConfigured": config.Telemetry.OTLPEndpoint != "", "devAuthEnabled": config.Auth.DevAuthEnabled,
+		"rpcAuthConfigured": rpcAuthConfigured, "consumerJwtConfigured": rpcAuthConfigured,
+		"consumerIssuerHash": safeConfigHash(config.Auth.ConsumerJWT.Issuer), "consumerAudienceHash": safeConfigHash(config.Auth.ConsumerJWT.Audience),
+		"consumerJwksUrlHash": safeConfigHash(config.Auth.ConsumerJWT.JWKSURL), "internalJwtConfigured": rpcAuthConfigured,
+		"internalIssuerHash": safeConfigHash(config.Auth.InternalJWT.Issuer), "internalAudienceHash": safeConfigHash(config.Auth.InternalJWT.Audience),
+		"internalPublicKeyCount": len(config.Auth.InternalJWT.PublicKeyFiles), "refreshRelaySubjectCount": len(config.Auth.RefreshRelaySubjects),
+		"additionalPageQueryRoleCount": len(config.Auth.AdditionalPageQueryRoles),
 	}
 	encoded, _ := json.Marshal(summary)
 	return string(encoded)
+}
+
+func safeConfigHash(value string) string {
+	if value == "" {
+		return ""
+	}
+	digest := sha256.Sum256([]byte(value))
+	return fmt.Sprintf("%x", digest[:8])
 }
 
 func (config ConfigServerConfig) SafeSummary() string {
@@ -220,6 +337,11 @@ func applyEnvironment(config *ServiceConfig, values []string) error {
 		"FINCONFIG_OPERATIONS_LISTEN_ADDRESS": &config.OperationsListenAddress, "FINCONFIG_BACKEND_SOCKET": &config.BackendSocket,
 		"FINCONFIG_BACKEND_SOCKET_MODE": &config.BackendSocketMode,
 		"FINCONFIG_MYSQL_DSN":           &config.MySQL.DSN, "FINCONFIG_OTLP_ENDPOINT": &config.Telemetry.OTLPEndpoint,
+		"FINCONFIG_AUTH_CONSUMER_ISSUER":   &config.Auth.ConsumerJWT.Issuer,
+		"FINCONFIG_AUTH_CONSUMER_AUDIENCE": &config.Auth.ConsumerJWT.Audience,
+		"FINCONFIG_AUTH_CONSUMER_JWKS_URL": &config.Auth.ConsumerJWT.JWKSURL,
+		"FINCONFIG_AUTH_INTERNAL_ISSUER":   &config.Auth.InternalJWT.Issuer,
+		"FINCONFIG_AUTH_INTERNAL_AUDIENCE": &config.Auth.InternalJWT.Audience,
 	}
 	for name, target := range stringOverrides {
 		if value, exists := environment[name]; exists {
@@ -272,7 +394,80 @@ func applyEnvironment(config *ServiceConfig, values []string) error {
 		}
 		config.Auth.DevAuthEnabled = parsed
 	}
+	for name, target := range map[string]*Duration{
+		"FINCONFIG_AUTH_CONSUMER_JWKS_CACHE_TTL": &config.Auth.ConsumerJWT.JWKSCacheTTL,
+		"FINCONFIG_AUTH_CONSUMER_HTTP_TIMEOUT":   &config.Auth.ConsumerJWT.HTTPTimeout,
+	} {
+		if value, exists := environment[name]; exists {
+			parsed, err := time.ParseDuration(value)
+			if err != nil {
+				return fmt.Errorf("parse %s: %w", name, err)
+			}
+			target.Duration = parsed
+		}
+	}
+	if value, exists := environment["FINCONFIG_AUTH_INTERNAL_PUBLIC_KEY_FILES"]; exists {
+		parsed, err := decodeStringMapJSON(value)
+		if err != nil {
+			return fmt.Errorf("parse FINCONFIG_AUTH_INTERNAL_PUBLIC_KEY_FILES: %w", err)
+		}
+		config.Auth.InternalJWT.PublicKeyFiles = parsed
+	}
+	for name, target := range map[string]*[]string{
+		"FINCONFIG_AUTH_REFRESH_RELAY_SUBJECTS":      &config.Auth.RefreshRelaySubjects,
+		"FINCONFIG_AUTH_ADDITIONAL_PAGE_QUERY_ROLES": &config.Auth.AdditionalPageQueryRoles,
+	} {
+		if value, exists := environment[name]; exists {
+			parsed, err := decodeStringSliceJSON(value)
+			if err != nil {
+				return fmt.Errorf("parse %s: %w", name, err)
+			}
+			*target = parsed
+		}
+	}
 	return nil
+}
+
+func decodeStringSliceJSON(value string) ([]string, error) {
+	var result []string
+	if err := json.Unmarshal([]byte(value), &result); err != nil || result == nil {
+		return nil, errors.New("value must be a JSON array of strings")
+	}
+	return result, nil
+}
+
+func decodeStringMapJSON(value string) (map[string]string, error) {
+	decoder := json.NewDecoder(strings.NewReader(value))
+	token, err := decoder.Token()
+	if err != nil || token != json.Delim('{') {
+		return nil, errors.New("value must be a JSON object")
+	}
+	result := make(map[string]string)
+	for decoder.More() {
+		keyToken, err := decoder.Token()
+		if err != nil {
+			return nil, err
+		}
+		key, ok := keyToken.(string)
+		if !ok {
+			return nil, errors.New("JSON object key must be a string")
+		}
+		if _, duplicate := result[key]; duplicate {
+			return nil, fmt.Errorf("duplicate JSON object key %q", key)
+		}
+		var path string
+		if err := decoder.Decode(&path); err != nil {
+			return nil, err
+		}
+		result[key] = path
+	}
+	if token, err = decoder.Token(); err != nil || token != json.Delim('}') {
+		return nil, errors.New("value must end after its JSON object")
+	}
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
+		return nil, errors.New("value must contain exactly one JSON object")
+	}
+	return result, nil
 }
 
 func (config ServiceConfig) BackendSocketPermissions() (os.FileMode, int, error) {
