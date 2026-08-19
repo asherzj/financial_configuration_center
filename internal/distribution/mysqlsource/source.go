@@ -48,11 +48,21 @@ func (source *Source) LoadEnvironmentPartial(ctx context.Context, environment st
 			SDKDeliveryEnabled bool
 			SchemaVersion      uint64
 			ConfigRevision     uint64
+			ChangeCursor       uint64
 		}
 		var collections []collectionRow
 		if err := db.WithContext(ctx).Raw(`
 			SELECT c.name, c.description, c.fields, c.key_fields, c.sdk_delivery_enabled,
-				c.schema_version, v.config_revision
+				c.schema_version, v.config_revision,
+				COALESCE((
+					SELECT MAX(change_log.id)
+					FROM configuration_change_log change_log
+					WHERE change_log.collection_name = c.name
+						AND (
+							change_log.environment = v.environment
+							OR (change_log.kind = 'METADATA' AND change_log.environment = '')
+						)
+				), 0) AS change_cursor
 			FROM configuration_collections c
 			JOIN configuration_versions v ON v.collection_name = c.name AND v.environment = ?
 			WHERE c.status = 'ENABLED'
@@ -84,7 +94,7 @@ func (source *Source) LoadEnvironmentPartial(ctx context.Context, environment st
 			}
 			loaded.Inputs = append(loaded.Inputs, snapshot.CollectionInput{
 				Definition: definition, Models: models, Version: catalog.ConfigRevision(row.ConfigRevision),
-				Records: records, OverlayRules: overlayRules,
+				Cursor: row.ChangeCursor, Records: records, OverlayRules: overlayRules,
 			})
 		}
 		if err := ctx.Err(); err != nil {
@@ -162,6 +172,7 @@ func compileCollection(row struct {
 	SDKDeliveryEnabled bool
 	SchemaVersion      uint64
 	ConfigRevision     uint64
+	ChangeCursor       uint64
 }) (catalog.CollectionDefinition, error) {
 	var fields []catalog.FieldDefinition
 	var keyFields []string

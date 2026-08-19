@@ -109,6 +109,10 @@ func (handler *Handler) GetSnapshot(ctx context.Context, request *configv1.GetSn
 		if err != nil {
 			return nil, status.Error(codes.Internal, "collection revision exceeds RPC range")
 		}
+		changeCursor, err := uint64Int64(collection.ChangeCursor)
+		if err != nil {
+			return nil, status.Error(codes.Internal, "collection cursor exceeds RPC range")
+		}
 		body := &configv1.CollectionData{Records: make([]*configv1.SnapshotRecord, len(collection.Records))}
 		for recordIndex, record := range collection.Records {
 			recordRevision, err := revisionInt64(record.RecordRevision)
@@ -125,6 +129,7 @@ func (handler *Handler) GetSnapshot(ctx context.Context, request *configv1.GetSn
 		}
 		converted.Collections[index] = &configv1.CollectionPayload{
 			Collection: collection.Name, Codec: "PROTOBUF", FormatVersion: 1, Data: data,
+			ChangeCursor: changeCursor,
 			Version: &configv1.VersionView{
 				Collection: collection.Name, ConfigRevision: revision,
 				BaseDigest: &commonv1.Digest{Algorithm: "SHA-256", Value: collection.Digest},
@@ -245,6 +250,13 @@ func revisionInt64(revision catalog.ConfigRevision) (int64, error) {
 		return 0, errors.New("revision exceeds int64")
 	}
 	return int64(revision), nil
+}
+
+func uint64Int64(value uint64) (int64, error) {
+	if value > math.MaxInt64 {
+		return 0, errors.New("value exceeds int64")
+	}
+	return int64(value), nil
 }
 
 func cloneMap(source map[string]string) map[string]string {

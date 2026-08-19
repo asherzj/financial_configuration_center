@@ -47,10 +47,11 @@ type Record struct {
 }
 
 type CollectionPayload struct {
-	Name     string
-	Revision catalog.ConfigRevision
-	Digest   string
-	Records  []Record
+	Name         string
+	Revision     catalog.ConfigRevision
+	ChangeCursor uint64
+	Digest       string
+	Records      []Record
 }
 
 type GetSnapshotResponse struct {
@@ -133,6 +134,7 @@ func (service *Service) GetSnapshot(ctx context.Context, request GetSnapshotRequ
 			continue
 		}
 		revision, _ := current.CollectionVersion(name)
+		changeCursor, _ := current.CollectionCursor(name)
 		records, err := overlay.Evaluate(overlay.Query{
 			Collection: name, Scope: overlay.Scope{Region: request.Region, Environment: request.Environment, Stage: request.Stage}, PreviewBucket: &bucket,
 		}, current.Records(name), current.OverlayRules(name))
@@ -147,7 +149,7 @@ func (service *Service) GetSnapshot(ctx context.Context, request GetSnapshotRequ
 			delete(known, name)
 			continue
 		}
-		payload := CollectionPayload{Name: name, Revision: revision, Digest: digest.Value, Records: make([]Record, len(records))}
+		payload := CollectionPayload{Name: name, Revision: revision, ChangeCursor: changeCursor, Digest: digest.Value, Records: make([]Record, len(records))}
 		for index, record := range records {
 			payload.Records[index] = Record{RecordKey: record.RecordKey, RecordRevision: record.ConfigRevision, Data: cloneMap(record.Data)}
 		}

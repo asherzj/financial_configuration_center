@@ -3,6 +3,7 @@ package grpc_test
 import (
 	"context"
 	"errors"
+	"math"
 	"testing"
 	"time"
 
@@ -19,7 +20,7 @@ func TestDiagnosticsHandlerProjectsOnlySnapshotMetadata(t *testing.T) {
 	provider := diagnosticsProvider{value: snapshot.Diagnostics{
 		Identity:               snapshot.Identity{ServerEpoch: "epoch", ServerInstanceID: "server", SnapshotInstance: "instance", Generation: 4, PublishedAt: time.Date(2026, 8, 20, 9, 0, 0, 0, time.UTC)},
 		Environment:            "production",
-		Collections:            []snapshot.CollectionDiagnostic{{Name: "routes", Revision: 8, Digest: catalog.Digest{Algorithm: "SHA-256", Value: "digest"}}},
+		Collections:            []snapshot.CollectionDiagnostic{{Name: "routes", Revision: 8, Cursor: 34, Digest: catalog.Digest{Algorithm: "SHA-256", Value: "digest"}}},
 		FailedDependencyGroups: [][]string{{"routes", "options"}},
 	}}
 	handler, err := configgrpc.NewDiagnostics(provider, allowRequestAuthorizer{}, "production")
@@ -31,8 +32,23 @@ func TestDiagnosticsHandlerProjectsOnlySnapshotMetadata(t *testing.T) {
 		t.Fatalf("snapshot status = %+v, %v", status, err)
 	}
 	collection, err := handler.GetCollectionStatus(context.Background(), &configv1.GetCollectionStatusRequest{Collection: "routes", Environment: "production"})
-	if err != nil || collection.Version.ConfigRevision != 8 || collection.Version.EffectiveDigest.Value != "digest" {
+	if err != nil || collection.Version.ConfigRevision != 8 || collection.ChangeCursor != 34 || collection.Version.EffectiveDigest.Value != "digest" {
 		t.Fatalf("collection status = %+v, %v", collection, err)
+	}
+}
+
+func TestDiagnosticsRejectsCursorOutsideRPCRange(t *testing.T) {
+	t.Parallel()
+	handler, err := configgrpc.NewDiagnostics(diagnosticsProvider{value: snapshot.Diagnostics{
+		Environment: "production",
+		Collections: []snapshot.CollectionDiagnostic{{Name: "routes", Revision: 1, Cursor: math.MaxUint64}},
+	}}, allowRequestAuthorizer{}, "production")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = handler.GetCollectionStatus(context.Background(), &configv1.GetCollectionStatusRequest{Collection: "routes", Environment: "production"})
+	if status.Code(err) != codes.Internal {
+		t.Fatalf("cursor overflow code = %s, err %v", status.Code(err), err)
 	}
 }
 

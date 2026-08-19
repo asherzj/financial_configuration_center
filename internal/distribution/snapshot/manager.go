@@ -46,6 +46,7 @@ type CollectionInput struct {
 	Definition   catalog.CollectionDefinition
 	Models       []catalog.CompiledModel
 	Version      catalog.ConfigRevision
+	Cursor       uint64
 	Records      []catalog.ConfigurationRecord
 	OverlayRules []overlay.Rule
 }
@@ -69,6 +70,7 @@ type RefreshResult struct {
 type collectionView struct {
 	definition   catalog.CollectionDefinition
 	version      catalog.ConfigRevision
+	cursor       uint64
 	digest       catalog.Digest
 	records      map[string]catalog.ConfigurationRecord
 	ordered      []string
@@ -98,6 +100,7 @@ type Manager struct {
 type CollectionDiagnostic struct {
 	Name     string
 	Revision catalog.ConfigRevision
+	Cursor   uint64
 	Digest   catalog.Digest
 }
 
@@ -197,7 +200,8 @@ func (manager *Manager) Diagnostics() Diagnostics {
 	for index, name := range names {
 		revision, _ := current.CollectionVersion(name)
 		digest, _ := current.CollectionDigest(name)
-		result.Collections[index] = CollectionDiagnostic{Name: name, Revision: revision, Digest: digest}
+		cursor, _ := current.CollectionCursor(name)
+		result.Collections[index] = CollectionDiagnostic{Name: name, Revision: revision, Cursor: cursor, Digest: digest}
 	}
 	return result
 }
@@ -390,7 +394,7 @@ func previousInputs(previous *Snapshot, group []string) []CollectionInput {
 		for index, rule := range view.overlayRules {
 			rules[index] = cloneOverlayRule(rule)
 		}
-		inputs = append(inputs, CollectionInput{Definition: view.definition, Models: models, Version: view.version, Records: records, OverlayRules: rules})
+		inputs = append(inputs, CollectionInput{Definition: view.definition, Models: models, Version: view.version, Cursor: view.cursor, Records: records, OverlayRules: rules})
 	}
 	return inputs
 }
@@ -450,6 +454,11 @@ func (snapshot *Snapshot) Model(code string) (catalog.CompiledModel, bool) {
 func (snapshot *Snapshot) CollectionVersion(collection string) (catalog.ConfigRevision, bool) {
 	view, exists := snapshot.collections[collection]
 	return view.version, exists
+}
+
+func (snapshot *Snapshot) CollectionCursor(collection string) (uint64, bool) {
+	view, exists := snapshot.collections[collection]
+	return view.cursor, exists
 }
 
 func (snapshot *Snapshot) Definition(collection string) (catalog.CollectionDefinition, bool) {
@@ -522,6 +531,7 @@ func buildSnapshot(seed IdentitySeed, generation uint64, publishedAt time.Time, 
 		view := collectionView{
 			definition:   input.Definition,
 			version:      input.Version,
+			cursor:       input.Cursor,
 			records:      make(map[string]catalog.ConfigurationRecord, len(input.Records)),
 			ordered:      make([]string, 0, len(input.Records)),
 			overlayRules: make([]overlay.Rule, len(input.OverlayRules)),

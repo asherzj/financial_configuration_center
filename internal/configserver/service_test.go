@@ -26,7 +26,7 @@ func TestGetSnapshotReturnsOnlyAuthorizedChangedCollections(t *testing.T) {
 	if len(response.Collections) != 1 || response.Collections[0].Name != "payment_routes" || len(response.Collections[0].Records) != 1 {
 		t.Fatalf("snapshot response = %+v", response)
 	}
-	if response.Collections[0].Records[0].RecordKey != key || response.Identity.Generation != 1 {
+	if response.Collections[0].Records[0].RecordKey != key || response.Collections[0].ChangeCursor != 31 || response.Identity.Generation != 1 {
 		t.Fatalf("snapshot authority = %+v", response)
 	}
 
@@ -167,7 +167,7 @@ func serverSnapshot(t *testing.T) (*snapshot.Manager, string) {
 		t.Fatal(err)
 	}
 	record.ConfigRevision = 8
-	manager, err := snapshot.NewManager(serverSource{input: []snapshot.CollectionInput{{Definition: definition, Version: 8, Records: []catalog.ConfigurationRecord{record}}}}, snapshot.IdentitySeed{ServerEpoch: "epoch", ServerInstanceID: "server", SnapshotInstance: "instance"}, serverClock{})
+	manager, err := snapshot.NewManager(serverSource{input: []snapshot.CollectionInput{{Definition: definition, Version: 8, Cursor: 31, Records: []catalog.ConfigurationRecord{record}}}}, snapshot.IdentitySeed{ServerEpoch: "epoch", ServerInstanceID: "server", SnapshotInstance: "instance"}, serverClock{})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -88,6 +88,11 @@ func (handler *DiagnosticsHandler) GetCollectionStatus(ctx context.Context, requ
 				EffectiveDigest: &commonv1.Digest{Algorithm: "SHA-256", Value: collection.Digest.Value},
 			},
 		}
+		changeCursor, err := uint64Int64(collection.Cursor)
+		if err != nil {
+			return nil, status.Error(codes.Internal, "collection cursor exceeds RPC range")
+		}
+		response.ChangeCursor = changeCursor
 		if diagnostics.LastErrorCode != "" {
 			response.LastErrorCode = &diagnostics.LastErrorCode
 		}

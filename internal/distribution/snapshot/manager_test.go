@@ -18,6 +18,7 @@ func TestRefreshPublishesOneImmutableGeneration(t *testing.T) {
 		Definition: definition,
 		Models:     []catalog.CompiledModel{model},
 		Version:    8,
+		Cursor:     21,
 		Records: []catalog.ConfigurationRecord{{
 			Collection: definition.Name(), Environment: "production", RecordKey: "WyJ2aXNhLWNuIl0",
 			Data: map[string]string{"route_code": "visa-cn", "priority": "7", "enabled": "false"}, ConfigRevision: 8,
@@ -44,6 +45,13 @@ func TestRefreshPublishesOneImmutableGeneration(t *testing.T) {
 	published := manager.Current()
 	if published == before || published.Identity().Generation != 1 {
 		t.Fatalf("snapshot was not atomically replaced: %+v", published.Identity())
+	}
+	if cursor, exists := published.CollectionCursor(definition.Name()); !exists || cursor != 21 {
+		t.Fatalf("published cursor = %d, %t", cursor, exists)
+	}
+	diagnostics := manager.Diagnostics()
+	if len(diagnostics.Collections) != 1 || diagnostics.Collections[0].Cursor != 21 {
+		t.Fatalf("cursor diagnostics = %+v", diagnostics.Collections)
 	}
 	record, ok := published.Record(definition.Name(), "WyJ2aXNhLWNuIl0")
 	if !ok || record.Data["priority"] != "7" {
@@ -128,6 +136,15 @@ func TestRefreshRetainsFailedOptionDependencyGroupAndPublishesIndependentCollect
 	}
 	if revision, _ := current.CollectionVersion("feature_flags"); revision != 8 {
 		t.Fatalf("independent revision = %d, want 8", revision)
+	}
+	if cursor, _ := current.CollectionCursor("payment_routes"); cursor != 70 {
+		t.Fatalf("consumer cursor = %d, want last-known-good 70", cursor)
+	}
+	if cursor, _ := current.CollectionCursor("providers"); cursor != 70 {
+		t.Fatalf("provider cursor = %d, want last-known-good 70", cursor)
+	}
+	if cursor, _ := current.CollectionCursor("feature_flags"); cursor != 80 {
+		t.Fatalf("independent cursor = %d, want 80", cursor)
 	}
 }
 
@@ -275,8 +292,8 @@ func dependencyInputs(t *testing.T, revision catalog.ConfigRevision) []snapshot.
 		t.Fatal(err)
 	}
 	return []snapshot.CollectionInput{
-		{Definition: routes, Models: []catalog.CompiledModel{model}, Version: revision},
-		{Definition: providers, Version: revision},
-		{Definition: flags, Version: revision},
+		{Definition: routes, Models: []catalog.CompiledModel{model}, Version: revision, Cursor: uint64(revision) * 10},
+		{Definition: providers, Version: revision, Cursor: uint64(revision) * 10},
+		{Definition: flags, Version: revision, Cursor: uint64(revision) * 10},
 	}
 }

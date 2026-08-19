@@ -3,6 +3,7 @@ package grpc_test
 import (
 	"context"
 	"errors"
+	"math"
 	"testing"
 	"time"
 
@@ -69,7 +70,7 @@ func TestGetSnapshotMapsDeterministicCollectionPayload(t *testing.T) {
 		Identity: snapshot.Identity{ServerEpoch: "epoch", ServerInstanceID: "server", SnapshotInstance: "instance", Generation: 3, PublishedAt: time.Date(2026, 8, 19, 8, 0, 0, 0, time.UTC)},
 		Region:   "cn", Environment: "production",
 		Collections: []configserver.CollectionPayload{{
-			Name: "payment_routes", Revision: 8, Digest: "digest",
+			Name: "payment_routes", Revision: 8, Digest: "digest", ChangeCursor: 23,
 			Records: []configserver.Record{{RecordKey: "key", RecordRevision: 8, Data: map[string]string{"priority": "7", "route_code": "visa-cn"}}},
 		}},
 	}}
@@ -89,6 +90,9 @@ func TestGetSnapshotMapsDeterministicCollectionPayload(t *testing.T) {
 	if len(first.Collections) != 1 || first.Collections[0].Codec != "PROTOBUF" || first.Collections[0].FormatVersion != 1 {
 		t.Fatalf("payload envelope = %+v", first.Collections)
 	}
+	if first.Collections[0].ChangeCursor != 23 {
+		t.Fatalf("change cursor = %d", first.Collections[0].ChangeCursor)
+	}
 	if string(first.Collections[0].Data) != string(second.Collections[0].Data) {
 		t.Fatal("same collection produced nondeterministic bytes")
 	}
@@ -101,6 +105,22 @@ func TestGetSnapshotMapsDeterministicCollectionPayload(t *testing.T) {
 	}
 	if first.Snapshot.SnapshotGeneration != 3 || first.Scope.Environment != "production" {
 		t.Fatalf("response authority = %+v", first)
+	}
+}
+
+func TestGetSnapshotRejectsCursorOutsideRPCRange(t *testing.T) {
+	t.Parallel()
+	handler, err := configgrpc.New(stubApplication{response: configserver.GetSnapshotResponse{
+		Collections: []configserver.CollectionPayload{{Name: "routes", Revision: 1, ChangeCursor: math.MaxUint64}},
+	}}, allowRequestAuthorizer{}, "production")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = handler.GetSnapshot(context.Background(), &configv1.GetSnapshotRequest{
+		ConsumerId: "consumer", ClientId: "client", Scope: scope("production"),
+	})
+	if status.Code(err) != codes.Internal {
+		t.Fatalf("cursor overflow code = %s, err %v", status.Code(err), err)
 	}
 }
 
