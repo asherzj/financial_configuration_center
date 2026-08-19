@@ -404,6 +404,11 @@ func TestRealMySQLOutboxMultiWorkerLeaseCAS(t *testing.T) {
 		t.Fatalf("dead letter = %s, %v", status, err)
 	}
 	assertCount(t, raw, `SELECT COUNT(*) FROM outbox_events WHERE status = 'DEAD_LETTER' AND lease_revision = 6`, 1)
+	deadLetter := outbox.StatusDeadLetter
+	page, err := storeA.List(ctx, outbox.ListRequest{Status: &deadLetter, PageNumber: 1, PageSize: 20})
+	if err != nil || page.TotalNumber != 1 || len(page.Events) != 1 || page.Events[0].ID != reclaimed[0].ID || page.Events[0].LeaseRevision != 6 || len(page.Events[0].Payload) != 0 {
+		t.Fatalf("dead-letter metadata page = %+v, %v", page, err)
+	}
 	if _, err := storeA.Replay(ctx, outbox.ReplayRequest{EventID: reclaimed[0].ID, ExpectedRevision: 5, Reason: "endpoint recovered", Actor: "platform-operator", Now: now.Add(time.Minute)}); !errors.Is(err, outbox.ErrLeaseLost) {
 		t.Fatalf("stale replay = %v", err)
 	}

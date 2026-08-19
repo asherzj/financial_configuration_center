@@ -1,6 +1,6 @@
 # FC-009 Metadata, diagnostics and dead-letter operations
 
-- Status: blocked
+- Status: in-progress
 - Blocked by: FC-008
 - Spec: actor 4.1 and 4.5, acceptance scenario 13
 

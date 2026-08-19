@@ -38,6 +38,8 @@ type Event struct {
 	Attempts       int
 	LockedBy       string
 	LockedUntil    time.Time
+	NextAttemptAt  time.Time
+	LastError      string
 }
 
 type ClaimRequest struct {

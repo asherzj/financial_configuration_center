@@ -12,5 +12,5 @@ No repository issue tracker is configured, so these files are the implementation
 | FC-006 | Percentage rollout | FC-005 | done |
 | FC-007 | Dynamic UI/options/sensitive | FC-006 | done |
 | FC-008 | Rollback and compensation | FC-007 | done |
-| FC-009 | Metadata/diagnostics/dead-letter | FC-008 | ready |
+| FC-009 | Metadata/diagnostics/dead-letter | FC-008 | in-progress |
 | FC-010 | Operations hardening/final matrix | FC-009 | blocked |

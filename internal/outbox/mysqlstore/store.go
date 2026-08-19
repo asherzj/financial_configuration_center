@@ -165,7 +165,7 @@ func (store *Store) Replay(ctx context.Context, request outbox.ReplayRequest) (o
 		replayed = outbox.Event{
 			ID: loaded.ID, Sequence: loaded.SequenceNo, AggregateType: loaded.AggregateType, AggregateID: loaded.AggregateID,
 			Type: loaded.EventType, PayloadVersion: loaded.PayloadVersion, Payload: append([]byte(nil), loaded.Payload...), IdempotencyKey: loaded.IdempotencyKey,
-			Status: outbox.StatusPending, LeaseRevision: outbox.LeaseRevision(loaded.LeaseRevision + 1), Attempts: 0,
+			Status: outbox.StatusPending, LeaseRevision: outbox.LeaseRevision(loaded.LeaseRevision + 1), Attempts: 0, NextAttemptAt: request.Now.UTC(),
 		}
 		return nil
 	})
@@ -173,6 +173,63 @@ func (store *Store) Replay(ctx context.Context, request outbox.ReplayRequest) (o
 		return outbox.Event{}, fmt.Errorf("replay outbox event: %w", err)
 	}
 	return replayed, nil
+}
+
+func (store *Store) List(ctx context.Context, request outbox.ListRequest) (outbox.EventPage, error) {
+	status := ""
+	if request.Status != nil {
+		status = string(*request.Status)
+	}
+	page := outbox.EventPage{PageNumber: request.PageNumber, PageSize: request.PageSize}
+	err := store.database.WithinTransaction(ctx, &sql.TxOptions{Isolation: sql.LevelRepeatableRead, ReadOnly: true}, func(database *gorm.DB) error {
+		if err := database.WithContext(ctx).Raw(`
+			SELECT COUNT(*) FROM outbox_events WHERE ? = '' OR status = ?
+		`, status, status).Scan(&page.TotalNumber).Error; err != nil {
+			return err
+		}
+		type row struct {
+			ID, AggregateType, AggregateID, EventType, IdempotencyKey, Status string
+			SequenceNo, LeaseRevision                                         uint64
+			PayloadVersion                                                    uint32
+			Attempts                                                          int
+			NextAttemptAt                                                     time.Time
+			LastError                                                         *string
+		}
+		var rows []row
+		offset := (request.PageNumber - 1) * request.PageSize
+		if err := database.WithContext(ctx).Raw(`
+			SELECT id, sequence_no, aggregate_type, aggregate_id, event_type,
+				payload_version, idempotency_key, status, lease_revision, attempts,
+				next_attempt_at, last_error
+			FROM outbox_events
+			WHERE ? = '' OR status = ?
+			ORDER BY sequence_no DESC
+			LIMIT ? OFFSET ?
+		`, status, status, request.PageSize, offset).Scan(&rows).Error; err != nil {
+			return err
+		}
+		page.Events = make([]outbox.Event, len(rows))
+		for index, row := range rows {
+			lastError := ""
+			if row.LastError != nil {
+				lastError = *row.LastError
+			}
+			page.Events[index] = outbox.Event{
+				ID: row.ID, Sequence: row.SequenceNo, AggregateType: row.AggregateType, AggregateID: row.AggregateID,
+				Type: row.EventType, PayloadVersion: row.PayloadVersion, IdempotencyKey: row.IdempotencyKey,
+				Status: outbox.Status(row.Status), LeaseRevision: outbox.LeaseRevision(row.LeaseRevision), Attempts: row.Attempts,
+				NextAttemptAt: row.NextAttemptAt, LastError: lastError,
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return outbox.EventPage{}, fmt.Errorf("list outbox events: %w", err)
+	}
+	if page.TotalNumber > 0 {
+		page.TotalPages = int((page.TotalNumber + int64(page.PageSize) - 1) / int64(page.PageSize))
+	}
+	return page, nil
 }
 
 func (store *Store) updateLease(ctx context.Context, update func(*gorm.DB) error) error {
@@ -201,3 +258,4 @@ func truncate(value string, limit int) string {
 }
 
 var _ outbox.Repository = (*Store)(nil)
+var _ outbox.OperationsRepository = (*Store)(nil)
