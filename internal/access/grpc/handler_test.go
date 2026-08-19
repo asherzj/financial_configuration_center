@@ -5,10 +5,10 @@ import (
 	"testing"
 	"time"
 
+	commonv1 "github.com/asherzj/financial_configuration_center/contracts/kitex_gen/finconfig/common/v1"
+	controlv1 "github.com/asherzj/financial_configuration_center/contracts/kitex_gen/finconfig/control/v1"
 	access "github.com/asherzj/financial_configuration_center/internal/access/application"
 	accessgrpc "github.com/asherzj/financial_configuration_center/internal/access/grpc"
-	commonv1 "github.com/asherzj/financial_configuration_center/kitex_gen/finconfig/common/v1"
-	controlv1 "github.com/asherzj/financial_configuration_center/kitex_gen/finconfig/control/v1"
 )
 
 func TestRevealFieldMapsIdentityAndAuthorityFacts(t *testing.T) {

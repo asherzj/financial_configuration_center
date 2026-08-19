@@ -8,9 +8,9 @@ import (
 	"testing"
 	"time"
 
-	kitexcommonv1 "github.com/asherzj/financial_configuration_center/kitex_gen/finconfig/common/v1"
-	kitexconfigv1 "github.com/asherzj/financial_configuration_center/kitex_gen/finconfig/config/v1"
-	"github.com/asherzj/financial_configuration_center/kitex_gen/finconfig/config/v1/configservice"
+	kitexcommonv1 "github.com/asherzj/financial_configuration_center/contracts/kitex_gen/finconfig/common/v1"
+	kitexconfigv1 "github.com/asherzj/financial_configuration_center/contracts/kitex_gen/finconfig/config/v1"
+	"github.com/asherzj/financial_configuration_center/contracts/kitex_gen/finconfig/config/v1/configservice"
 	"github.com/cloudwego/kitex/client"
 	"github.com/cloudwego/kitex/server"
 	"github.com/cloudwego/kitex/transport"

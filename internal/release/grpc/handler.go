@@ -5,11 +5,11 @@ import (
 	"errors"
 	"strings"
 
+	commonv1 "github.com/asherzj/financial_configuration_center/contracts/kitex_gen/finconfig/common/v1"
+	controlv1 "github.com/asherzj/financial_configuration_center/contracts/kitex_gen/finconfig/control/v1"
 	catalog "github.com/asherzj/financial_configuration_center/internal/catalog/domain"
 	"github.com/asherzj/financial_configuration_center/internal/release/application"
 	release "github.com/asherzj/financial_configuration_center/internal/release/domain"
-	commonv1 "github.com/asherzj/financial_configuration_center/kitex_gen/finconfig/common/v1"
-	controlv1 "github.com/asherzj/financial_configuration_center/kitex_gen/finconfig/control/v1"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/timestamppb"

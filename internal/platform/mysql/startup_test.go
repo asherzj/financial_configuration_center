@@ -4,17 +4,17 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/asherzj/financial_configuration_center/internal/platform/mysql/migrations"
+	contractsmysql "github.com/asherzj/financial_configuration_center/contracts/schema/mysql"
 )
 
 func TestValidateStartupFactsAcceptsSupportedMySQLAndExactSchema(t *testing.T) {
 	t.Parallel()
 	facts := validStartupFacts()
-	if err := validateStartupFacts(facts, []int64{1, 2}, migrations.ExpectedTables()); err != nil {
+	if err := validateStartupFacts(facts, []int64{1, 2}, contractsmysql.ExpectedTables()); err != nil {
 		t.Fatalf("supported startup facts: %v", err)
 	}
 	facts.version = "8.0.46-commercial"
-	if err := validateStartupFacts(facts, []int64{1, 2}, migrations.ExpectedTables()); err != nil {
+	if err := validateStartupFacts(facts, []int64{1, 2}, contractsmysql.ExpectedTables()); err != nil {
 		t.Fatalf("compatibility MySQL startup facts: %v", err)
 	}
 
@@ -23,7 +23,7 @@ func TestValidateStartupFactsAcceptsSupportedMySQLAndExactSchema(t *testing.T) {
 		{version: 2, applied: true}, {version: 2, applied: false}, {version: 1, applied: true},
 		{version: 3, applied: false},
 	}
-	if err := validateStartupFacts(facts, []int64{1, 2}, migrations.ExpectedTables()); err != nil {
+	if err := validateStartupFacts(facts, []int64{1, 2}, contractsmysql.ExpectedTables()); err != nil {
 		t.Fatalf("latest applied and rolled-back unknown migration: %v", err)
 	}
 }
@@ -71,7 +71,7 @@ func TestValidateStartupFactsFailsClosed(t *testing.T) {
 			}
 			tables := test.tables
 			if tables == nil {
-				tables = migrations.ExpectedTables()
+				tables = contractsmysql.ExpectedTables()
 			}
 			err := validateStartupFacts(facts, versions, tables)
 			if err == nil || !strings.Contains(err.Error(), test.want) {
@@ -102,7 +102,7 @@ func validStartupFacts() startupFacts {
 
 func validTableFacts() map[string]tableState {
 	result := make(map[string]tableState)
-	for _, name := range migrations.ExpectedTables() {
+	for _, name := range contractsmysql.ExpectedTables() {
 		result[name] = tableState{tableType: "BASE TABLE", engine: "InnoDB"}
 	}
 	return result

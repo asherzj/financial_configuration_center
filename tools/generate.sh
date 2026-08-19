@@ -10,7 +10,6 @@ readonly FINCONFIG_GO_TOOL_BIN="${FINCONFIG_TOOL_ROOT}/go-bin"
 readonly BUF="${FINCONFIG_TOOL_ROOT}/buf-1.58.0/buf/bin/buf"
 readonly PROTOC="${FINCONFIG_TOOL_ROOT}/protoc-35.0/bin/protoc"
 readonly CONTRACTS_MODULE="github.com/asherzj/financial_configuration_center/contracts"
-readonly COMPATIBILITY_MODULE="github.com/asherzj/financial_configuration_center"
 
 export FINCONFIG_TOOL_ROOT
 "${FINCONFIG_REPO_ROOT}/tools/bootstrap-tools.sh" >/dev/null
@@ -52,32 +51,3 @@ KITEX_TOOL_USE_PROTOC=1 "${FINCONFIG_GO_TOOL_BIN}/kitex" \
   proto/finconfig/control/v1/control.proto
 
 gofmt -w "${FINCONFIG_CONTRACTS_ROOT}/gen/go" "${FINCONFIG_CONTRACTS_ROOT}/kitex_gen"
-
-# Expand/contract compatibility: root consumers still import the old bindings
-# until the next migration commit switches them to a tagged Contracts release.
-# Keep those bindings generated from their parity-guarded source copy meanwhile.
-cd "${FINCONFIG_REPO_ROOT}"
-"${BUF}" format -w
-"${BUF}" lint
-"${BUF}" generate
-
-KITEX_TOOL_USE_PROTOC=1 "${FINCONFIG_GO_TOOL_BIN}/kitex" \
-  -module "${COMPATIBILITY_MODULE}" \
-  -type protobuf \
-  -I api/proto \
-  -compiler-path "${PROTOC}" \
-  -protobuf "Mfinconfig/config/v1/config.proto=${COMPATIBILITY_MODULE}/kitex_gen/finconfig/config/v1" \
-  -protobuf "Mfinconfig/common/v1/common.proto=${COMPATIBILITY_MODULE}/kitex_gen/finconfig/common/v1" \
-  api/proto/finconfig/config/v1/config.proto
-
-KITEX_TOOL_USE_PROTOC=1 "${FINCONFIG_GO_TOOL_BIN}/kitex" \
-  -module "${COMPATIBILITY_MODULE}" \
-  -type protobuf \
-  -I api/proto \
-  -compiler-path "${PROTOC}" \
-  -protobuf "Mfinconfig/control/v1/control.proto=${COMPATIBILITY_MODULE}/kitex_gen/finconfig/control/v1" \
-  -protobuf "Mfinconfig/config/v1/config.proto=${COMPATIBILITY_MODULE}/kitex_gen/finconfig/config/v1" \
-  -protobuf "Mfinconfig/common/v1/common.proto=${COMPATIBILITY_MODULE}/kitex_gen/finconfig/common/v1" \
-  api/proto/finconfig/control/v1/control.proto
-
-gofmt -w "${FINCONFIG_REPO_ROOT}/gen/go" "${FINCONFIG_REPO_ROOT}/kitex_gen"

@@ -5,10 +5,10 @@ import (
 	"errors"
 	"strings"
 
+	commonv1 "github.com/asherzj/financial_configuration_center/contracts/kitex_gen/finconfig/common/v1"
+	configv1 "github.com/asherzj/financial_configuration_center/contracts/kitex_gen/finconfig/config/v1"
 	"github.com/asherzj/financial_configuration_center/internal/distribution/snapshot"
 	platformauth "github.com/asherzj/financial_configuration_center/internal/platform/auth"
-	commonv1 "github.com/asherzj/financial_configuration_center/kitex_gen/finconfig/common/v1"
-	configv1 "github.com/asherzj/financial_configuration_center/kitex_gen/finconfig/config/v1"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )

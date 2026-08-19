@@ -6,11 +6,11 @@ import (
 	"testing"
 	"time"
 
+	commonv1 "github.com/asherzj/financial_configuration_center/contracts/kitex_gen/finconfig/common/v1"
+	configv1 "github.com/asherzj/financial_configuration_center/contracts/kitex_gen/finconfig/config/v1"
 	catalog "github.com/asherzj/financial_configuration_center/internal/catalog/domain"
 	configgrpc "github.com/asherzj/financial_configuration_center/internal/configserver/grpc"
 	"github.com/asherzj/financial_configuration_center/internal/distribution/snapshot"
-	commonv1 "github.com/asherzj/financial_configuration_center/kitex_gen/finconfig/common/v1"
-	configv1 "github.com/asherzj/financial_configuration_center/kitex_gen/finconfig/config/v1"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )

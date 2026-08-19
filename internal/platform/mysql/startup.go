@@ -9,7 +9,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/asherzj/financial_configuration_center/internal/platform/mysql/migrations"
+	contractsmysql "github.com/asherzj/financial_configuration_center/contracts/schema/mysql"
 )
 
 var mysqlVersionPattern = regexp.MustCompile(`^(\d+)\.(\d+)\.(\d+)(?:[-+].*)?$`)
@@ -40,8 +40,8 @@ func (d *Database) CheckStartup(ctx context.Context) error {
 	if d == nil || d.sql == nil {
 		return errors.New("check MySQL startup: database is not initialized")
 	}
-	expectedVersions := migrations.ExpectedVersions()
-	expectedTables := migrations.ExpectedTables()
+	expectedVersions := contractsmysql.ExpectedVersions()
+	expectedTables := contractsmysql.ExpectedTables()
 	if err := validateManifests(expectedVersions, expectedTables); err != nil {
 		return fmt.Errorf("check MySQL startup: %w", err)
 	}

@@ -41,8 +41,8 @@ jobs:
         with:
           go-version: 1.26.6
           cache: true
-      - run: go test ./...
-      - run: go test -race ./...
+      - run: GOWORK=off go test ./...
+      - run: GOWORK=off go test -race ./...
 
   frontend:
     runs-on: ubuntu-24.04
@@ -87,6 +87,6 @@ jobs:
         with:
           go-version: 1.26.6
           cache: true
-      - run: go test ./internal/platform/mysql/migrations -run TestGooseMigrationUpDownUp -v
+      - run: GOWORK=off go test ./internal/platform/mysql/migrations -run TestGooseMigrationUpDownUp -v
         env:
           FINCONFIG_TEST_MYSQL_DSN: root:root@tcp(127.0.0.1:3306)/finconfig_test?parseTime=true&loc=UTC&time_zone=%27%2B00%3A00%27&timeout=5s&readTimeout=5s&writeTimeout=5s&multiStatements=true

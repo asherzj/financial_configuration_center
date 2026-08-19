@@ -11,39 +11,6 @@ import (
 
 var gooseDialectMu sync.Mutex
 
-var expectedVersions = [...]int64{1, 2}
-
-var expectedTables = [...]string{
-	"audit_records",
-	"configuration_change_log",
-	"configuration_collections",
-	"configuration_models",
-	"configuration_overlays",
-	"configuration_records",
-	"configuration_revision_counters",
-	"configuration_subscriptions",
-	"configuration_versions",
-	"outbox_events",
-	"release_action_requests",
-	"release_operation_logs",
-	"release_order_items",
-	"release_orders",
-	"release_step_states",
-	"release_templates",
-}
-
-// ExpectedVersions is the build-owned schema manifest. Services validate this
-// exact applied set at startup; they never run migrations themselves.
-func ExpectedVersions() []int64 {
-	return append([]int64(nil), expectedVersions[:]...)
-}
-
-// ExpectedTables returns the exact FinConfig business-table manifest. The
-// Goose bookkeeping table is intentionally not part of the domain schema.
-func ExpectedTables() []string {
-	return append([]string(nil), expectedTables[:]...)
-}
-
 func Up(ctx context.Context, db *sql.DB, directory string) error {
 	return withMySQLDialect(func() error {
 		if err := goose.UpContext(ctx, db, directory); err != nil {

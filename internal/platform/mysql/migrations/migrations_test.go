@@ -13,6 +13,7 @@ import (
 	_ "github.com/go-sql-driver/mysql"
 	"github.com/pressly/goose/v3"
 
+	contractsmysql "github.com/asherzj/financial_configuration_center/contracts/schema/mysql"
 	platformmysql "github.com/asherzj/financial_configuration_center/internal/platform/mysql"
 	"github.com/asherzj/financial_configuration_center/internal/platform/mysql/migrations"
 )
@@ -27,7 +28,7 @@ func TestExpectedVersionsMatchMigrationFiles(t *testing.T) {
 	for index, migration := range collected {
 		got[index] = migration.Version
 	}
-	if want := migrations.ExpectedVersions(); !slices.Equal(got, want) {
+	if want := contractsmysql.ExpectedVersions(); !slices.Equal(got, want) {
 		t.Fatalf("migration files = %v, expected manifest = %v", got, want)
 	}
 }
@@ -87,7 +88,7 @@ func TestGooseMigrationUpDownUp(t *testing.T) {
 
 func assertExactBusinessTables(t *testing.T, ctx context.Context, db *sql.DB) {
 	t.Helper()
-	want := migrations.ExpectedTables()
+	want := contractsmysql.ExpectedTables()
 	rows, err := db.QueryContext(ctx, `
 		SELECT table_name
 		FROM information_schema.tables

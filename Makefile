@@ -14,15 +14,14 @@ generate:
 proto-lint: tools
 	cd contracts && BUF_CACHE_DIR=$(CURDIR)/.cache/buf $(BUF) lint
 	cd contracts && BUF_CACHE_DIR=$(CURDIR)/.cache/buf $(BUF) format --diff --exit-code
-	BUF_CACHE_DIR=$(CURDIR)/.cache/buf $(BUF) lint
-	BUF_CACHE_DIR=$(CURDIR)/.cache/buf $(BUF) format --diff --exit-code
 
 go-mod-tidy:
+	GOWORK=off GOCACHE=$(CURDIR)/.cache/go-build GOMODCACHE=$(CURDIR)/.cache/go-mod go mod tidy -diff
 	cd contracts && GOWORK=off GOCACHE=$(CURDIR)/.cache/go-build GOMODCACHE=$(CURDIR)/.cache/go-mod go mod tidy -diff
 	cd tools && GOWORK=off GOCACHE=$(CURDIR)/.cache/go-build GOMODCACHE=$(CURDIR)/.cache/go-mod go mod tidy -diff
 
 go-test:
-	GOCACHE=$(CURDIR)/.cache/go-build GOMODCACHE=$(CURDIR)/.cache/go-mod go test ./...
+	GOWORK=off GOCACHE=$(CURDIR)/.cache/go-build GOMODCACHE=$(CURDIR)/.cache/go-mod go test ./...
 	cd contracts && GOWORK=off GOCACHE=$(CURDIR)/.cache/go-build GOMODCACHE=$(CURDIR)/.cache/go-mod go test ./...
 	cd tools && GOWORK=off GOCACHE=$(CURDIR)/.cache/go-build GOMODCACHE=$(CURDIR)/.cache/go-mod go test ./...
 
@@ -47,13 +46,13 @@ web-build:
 test: proto-lint go-mod-tidy go-test web-lint web-typecheck web-test
 
 build:
-	GOCACHE=$(CURDIR)/.cache/go-build GOMODCACHE=$(CURDIR)/.cache/go-mod go build ./...
+	GOWORK=off GOCACHE=$(CURDIR)/.cache/go-build GOMODCACHE=$(CURDIR)/.cache/go-mod go build ./...
 	cd contracts && GOWORK=off GOCACHE=$(CURDIR)/.cache/go-build GOMODCACHE=$(CURDIR)/.cache/go-mod go build ./...
 	$(PNPM) build
 
 verify-generated: generate
-	git diff --exit-code -- contracts/gen/go contracts/kitex_gen contracts/proto gen/go kitex_gen api/proto web/admin-console/src/api/schema.d.ts
-	@untracked="$$(git ls-files --others --exclude-standard -- contracts/gen/go contracts/kitex_gen gen/go kitex_gen web/admin-console/src/api/schema.d.ts)"; \
+	git diff --exit-code -- contracts/gen/go contracts/kitex_gen contracts/proto web/admin-console/src/api/schema.d.ts
+	@untracked="$$(git ls-files --others --exclude-standard -- contracts/gen/go contracts/kitex_gen web/admin-console/src/api/schema.d.ts)"; \
 		if [ -n "$$untracked" ]; then \
 			echo "untracked generated files:"; \
 			echo "$$untracked"; \

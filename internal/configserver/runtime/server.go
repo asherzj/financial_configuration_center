@@ -10,13 +10,13 @@ import (
 	"sync"
 	"time"
 
+	kitexconfigv1 "github.com/asherzj/financial_configuration_center/contracts/kitex_gen/finconfig/config/v1"
+	"github.com/asherzj/financial_configuration_center/contracts/kitex_gen/finconfig/config/v1/configservice"
+	"github.com/asherzj/financial_configuration_center/contracts/kitex_gen/finconfig/config/v1/diagnosticsservice"
+	"github.com/asherzj/financial_configuration_center/contracts/kitex_gen/finconfig/config/v1/pagequeryservice"
+	"github.com/asherzj/financial_configuration_center/contracts/kitex_gen/finconfig/config/v1/refreshservice"
 	platformrpc "github.com/asherzj/financial_configuration_center/internal/platform/rpc"
 	"github.com/asherzj/financial_configuration_center/internal/platform/rpcauth"
-	kitexconfigv1 "github.com/asherzj/financial_configuration_center/kitex_gen/finconfig/config/v1"
-	"github.com/asherzj/financial_configuration_center/kitex_gen/finconfig/config/v1/configservice"
-	"github.com/asherzj/financial_configuration_center/kitex_gen/finconfig/config/v1/diagnosticsservice"
-	"github.com/asherzj/financial_configuration_center/kitex_gen/finconfig/config/v1/pagequeryservice"
-	"github.com/asherzj/financial_configuration_center/kitex_gen/finconfig/config/v1/refreshservice"
 	"github.com/cloudwego/kitex/server"
 )
 
