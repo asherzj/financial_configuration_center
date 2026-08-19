@@ -294,6 +294,7 @@ func (service *Service) CreateBaseFinal(ctx context.Context, command CreateBaseF
 			}
 			itemSpecs[index] = release.BaseFinalItemSpec{
 				ID:                         service.ids.NewID(),
+				Action:                     release.ChangeAdd,
 				After:                      records[index],
 				ExpectedRecordRevision:     draft.ExpectedRecordRevision,
 				ExpectedCollectionRevision: draft.ExpectedCollectionRevision,
@@ -442,39 +443,6 @@ func (service *Service) CreateRelease(ctx context.Context, command CreateRelease
 		if err != nil {
 			return fmt.Errorf("resolve release options: %w", err)
 		}
-		if finalEffect == release.FinalEffectBase {
-			orderID := service.ids.NewID()
-			items := make([]release.BaseFinalItemSpec, len(canonical))
-			for index, draft := range canonical {
-				if draft.action != release.ChangeAdd || draft.baseBefore != nil || draft.effectiveBefore != nil || draft.after == nil || draft.expectedRecordRevision != 0 || len(draft.preserveSensitiveFields) != 0 {
-					return fmt.Errorf("%w: BASE_FINAL item %d must be ADD without before images", release.ErrInvalid, index)
-				}
-				if authority.CollectionRevision != draft.expectedCollectionRevision || authority.Records[keys[index]] != nil {
-					return fmt.Errorf("%w: BASE_FINAL item %d authority is stale", release.ErrAborted, index)
-				}
-				if err := validateOptionSelections(bundle.Model, selectOptions, nil, draft.after); err != nil {
-					return fmt.Errorf("%w: item %d: %v", release.ErrFailedPrecondition, index, err)
-				}
-				items[index] = release.BaseFinalItemSpec{
-					ID: service.ids.NewID(), After: *draft.after,
-					ExpectedRecordRevision: draft.expectedRecordRevision, ExpectedCollectionRevision: draft.expectedCollectionRevision,
-				}
-			}
-			order, err := release.NewBaseFinalOrder(release.BaseFinalOrderSpec{
-				ID: orderID, ReleaseNumber: service.ids.NewReleaseNumber(createdAt), IdempotencyKey: command.IdempotencyKey,
-				ModelCode: command.ModelCode, TemplateCode: bundle.Template.Code, TemplateVersion: bundle.Template.Version,
-				ReleaseTypeCode: bundle.Template.ReleaseTypeCode, RequestDigest: requestDigest, Scope: command.Scope,
-				CreatedBy: command.Actor, CreatedAt: createdAt, Items: items, Template: bundle.Template.Definition,
-			})
-			if err != nil {
-				return err
-			}
-			if err := transaction.InsertOrder(ctx, order); err != nil {
-				return fmt.Errorf("insert release order: %w", err)
-			}
-			created = order
-			return nil
-		}
 		rules, err := transaction.LoadOverlayRules(ctx, bundle.Definition.Name(), command.Scope, keys)
 		if err != nil {
 			return fmt.Errorf("load overlay rules: %w", err)
@@ -497,7 +465,62 @@ func (service *Service) CreateRelease(ctx context.Context, command CreateRelease
 			record := effectiveRecords[index]
 			effectiveByKey[record.RecordKey] = &record
 		}
-
+		if finalEffect == release.FinalEffectBase {
+			orderID := service.ids.NewID()
+			items := make([]release.BaseFinalItemSpec, len(canonical))
+			for index, draft := range canonical {
+				actualBase := authority.Records[keys[index]]
+				actualEffective := effectiveByKey[keys[index]]
+				if err := hydratePreservedSensitiveFields(&draft, actualBase, actualEffective); err != nil {
+					return fmt.Errorf("%w: item %d: %v", release.ErrAborted, index, err)
+				}
+				if authority.CollectionRevision != draft.expectedCollectionRevision {
+					return fmt.Errorf("%w: BASE_FINAL item %d collection authority is stale", release.ErrAborted, index)
+				}
+				if !sameRecordData(actualBase, draft.baseBefore) {
+					return fmt.Errorf("%w: BASE_FINAL item %d base authority is stale", release.ErrAborted, index)
+				}
+				if !sameRecordData(actualEffective, draft.effectiveBefore) {
+					return fmt.Errorf("%w: BASE_FINAL item %d effective authority is stale", release.ErrAborted, index)
+				}
+				actualRecordRevision := catalog.ConfigRevision(0)
+				if actualBase != nil {
+					actualRecordRevision = actualBase.ConfigRevision
+				}
+				if actualRecordRevision != draft.expectedRecordRevision {
+					return fmt.Errorf("%w: BASE_FINAL item %d record authority is stale", release.ErrAborted, index)
+				}
+				if !validEffectiveTransition(draft.action, actualBase, actualEffective, draft.after) {
+					return fmt.Errorf("%w: BASE_FINAL item %d transition is invalid", release.ErrInvalid, index)
+				}
+				if err := validateOptionSelections(bundle.Model, selectOptions, actualEffective, draft.after); err != nil {
+					return fmt.Errorf("%w: item %d: %v", release.ErrFailedPrecondition, index, err)
+				}
+				var after catalog.ConfigurationRecord
+				if draft.after != nil {
+					after = *draft.after
+				}
+				items[index] = release.BaseFinalItemSpec{
+					ID: service.ids.NewID(), Action: draft.action, BaseBefore: actualBase, EffectiveBefore: actualEffective, After: after,
+					ExpectedRecordRevision: draft.expectedRecordRevision, ExpectedCollectionRevision: draft.expectedCollectionRevision,
+					PreserveSensitiveFields: append([]string(nil), draft.preserveSensitiveFields...),
+				}
+			}
+			order, err := release.NewBaseFinalOrder(release.BaseFinalOrderSpec{
+				ID: orderID, ReleaseNumber: service.ids.NewReleaseNumber(createdAt), IdempotencyKey: command.IdempotencyKey,
+				ModelCode: command.ModelCode, TemplateCode: bundle.Template.Code, TemplateVersion: bundle.Template.Version,
+				ReleaseTypeCode: bundle.Template.ReleaseTypeCode, RequestDigest: requestDigest, Scope: command.Scope,
+				CreatedBy: command.Actor, CreatedAt: createdAt, Items: items, Template: bundle.Template.Definition,
+			})
+			if err != nil {
+				return err
+			}
+			if err := transaction.InsertOrder(ctx, order); err != nil {
+				return fmt.Errorf("insert release order: %w", err)
+			}
+			created = order
+			return nil
+		}
 		itemSpecs := make([]release.OverlayFinalItemSpec, len(canonical))
 		for index, draft := range canonical {
 			actualBase := authority.Records[keys[index]]

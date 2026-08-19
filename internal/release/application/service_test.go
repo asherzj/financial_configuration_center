@@ -268,6 +268,96 @@ func TestOverlayFinalApplicationAppliesAndRollsBackAtomically(t *testing.T) {
 	}
 }
 
+func TestBaseFinalApplicationModifiesDeletesAndRestoresScopedFacts(t *testing.T) {
+	t.Parallel()
+	definition, model := compiledCatalog(t)
+	store := newFakeUnitOfWork(definition, model)
+	template, err := release.CompileTemplate([]byte(`{"steps":[
+		{"code":"apply-base","type":"BASE_APPLY","params":{"cleanupScopeOverlay":true}},
+		{"code":"complete","type":"COMPLETE","params":{}}
+	]}`), release.FinalEffectBase)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store.template = application.TemplateRef{Code: "base-final", Version: 1, ReleaseTypeCode: "direct", Definition: template}
+	modified, err := definition.NewRecord("production", map[string]string{"route_code": "visa", "priority": "1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	deleted, err := definition.NewRecord("production", map[string]string{"route_code": "amex", "priority": "2"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	modified.ConfigRevision = 7
+	deleted.ConfigRevision = 7
+	store.records["production"][modified.RecordKey] = modified
+	store.records["production"][deleted.RecordKey] = deleted
+	activated := catalog.ConfigRevision(7)
+	previousRule := &overlay.Rule{
+		ID: "previous-rule", Collection: definition.Name(),
+		Scope:     overlay.Scope{Region: "cn", Environment: "production", Stage: "blue"},
+		RecordKey: modified.RecordKey, Action: overlay.ActionModify,
+		Content:        map[string]string{"route_code": "visa", "priority": "7", "enabled": "false"},
+		ConfigRevision: 7, ReleaseOrderID: "previous-order", ActivatedRevision: &activated,
+		CreatedAt: time.Date(2026, 8, 19, 9, 0, 0, 0, time.UTC), CreatedBy: "previous",
+		UpdatedAt: time.Date(2026, 8, 19, 9, 0, 0, 0, time.UTC), UpdatedBy: "previous",
+	}
+	store.overlays["production"]["blue"] = map[string]*overlay.Rule{modified.RecordKey: previousRule}
+	now := time.Date(2026, 8, 19, 10, 0, 0, 0, time.UTC)
+	service := application.NewService(store, &sequenceIDs{values: []string{"base-order", "modify-item", "delete-item"}}, fixedClock{now: now})
+
+	created, err := service.CreateRelease(context.Background(), application.CreateReleaseCommand{
+		IdempotencyKey: "modify-delete", ModelCode: model.Code(), ReleaseTypeCode: "direct",
+		Scope: release.Scope{Region: "cn", Environment: "production", Stage: "blue"}, Actor: "operator",
+		Items: []application.ReleaseDraft{
+			{
+				Action: release.ChangeModify, BaseBefore: modified.Data,
+				EffectiveBefore:        map[string]string{"route_code": "visa", "priority": "7", "enabled": "false"},
+				After:                  map[string]string{"route_code": "visa", "priority": "2", "enabled": "false"},
+				ExpectedRecordRevision: 7, ExpectedCollectionRevision: 7,
+			},
+			{
+				Action: release.ChangeDelete, BaseBefore: deleted.Data, EffectiveBefore: deleted.Data,
+				ExpectedRecordRevision: 7, ExpectedCollectionRevision: 7,
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("CreateRelease: %v", err)
+	}
+	executed, err := service.Act(context.Background(), application.ActCommand{
+		OrderID: created.ID, ActionRequestID: "execute-base", ExpectedRevision: created.Revision,
+		ExpectedCurrentStep: "apply-base", Action: application.ActionExecute, Actor: "operator",
+	})
+	if err != nil {
+		t.Fatalf("execute base: %v", err)
+	}
+	current := store.records["production"][modified.RecordKey]
+	if current.Data["priority"] != "2" || current.ConfigRevision != 8 {
+		t.Fatalf("modified base = %+v", current)
+	}
+	if _, exists := store.records["production"][deleted.RecordKey]; exists || store.overlays["production"]["blue"][modified.RecordKey] != nil {
+		t.Fatalf("base apply did not delete the target and scoped overlay")
+	}
+
+	rolledBack, err := service.Act(context.Background(), application.ActCommand{
+		OrderID: created.ID, ActionRequestID: "rollback-base", ExpectedRevision: executed.Revision,
+		ExpectedCurrentStep: "apply-base", Action: application.ActionRollback, Actor: "operator",
+	})
+	if err != nil {
+		t.Fatalf("rollback base: %v", err)
+	}
+	restoredModified := store.records["production"][modified.RecordKey]
+	restoredDeleted := store.records["production"][deleted.RecordKey]
+	restoredRule := store.overlays["production"]["blue"][modified.RecordKey]
+	if rolledBack.Status != release.OrderRolledBack || !reflect.DeepEqual(restoredModified.Data, modified.Data) || !reflect.DeepEqual(restoredDeleted.Data, deleted.Data) || !reflect.DeepEqual(restoredRule, previousRule) {
+		t.Fatalf("rollback did not restore exact facts: view=%+v modified=%+v deleted=%+v rule=%+v", rolledBack, restoredModified, restoredDeleted, restoredRule)
+	}
+	if store.revisions["production"] != 9 || store.outboxEvents != 2 {
+		t.Fatalf("rollback revision=%d outbox=%d", store.revisions["production"], store.outboxEvents)
+	}
+}
+
 func TestPercentageRolloutApplicationPersistsTemporaryRule(t *testing.T) {
 	t.Parallel()
 	definition, model := compiledCatalog(t)

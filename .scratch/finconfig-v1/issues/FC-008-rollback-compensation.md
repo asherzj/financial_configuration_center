@@ -22,4 +22,9 @@ Every mutable in-progress effect is exactly reversible and successful history is
 
 ## Evidence
 
-Not run.
+- Completed strict versioned effect envelopes and whole-chain in-progress rollback.
+- Completed BASE_FINAL ADD/MODIFY/DELETE execution with exact restoration of base before-images and removed scoped overlays.
+- Verified the BASE_FINAL modify/delete/rollback transaction on MySQL 8.0 and 8.4; collection revisions advance once per apply/rollback and each mutation emits one outbox event.
+- `go test ./... -count=1`
+- `go test -race ./internal/release/... -count=1`
+- Remaining: linked compensating releases for successful orders and their transport/UI projections.

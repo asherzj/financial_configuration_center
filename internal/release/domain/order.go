@@ -103,6 +103,9 @@ type Scope struct {
 
 type BaseFinalItemSpec struct {
 	ID                         string
+	Action                     ChangeAction
+	BaseBefore                 *catalog.ConfigurationRecord
+	EffectiveBefore            *catalog.ConfigurationRecord
 	After                      catalog.ConfigurationRecord
 	ExpectedRecordRevision     catalog.ConfigRevision
 	ExpectedCollectionRevision catalog.ConfigRevision
@@ -309,40 +312,70 @@ func NewBaseFinalOrder(spec BaseFinalOrderSpec) (*Order, error) {
 
 	items := make([]Item, len(spec.Items))
 	seen := make(map[string]struct{}, len(spec.Items))
-	collection := spec.Items[0].After.Collection
+	collection := ""
+	expectedCollectionRevision := spec.Items[0].ExpectedCollectionRevision
 	for index, item := range spec.Items {
-		if strings.TrimSpace(item.ID) == "" || item.After.Collection == "" || item.After.RecordKey == "" {
+		if item.Action == "" {
+			item.Action = ChangeAdd
+		}
+		target := &item.After
+		if item.Action == ChangeDelete {
+			target = item.EffectiveBefore
+			if target == nil {
+				target = item.BaseBefore
+			}
+		}
+		if strings.TrimSpace(item.ID) == "" || target == nil || target.Collection == "" || target.RecordKey == "" {
 			return nil, fmt.Errorf("%w: item %d identity is required", ErrInvalid, index)
 		}
-		if item.After.Collection != collection {
+		if collection == "" {
+			collection = target.Collection
+		}
+		if target.Collection != collection {
 			return nil, fmt.Errorf("%w: all items must target the model collection", ErrInvalid)
 		}
-		if item.After.Environment != spec.Scope.Environment {
+		if target.Environment != spec.Scope.Environment {
 			return nil, fmt.Errorf("%w: item %d environment differs from scope", ErrInvalid, index)
 		}
-		if item.ExpectedRecordRevision != 0 {
-			return nil, fmt.Errorf("%w: ADD item expected record revision must be zero", ErrInvalid)
+		validShape := item.Action == ChangeAdd && item.BaseBefore == nil && item.EffectiveBefore == nil && item.After.Collection != "" && item.ExpectedRecordRevision == 0 ||
+			item.Action == ChangeModify && item.BaseBefore != nil && item.EffectiveBefore != nil && item.After.Collection != "" && item.ExpectedRecordRevision > 0 ||
+			item.Action == ChangeDelete && item.BaseBefore != nil && item.EffectiveBefore != nil && item.After.Collection == "" && item.ExpectedRecordRevision > 0
+		if !validShape {
+			return nil, fmt.Errorf("%w: item %d shape is invalid for %s", ErrInvalid, index, item.Action)
 		}
-		if item.ExpectedCollectionRevision == 0 {
-			return nil, fmt.Errorf("%w: expected collection revision is required", ErrInvalid)
+		if item.ExpectedCollectionRevision == 0 || item.ExpectedCollectionRevision != expectedCollectionRevision {
+			return nil, fmt.Errorf("%w: one shared expected collection revision is required", ErrInvalid)
 		}
-		identity := item.After.Collection + "\x00" + item.After.RecordKey
+		for _, record := range []*catalog.ConfigurationRecord{item.BaseBefore, item.EffectiveBefore} {
+			if record != nil && (record.Collection != collection || record.Environment != spec.Scope.Environment || record.RecordKey != target.RecordKey || record.Data == nil) {
+				return nil, fmt.Errorf("%w: item %d before identity differs from target", ErrInvalid, index)
+			}
+		}
+		if item.After.Collection != "" && (item.After.Collection != collection || item.After.Environment != spec.Scope.Environment || item.After.RecordKey != target.RecordKey || item.After.Data == nil) {
+			return nil, fmt.Errorf("%w: item %d after identity differs from target", ErrInvalid, index)
+		}
+		identity := collection + "\x00" + target.RecordKey
 		if _, duplicate := seen[identity]; duplicate {
 			return nil, fmt.Errorf("%w: duplicate item record key", ErrInvalid)
 		}
 		seen[identity] = struct{}{}
-		after := cloneRecord(item.After)
+		var after *catalog.ConfigurationRecord
+		if item.After.Collection != "" {
+			after = cloneRecordPointer(&item.After)
+		}
 		items[index] = Item{
 			ID:                         item.ID,
-			Action:                     ChangeAdd,
-			Collection:                 after.Collection,
-			RecordKey:                  after.RecordKey,
-			After:                      &after,
+			Action:                     item.Action,
+			Collection:                 collection,
+			RecordKey:                  target.RecordKey,
+			BaseBefore:                 cloneRecordPointer(item.BaseBefore),
+			EffectiveBefore:            cloneRecordPointer(item.EffectiveBefore),
+			After:                      after,
 			ExpectedRecordRevision:     item.ExpectedRecordRevision,
 			ExpectedCollectionRevision: item.ExpectedCollectionRevision,
 			PreserveSensitiveFields:    append([]string(nil), item.PreserveSensitiveFields...),
 			Status:                     ItemPending,
-			ActiveConflictKey:          baseConflictKey(after.Collection, spec.Scope.Environment, after.RecordKey),
+			ActiveConflictKey:          baseConflictKey(collection, spec.Scope.Environment, target.RecordKey),
 		}
 	}
 	createdAt := spec.CreatedAt.UTC()
@@ -585,14 +618,28 @@ func (order *Order) ExecuteBase(authority BaseAuthority, newRevision catalog.Con
 	if authority.CollectionRevision != expectedRevision {
 		return BaseEffect{}, fmt.Errorf("%w: collection revision is %d, expected %d", ErrAborted, authority.CollectionRevision, expectedRevision)
 	}
-	changes := make([]BaseChange, len(order.items))
+	changes := make([]BaseChange, 0, len(order.items))
 	overlayChanges := make([]OverlayRuleChange, 0, len(order.items))
-	for index, item := range order.items {
-		if existing := authority.Records[item.RecordKey]; existing != nil {
-			return BaseEffect{}, fmt.Errorf("%w: ADD target %q already exists at revision %d", ErrAborted, item.RecordKey, existing.ConfigRevision)
+	for _, item := range order.items {
+		existing := authority.Records[item.RecordKey]
+		if item.ExpectedRecordRevision == 0 {
+			if existing != nil {
+				return BaseEffect{}, fmt.Errorf("%w: base target %q now exists at revision %d", ErrAborted, item.RecordKey, existing.ConfigRevision)
+			}
+		} else if existing == nil || existing.ConfigRevision != item.ExpectedRecordRevision || item.BaseBefore == nil || !equalData(existing.Data, item.BaseBefore.Data) {
+			return BaseEffect{}, fmt.Errorf("%w: base target %q changed", ErrAborted, item.RecordKey)
 		}
-		after := cloneRecord(*item.After)
-		changes[index] = BaseChange{Action: ChangeAdd, After: &after}
+		if existing == nil && item.After != nil {
+			after := cloneRecord(*item.After)
+			changes = append(changes, BaseChange{Action: ChangeAdd, After: &after})
+		} else if existing != nil && item.After == nil {
+			before := cloneRecord(*existing)
+			changes = append(changes, BaseChange{Action: ChangeDelete, Before: &before})
+		} else if existing != nil && item.After != nil && !equalData(existing.Data, item.After.Data) {
+			before := cloneRecord(*existing)
+			after := cloneRecord(*item.After)
+			changes = append(changes, BaseChange{Action: ChangeModify, Before: &before, After: &after})
+		}
 		rule := cloneOverlayRulePointer(authority.Rules[item.RecordKey])
 		if hasPercentEffect {
 			if rule == nil || rule.ReleaseOrderID != order.id {
@@ -605,6 +652,9 @@ func (order *Order) ExecuteBase(authority BaseAuthority, newRevision catalog.Con
 			}
 			overlayChanges = append(overlayChanges, OverlayRuleChange{RecordKey: item.RecordKey, PreviousRule: rule})
 		}
+	}
+	if len(changes) == 0 && len(overlayChanges) == 0 {
+		return BaseEffect{}, fmt.Errorf("%w: base apply has no fact changes", ErrInvalid)
 	}
 
 	at = at.UTC()

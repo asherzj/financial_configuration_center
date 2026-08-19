@@ -2,10 +2,12 @@ package domain_test
 
 import (
 	"errors"
+	"reflect"
 	"testing"
 	"time"
 
 	catalog "github.com/asherzj/financial_configuration_center/internal/catalog/domain"
+	overlay "github.com/asherzj/financial_configuration_center/internal/overlay/domain"
 	release "github.com/asherzj/financial_configuration_center/internal/release/domain"
 )
 
@@ -94,6 +96,62 @@ func TestBaseFinalExecutionRejectsStaleAuthorityWithoutMutation(t *testing.T) {
 		t.Fatal("ADD over existing record succeeded")
 	}
 	assertOrder(t, order, release.OrderInProgress, release.StepBaseApply, release.StepPending, 1)
+}
+
+func TestBaseFinalModifyDeleteAndRollbackRestoreExactFacts(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 8, 20, 3, 0, 0, 0, time.UTC)
+	modifiedBefore := catalog.ConfigurationRecord{Collection: "routes", Environment: "production", RecordKey: "modify", Data: map[string]string{"code": "visa", "value": "old"}, ConfigRevision: 7}
+	modifiedEffective := modifiedBefore
+	modifiedEffective.Data = map[string]string{"code": "visa", "value": "scoped"}
+	modifiedAfter := modifiedBefore
+	modifiedAfter.Data = map[string]string{"code": "visa", "value": "new"}
+	deletedBefore := catalog.ConfigurationRecord{Collection: "routes", Environment: "production", RecordKey: "delete", Data: map[string]string{"code": "amex", "value": "keep-bytes"}, ConfigRevision: 7}
+	activation := catalog.ConfigRevision(7)
+	previousRule := overlay.Rule{
+		ID: "previous", Collection: "routes", Scope: overlay.Scope{Region: "cn", Environment: "production", Stage: "blue"},
+		RecordKey: "modify", Action: overlay.ActionModify, Content: map[string]string{"value": "scoped"}, ConfigRevision: 7,
+		ReleaseOrderID: "older", ActivatedRevision: &activation, CreatedAt: now.Add(-time.Hour), CreatedBy: "older", UpdatedAt: now.Add(-time.Hour), UpdatedBy: "older",
+	}
+	order, err := release.NewBaseFinalOrder(release.BaseFinalOrderSpec{
+		ID: "modify-delete", ReleaseNumber: "REL-MD", IdempotencyKey: "modify-delete", ModelCode: "model",
+		TemplateCode: "base-final", TemplateVersion: 1, ReleaseTypeCode: "direct", RequestDigest: zeroDigest,
+		Scope: release.Scope{Region: "cn", Environment: "production", Stage: "blue"}, CreatedBy: "operator", CreatedAt: now,
+		Items: []release.BaseFinalItemSpec{
+			{ID: "modify-item", Action: release.ChangeModify, BaseBefore: &modifiedBefore, EffectiveBefore: &modifiedEffective, After: modifiedAfter, ExpectedRecordRevision: 7, ExpectedCollectionRevision: 7},
+			{ID: "delete-item", Action: release.ChangeDelete, BaseBefore: &deletedBefore, EffectiveBefore: &deletedBefore, ExpectedRecordRevision: 7, ExpectedCollectionRevision: 7},
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewBaseFinalOrder: %v", err)
+	}
+	effect, err := order.ExecuteBase(release.BaseAuthority{
+		CollectionRevision: 7,
+		Records:            map[string]*catalog.ConfigurationRecord{"modify": &modifiedBefore, "delete": &deletedBefore},
+		Rules:              map[string]*overlay.Rule{"modify": &previousRule, "delete": nil},
+	}, 8, "operator", now.Add(time.Minute))
+	if err != nil {
+		t.Fatalf("ExecuteBase: %v", err)
+	}
+	if len(effect.Changes) != 2 || effect.Changes[0].Action != release.ChangeModify || effect.Changes[1].Action != release.ChangeDelete || len(effect.OverlayChanges) != 1 {
+		t.Fatalf("base effect = %+v", effect)
+	}
+	modifiedCurrent := modifiedAfter
+	modifiedCurrent.ConfigRevision = 8
+	plan, err := order.RollbackAll(2, release.BaseAuthority{
+		CollectionRevision: 8,
+		Records:            map[string]*catalog.ConfigurationRecord{"modify": &modifiedCurrent, "delete": nil},
+		Rules:              map[string]*overlay.Rule{"modify": nil, "delete": nil},
+	}, 9, "operator", now.Add(2*time.Minute))
+	if err != nil {
+		t.Fatalf("RollbackAll: %v", err)
+	}
+	if plan.Base == nil || len(plan.Base.Changes) != 2 || plan.Base.Changes[0].Action != release.ChangeAdd || plan.Base.Changes[1].Action != release.ChangeModify {
+		t.Fatalf("inverse base plan = %+v", plan.Base)
+	}
+	if !reflect.DeepEqual(plan.Base.Changes[0].After.Data, deletedBefore.Data) || !reflect.DeepEqual(plan.Base.Changes[1].After.Data, modifiedBefore.Data) || !reflect.DeepEqual(plan.Base.OverlayChanges[0].NewRule, &previousRule) {
+		t.Fatalf("inverse facts are not exact: %+v", plan.Base)
+	}
 }
 
 func TestManualReviewEnforcesRoleAndProductionSelfApproval(t *testing.T) {

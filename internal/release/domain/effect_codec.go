@@ -85,8 +85,8 @@ func validateBaseEffect(effect *BaseEffect) error {
 	if err := validateEffectIdentity(effect.EffectVersion, effect.Collection, effect.Scope, effect.PreviousRevision, effect.AppliedRevision, effect.ExecutedBy, effect.ExecutedAt.IsZero()); err != nil {
 		return fmt.Errorf("BASE effect: %w", err)
 	}
-	if len(effect.Changes) == 0 {
-		return errors.New("BASE effect: changes are required")
+	if len(effect.Changes) == 0 && len(effect.OverlayChanges) == 0 {
+		return errors.New("BASE effect: base or overlay changes are required")
 	}
 	for _, change := range effect.Changes {
 		valid := change.Action == ChangeAdd && change.Before == nil && change.After != nil ||
