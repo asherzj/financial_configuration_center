@@ -11,9 +11,26 @@ import (
 	"time"
 
 	_ "github.com/go-sql-driver/mysql"
+	"github.com/pressly/goose/v3"
 
+	platformmysql "github.com/asherzj/financial_configuration_center/internal/platform/mysql"
 	"github.com/asherzj/financial_configuration_center/internal/platform/mysql/migrations"
 )
+
+func TestExpectedVersionsMatchMigrationFiles(t *testing.T) {
+	t.Parallel()
+	collected, err := goose.CollectMigrations(migrationDirectory(t), 0, goose.MaxVersion)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := make([]int64, len(collected))
+	for index, migration := range collected {
+		got[index] = migration.Version
+	}
+	if want := migrations.ExpectedVersions(); !slices.Equal(got, want) {
+		t.Fatalf("migration files = %v, expected manifest = %v", got, want)
+	}
+}
 
 func TestGooseMigrationUpDownUp(t *testing.T) {
 	dsn := os.Getenv("FINCONFIG_TEST_MYSQL_DSN")
@@ -34,6 +51,17 @@ func TestGooseMigrationUpDownUp(t *testing.T) {
 
 	directory := migrationDirectory(t)
 	if err := migrations.Up(ctx, db, directory); err != nil {
+		t.Fatal(err)
+	}
+	checked, err := platformmysql.Open(ctx, platformmysql.Config{
+		DSN: dsn, MaxOpenConns: 2, MaxIdleConns: 1,
+		ConnMaxLifetime: time.Minute, ConnMaxIdleTime: time.Minute,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = checked.Close() })
+	if err := checked.CheckStartup(ctx); err != nil {
 		t.Fatal(err)
 	}
 	assertBusinessTableCount(t, ctx, db, 16)
@@ -59,24 +87,7 @@ func TestGooseMigrationUpDownUp(t *testing.T) {
 
 func assertExactBusinessTables(t *testing.T, ctx context.Context, db *sql.DB) {
 	t.Helper()
-	want := []string{
-		"audit_records",
-		"configuration_change_log",
-		"configuration_collections",
-		"configuration_models",
-		"configuration_overlays",
-		"configuration_records",
-		"configuration_revision_counters",
-		"configuration_subscriptions",
-		"configuration_versions",
-		"outbox_events",
-		"release_action_requests",
-		"release_operation_logs",
-		"release_order_items",
-		"release_orders",
-		"release_step_states",
-		"release_templates",
-	}
+	want := migrations.ExpectedTables()
 	rows, err := db.QueryContext(ctx, `
 		SELECT table_name
 		FROM information_schema.tables

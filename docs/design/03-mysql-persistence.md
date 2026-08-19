@@ -15,7 +15,9 @@ GORM 只在 `internal/platform/mysql` adapter 中使用：
 
 ## 2. 连接配置
 
-DSN 必须设置 `parseTime=true`、`loc=UTC`、合理的 read/write/connect timeout，并关闭会改变语义的宽松 SQL mode。启动时执行只读 capability check：版本、InnoDB、时区 UTC、CHECK constraint 支持。
+DSN 必须设置 `parseTime=true`、`loc=UTC`、合理的 read/write/connect timeout，并关闭会改变语义的宽松 SQL mode。启动时执行只读 capability/schema gate：只接受 MySQL 8.4.11+ LTS 线或兼容测试用 8.0.46+ 线，拒绝 MariaDB；要求默认引擎及全部 FinConfig 业务表为 InnoDB、session time zone 为 UTC、UTC 偏移为 0、启用 STRICT SQL mode 且禁用 `ALLOW_INVALID_DATES`。所接受版本均原生强制 CHECK constraint。
+
+schema gate 读取 `goose_db_version` 的最新状态，要求构建内 migration manifest 的每个版本都已应用且没有仍处于 applied 状态的未知版本。服务进程只校验，绝不创建 Goose 表、自动迁移或接受运维参数跳过检查；表缺失、版本落后/超前或历史状态不完整均启动失败。
 
 连接池参数显式配置：MaxOpenConns、MaxIdleConns、ConnMaxLifetime、ConnMaxIdleTime。readyz 检查短超时 `PingContext`，但瞬时失败不能直接终止已运行进程。
 
@@ -202,6 +204,7 @@ relay 在短事务内使用 `SELECT ... FOR UPDATE SKIP LOCKED LIMIT ?` 领取�
 - 路径 `db/migrations/mysql/`，文件名使用递增时间戳或六位序号，选定后不混用。
 - 每个 migration 包含 Goose Up/Down；不可安全回退的数据 migration 可以让 Down 明确失败并在说明中记录。
 - 生产启动不自动执行 migration；独立命令或部署 job 执行。
+- `internal/platform/mysql/migrations` 维护构建内 expected version 与 16 张业务表 manifest；测试必须证明 version manifest 与 migration 文件集合完全一致、table manifest 与迁移后实际业务表完全一致，新增 migration/表时清单在同一提交更新。
 - seed demo 与生产 migration 分开。生产 migration 除 global counter 不写业务数据。
 - migration contract test 从空库执行到最新，也从前一发布升级到最新。
 - 领域、审计与调度时间统一使用 `DATETIME(6)`，连接时区固定 UTC，避免 EffectiveUntil 的 2038 范围限制。

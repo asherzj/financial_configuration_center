@@ -50,7 +50,7 @@ V1 的冻结技术基线、整体架构、分模块详细设计和编码任务�
 先对空 MySQL 8.4（兼容 8.0）数据库运行 Goose migration，再执行可重复的 seed 命令：
 
 ```sh
-export FINCONFIG_MYSQL_DSN='finconfig:password@tcp(127.0.0.1:3306)/finconfig?parseTime=true&loc=UTC&multiStatements=true'
+export FINCONFIG_MYSQL_DSN='finconfig:password@tcp(127.0.0.1:3306)/finconfig?parseTime=true&loc=UTC&time_zone=%27%2B00%3A00%27&timeout=5s&readTimeout=5s&writeTimeout=5s&multiStatements=true'
 go run ./cmd/migrate -command up
 go run ./cmd/seed
 ```

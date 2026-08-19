@@ -1,6 +1,7 @@
 package mysql_test
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -11,7 +12,7 @@ func TestConfigValidate(t *testing.T) {
 	t.Parallel()
 
 	valid := platformmysql.Config{
-		DSN:             "user:password@tcp(mysql:3306)/finconfig?parseTime=true&loc=UTC",
+		DSN:             "user:password@tcp(mysql:3306)/finconfig?parseTime=true&loc=UTC&timeout=5s&readTimeout=5s&writeTimeout=5s",
 		MaxOpenConns:    20,
 		MaxIdleConns:    5,
 		ConnMaxLifetime: 30 * time.Minute,
@@ -23,6 +24,20 @@ func TestConfigValidate(t *testing.T) {
 
 	tests := map[string]func(*platformmysql.Config){
 		"missing DSN":        func(config *platformmysql.Config) { config.DSN = "" },
+		"invalid DSN":        func(config *platformmysql.Config) { config.DSN = "%%%" },
+		"missing parse time": func(config *platformmysql.Config) { config.DSN = strings.Replace(config.DSN, "parseTime=true&", "", 1) },
+		"wrong location": func(config *platformmysql.Config) {
+			config.DSN = strings.Replace(config.DSN, "loc=UTC", "loc=Local", 1)
+		},
+		"missing connect timeout": func(config *platformmysql.Config) {
+			config.DSN = strings.Replace(config.DSN, "timeout=5s&", "", 1)
+		},
+		"missing read timeout": func(config *platformmysql.Config) {
+			config.DSN = strings.Replace(config.DSN, "readTimeout=5s&", "", 1)
+		},
+		"missing write timeout": func(config *platformmysql.Config) {
+			config.DSN = strings.Replace(config.DSN, "&writeTimeout=5s", "", 1)
+		},
 		"zero max open":      func(config *platformmysql.Config) { config.MaxOpenConns = 0 },
 		"negative max idle":  func(config *platformmysql.Config) { config.MaxIdleConns = -1 },
 		"idle exceeds open":  func(config *platformmysql.Config) { config.MaxIdleConns = 21 },

@@ -5,8 +5,11 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"net/url"
+	"strings"
 	"time"
 
+	drivermysql "github.com/go-sql-driver/mysql"
 	gormmysql "gorm.io/driver/mysql"
 	"gorm.io/gorm"
 )
@@ -22,6 +25,21 @@ type Config struct {
 func (c Config) Validate() error {
 	if c.DSN == "" {
 		return errors.New("MySQL DSN is required")
+	}
+	parsed, err := drivermysql.ParseDSN(c.DSN)
+	if err != nil {
+		return errors.New("MySQL DSN is invalid")
+	}
+	separator := strings.LastIndexByte(c.DSN, '?')
+	if separator < 0 {
+		return errors.New("MySQL DSN must explicitly configure parseTime and UTC location")
+	}
+	parameters, err := url.ParseQuery(c.DSN[separator+1:])
+	if err != nil || len(parameters["parseTime"]) != 1 || parameters.Get("parseTime") != "true" || len(parameters["loc"]) != 1 || parameters.Get("loc") != "UTC" || !parsed.ParseTime || parsed.Loc.String() != "UTC" {
+		return errors.New("MySQL DSN must explicitly set parseTime=true and loc=UTC")
+	}
+	if parsed.Timeout <= 0 || parsed.ReadTimeout <= 0 || parsed.WriteTimeout <= 0 {
+		return errors.New("MySQL DSN must set positive connect, read, and write timeouts")
 	}
 	if c.MaxOpenConns <= 0 {
 		return errors.New("MySQL max open connections must be positive")

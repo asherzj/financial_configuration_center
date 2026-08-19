@@ -84,4 +84,4 @@ jobs:
           cache: true
       - run: go test ./internal/platform/mysql/migrations -run TestGooseMigrationUpDownUp -v
         env:
-          FINCONFIG_TEST_MYSQL_DSN: root:root@tcp(127.0.0.1:3306)/finconfig_test?parseTime=true&loc=UTC&multiStatements=true
+          FINCONFIG_TEST_MYSQL_DSN: root:root@tcp(127.0.0.1:3306)/finconfig_test?parseTime=true&loc=UTC&time_zone=%27%2B00%3A00%27&timeout=5s&readTimeout=5s&writeTimeout=5s&multiStatements=true

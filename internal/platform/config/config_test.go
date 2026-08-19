@@ -10,6 +10,7 @@ import (
 
 func TestLoadStrictYAMLThenEnvironmentOverrides(t *testing.T) {
 	t.Parallel()
+	const environmentDSN = "finconfig:environment-secret@tcp(mysql:3306)/finconfig?parseTime=true&loc=UTC&timeout=5s&readTimeout=5s&writeTimeout=5s"
 	yaml := `
 serviceName: control-plane
 version: v1
@@ -19,7 +20,7 @@ operationsListenAddress: 127.0.0.1:9090
 backendSocket: /var/run/finconfig/backend.sock
 shutdownTimeout: 30s
 mysql:
-  dsn: yaml-secret
+  dsn: finconfig:yaml-secret@tcp(mysql:3306)/finconfig?parseTime=true&loc=UTC&timeout=5s&readTimeout=5s&writeTimeout=5s
   maxOpenConnections: 20
   maxIdleConnections: 10
   connectionMaxLifetime: 5m
@@ -31,14 +32,14 @@ auth:
   devAuthEnabled: true
 `
 	loaded, err := config.Load(strings.NewReader(yaml), []string{
-		"FINCONFIG_MYSQL_DSN=environment-secret",
+		"FINCONFIG_MYSQL_DSN=" + environmentDSN,
 		"FINCONFIG_TRACE_SAMPLE_RATIO=0.25",
 		"FINCONFIG_DEV_AUTH_ENABLED=false",
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if loaded.MySQL.DSN != "environment-secret" || loaded.Telemetry.TraceSampleRatio != 0.25 || loaded.Auth.DevAuthEnabled || loaded.ShutdownTimeout.Duration != 30*time.Second {
+	if loaded.MySQL.DSN != environmentDSN || loaded.Telemetry.TraceSampleRatio != 0.25 || loaded.Auth.DevAuthEnabled || loaded.ShutdownTimeout.Duration != 30*time.Second {
 		t.Fatalf("loaded=%+v", loaded)
 	}
 	summary := loaded.SafeSummary()
@@ -81,7 +82,7 @@ operationsListenAddress: 127.0.0.1:9090
 backendSocket: /var/run/finconfig/backend.sock
 shutdownTimeout: 30s
 mysql:
-  dsn: mysql-secret
+  dsn: finconfig:mysql-secret@tcp(mysql:3306)/finconfig?parseTime=true&loc=UTC&timeout=5s&readTimeout=5s&writeTimeout=5s
   maxOpenConnections: 20
   maxIdleConnections: 10
   connectionMaxLifetime: 5m
@@ -115,7 +116,7 @@ instanceId: config-server-1
 operationsListenAddress: 127.0.0.1:9090
 backendSocket: /var/run/finconfig/backend.sock
 shutdownTimeout: 30s
-mysql: {dsn: mysql-secret, maxOpenConnections: 20, maxIdleConnections: 10, connectionMaxLifetime: 5m, connectionMaxIdleTime: 1m}
+mysql: {dsn: "finconfig:mysql-secret@tcp(mysql:3306)/finconfig?parseTime=true&loc=UTC&timeout=5s&readTimeout=5s&writeTimeout=5s", maxOpenConnections: 20, maxIdleConnections: 10, connectionMaxLifetime: 5m, connectionMaxIdleTime: 1m}
 telemetry: {traceSampleRatio: 0.1, otlpEndpoint: ""}
 auth: {devAuthEnabled: true}
 `
@@ -125,7 +126,7 @@ auth: {devAuthEnabled: true}
 	}{
 		{name: "managed environment", yaml: strings.Replace(base, "managedEnvironment: production\n", "", 1)},
 		{name: "server epoch", yaml: strings.Replace(base, "018f47cb-42f8-7fb2-a4af-0b0bd6dd98c1", "not-a-uuid", 1)},
-		{name: "MySQL", yaml: strings.Replace(base, "dsn: mysql-secret", `dsn: ""`, 1)},
+		{name: "MySQL", yaml: strings.Replace(base, `dsn: "finconfig:mysql-secret@tcp(mysql:3306)/finconfig?parseTime=true&loc=UTC&timeout=5s&readTimeout=5s&writeTimeout=5s"`, `dsn: ""`, 1)},
 		{name: "backend UDS", yaml: strings.Replace(base, "backendSocket: /var/run/finconfig/backend.sock\n", "", 1)},
 	}
 	for _, test := range tests {
@@ -152,7 +153,7 @@ instanceId: prod-1
 operationsListenAddress: 0.0.0.0:9090
 backendSocket: /var/run/finconfig/backend.sock
 shutdownTimeout: 30s
-mysql: {dsn: secret, maxOpenConnections: 20, maxIdleConnections: 10, connectionMaxLifetime: 5m, connectionMaxIdleTime: 1m}
+mysql: {dsn: "finconfig:secret@tcp(mysql:3306)/finconfig?parseTime=true&loc=UTC&timeout=5s&readTimeout=5s&writeTimeout=5s", maxOpenConnections: 20, maxIdleConnections: 10, connectionMaxLifetime: 5m, connectionMaxIdleTime: 1m}
 telemetry: {traceSampleRatio: 0.1, otlpEndpoint: ""}
 auth: {devAuthEnabled: true}
 `
