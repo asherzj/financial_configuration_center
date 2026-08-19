@@ -15,6 +15,7 @@ import (
 var (
 	ErrManagedEnvironmentMismatch = errors.New("Config Server environment does not match the managed environment")
 	ErrSnapshotUnavailable        = errors.New("Config Server snapshot is unavailable")
+	ErrInvalidArgument            = errors.New("Config Server request is invalid")
 )
 
 type SnapshotProvider interface {
@@ -62,6 +63,15 @@ type GetSnapshotResponse struct {
 	Bucket             int32
 	Collections        []CollectionPayload
 	DeletedCollections []string
+}
+
+type DiffVersionsRequest = GetSnapshotRequest
+
+type DiffVersionsResponse struct {
+	Identity snapshot.Identity
+	Added    []string
+	Modified []string
+	Deleted  []string
 }
 
 type Service struct {
@@ -113,7 +123,8 @@ func (service *Service) GetSnapshot(ctx context.Context, request GetSnapshotRequ
 	}
 	known := make(map[string]Version, len(request.KnownVersions))
 	for _, version := range request.KnownVersions {
-		if strings.TrimSpace(version.Collection) == "" {
+		version.Collection = strings.TrimSpace(version.Collection)
+		if version.Collection == "" {
 			return GetSnapshotResponse{}, errors.New("get snapshot: known version collection is required")
 		}
 		if _, duplicate := known[version.Collection]; duplicate {
@@ -161,6 +172,39 @@ func (service *Service) GetSnapshot(ctx context.Context, request GetSnapshotRequ
 	}
 	sort.Strings(response.DeletedCollections)
 	return response, nil
+}
+
+func (service *Service) DiffVersions(ctx context.Context, request DiffVersionsRequest) (DiffVersionsResponse, error) {
+	known := make(map[string]struct{}, len(request.KnownVersions))
+	normalized := request
+	normalized.KnownVersions = append([]Version(nil), request.KnownVersions...)
+	for index, version := range normalized.KnownVersions {
+		name := strings.TrimSpace(version.Collection)
+		if name == "" {
+			return DiffVersionsResponse{}, fmt.Errorf("diff versions: known version collection is required: %w", ErrInvalidArgument)
+		}
+		if _, duplicate := known[name]; duplicate {
+			return DiffVersionsResponse{}, fmt.Errorf("diff versions: duplicate known version %q: %w", name, ErrInvalidArgument)
+		}
+		known[name] = struct{}{}
+		normalized.KnownVersions[index].Collection = name
+	}
+	response, err := service.GetSnapshot(ctx, GetSnapshotRequest(normalized))
+	if err != nil {
+		return DiffVersionsResponse{}, err
+	}
+	diff := DiffVersionsResponse{Identity: response.Identity, Deleted: append([]string(nil), response.DeletedCollections...)}
+	for _, collection := range response.Collections {
+		if _, existed := known[collection.Name]; existed {
+			diff.Modified = append(diff.Modified, collection.Name)
+		} else {
+			diff.Added = append(diff.Added, collection.Name)
+		}
+	}
+	sort.Strings(diff.Added)
+	sort.Strings(diff.Modified)
+	sort.Strings(diff.Deleted)
+	return diff, nil
 }
 
 func cloneMap(source map[string]string) map[string]string {

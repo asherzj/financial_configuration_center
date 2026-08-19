@@ -2,6 +2,7 @@ package grpc
 
 import (
 	"context"
+	"encoding/hex"
 	"errors"
 	"math"
 	"strings"
@@ -20,6 +21,7 @@ import (
 
 type Application interface {
 	GetSnapshot(context.Context, configserver.GetSnapshotRequest) (configserver.GetSnapshotResponse, error)
+	DiffVersions(context.Context, configserver.DiffVersionsRequest) (configserver.DiffVersionsResponse, error)
 }
 
 type Watcher interface {
@@ -78,12 +80,9 @@ func (handler *Handler) GetSnapshot(ctx context.Context, request *configv1.GetSn
 	if err := handler.requestAuthorizer.AuthorizeConsumer(ctx, consumerID, scope); err != nil {
 		return nil, err
 	}
-	known := make([]configserver.Version, len(request.KnownVersions))
-	for index, version := range request.KnownVersions {
-		if version == nil || version.ConfigRevision < 0 || version.BaseDigest == nil {
-			return nil, status.Error(codes.InvalidArgument, "known_versions entries require a non-negative revision and base digest")
-		}
-		known[index] = configserver.Version{Collection: version.Collection, Revision: catalog.ConfigRevision(version.ConfigRevision), Digest: version.BaseDigest.Value}
+	known, err := mapKnownVersions(request.KnownVersions)
+	if err != nil {
+		return nil, err
 	}
 	response, err := handler.application.GetSnapshot(ctx, configserver.GetSnapshotRequest{
 		ConsumerID: consumerID, ClientID: clientID,
@@ -95,6 +94,8 @@ func (handler *Handler) GetSnapshot(ctx context.Context, request *configv1.GetSn
 			return nil, status.Error(codes.FailedPrecondition, "requested environment is not managed by this server")
 		case errors.Is(err, configserver.ErrSnapshotUnavailable):
 			return nil, status.Error(codes.Unavailable, "configuration snapshot is not available")
+		case errors.Is(err, configserver.ErrInvalidArgument):
+			return nil, status.Error(codes.InvalidArgument, "known_versions are invalid")
 		}
 		return nil, status.Error(codes.Internal, "get snapshot failed")
 	}
@@ -132,7 +133,7 @@ func (handler *Handler) GetSnapshot(ctx context.Context, request *configv1.GetSn
 			ChangeCursor: changeCursor,
 			Version: &configv1.VersionView{
 				Collection: collection.Name, ConfigRevision: revision,
-				BaseDigest: &commonv1.Digest{Algorithm: "SHA-256", Value: collection.Digest},
+				EffectiveDigest: &commonv1.Digest{Algorithm: "SHA-256", Value: collection.Digest},
 			},
 		}
 	}
@@ -150,10 +151,34 @@ func (handler *Handler) DiffVersions(ctx context.Context, request *configv1.Diff
 	if scope.Environment != handler.managedEnvironment {
 		return nil, status.Error(codes.FailedPrecondition, "requested environment is not managed by this server")
 	}
-	if err := handler.requestAuthorizer.AuthorizeConsumer(ctx, strings.TrimSpace(request.ConsumerId), scope); err != nil {
+	consumerID, clientID := strings.TrimSpace(request.ConsumerId), strings.TrimSpace(request.ClientId)
+	if err := handler.requestAuthorizer.AuthorizeConsumer(ctx, consumerID, scope); err != nil {
 		return nil, err
 	}
-	return nil, status.Error(codes.Unimplemented, "DiffVersions is not implemented in the base-only slice")
+	known, err := mapKnownVersions(request.KnownVersions)
+	if err != nil {
+		return nil, err
+	}
+	response, err := handler.application.DiffVersions(ctx, configserver.DiffVersionsRequest{
+		ConsumerID: consumerID, ClientID: clientID,
+		Region: scope.Region, Environment: scope.Environment, Stage: scope.Stage, KnownVersions: known,
+	})
+	if err != nil {
+		switch {
+		case errors.Is(err, configserver.ErrManagedEnvironmentMismatch):
+			return nil, status.Error(codes.FailedPrecondition, "requested environment is not managed by this server")
+		case errors.Is(err, configserver.ErrSnapshotUnavailable):
+			return nil, status.Error(codes.Unavailable, "configuration snapshot is not available")
+		case errors.Is(err, configserver.ErrInvalidArgument):
+			return nil, status.Error(codes.InvalidArgument, "known_versions are invalid")
+		default:
+			return nil, status.Error(codes.Internal, "diff versions failed")
+		}
+	}
+	return &configv1.DiffVersionsResponse{
+		Snapshot: mapIdentity(response.Identity), Added: append([]string(nil), response.Added...),
+		Modified: append([]string(nil), response.Modified...), Deleted: append([]string(nil), response.Deleted...),
+	}, nil
 }
 
 func (handler *Handler) GetCollections(ctx context.Context, request *configv1.GetCollectionsRequest) (*configv1.GetCollectionsResponse, error) {
@@ -257,6 +282,39 @@ func uint64Int64(value uint64) (int64, error) {
 		return 0, errors.New("value exceeds int64")
 	}
 	return int64(value), nil
+}
+
+func mapKnownVersions(source []*configv1.VersionView) ([]configserver.Version, error) {
+	known := make([]configserver.Version, len(source))
+	seen := make(map[string]struct{}, len(source))
+	for index, version := range source {
+		if version == nil || version.ConfigRevision < 0 || version.EffectiveDigest == nil {
+			return nil, status.Error(codes.InvalidArgument, "known_versions entries require a non-negative revision and effective digest")
+		}
+		collection := strings.TrimSpace(version.Collection)
+		if collection == "" {
+			return nil, status.Error(codes.InvalidArgument, "known_versions entries require collection")
+		}
+		if _, duplicate := seen[collection]; duplicate {
+			return nil, status.Error(codes.InvalidArgument, "known_versions entries must have unique collections")
+		}
+		seen[collection] = struct{}{}
+		if !validSHA256Digest(version.EffectiveDigest) {
+			return nil, status.Error(codes.InvalidArgument, "known_versions entries require a SHA-256 lowercase hex effective digest")
+		}
+		known[index] = configserver.Version{
+			Collection: collection, Revision: catalog.ConfigRevision(version.ConfigRevision), Digest: version.EffectiveDigest.Value,
+		}
+	}
+	return known, nil
+}
+
+func validSHA256Digest(digest *commonv1.Digest) bool {
+	if digest == nil || digest.Algorithm != "SHA-256" || len(digest.Value) != 64 || strings.ToLower(digest.Value) != digest.Value {
+		return false
+	}
+	_, err := hex.DecodeString(digest.Value)
+	return err == nil
 }
 
 func cloneMap(source map[string]string) map[string]string {

@@ -55,6 +55,32 @@ func TestGetSnapshotReturnsOnlyAuthorizedChangedCollections(t *testing.T) {
 	}
 }
 
+func TestDiffVersionsReturnsStableMutuallyExclusiveChanges(t *testing.T) {
+	t.Parallel()
+	manager, _ := serverSnapshot(t)
+	service := configserver.New(manager, staticAuthorizer{collections: []string{"payment_routes"}}, "production")
+	response, err := service.DiffVersions(context.Background(), configserver.DiffVersionsRequest{
+		ConsumerID: "payment-service", ClientID: "pod-1", Region: "cn", Environment: "production",
+		KnownVersions: []configserver.Version{
+			{Collection: " payment_routes ", Revision: 7, Digest: "stale"},
+			{Collection: "legacy", Revision: 1, Digest: "legacy"},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(response.Added) != 0 || len(response.Modified) != 1 || response.Modified[0] != "payment_routes" ||
+		len(response.Deleted) != 1 || response.Deleted[0] != "legacy" || response.Identity.Generation != 1 {
+		t.Fatalf("diff response = %+v", response)
+	}
+	added, err := service.DiffVersions(context.Background(), configserver.DiffVersionsRequest{
+		ConsumerID: "payment-service", ClientID: "pod-1", Region: "cn", Environment: "production",
+	})
+	if err != nil || len(added.Added) != 1 || added.Added[0] != "payment_routes" || len(added.Modified) != 0 || len(added.Deleted) != 0 {
+		t.Fatalf("added diff = %+v, %v", added, err)
+	}
+}
+
 func TestGetSnapshotReportsUnavailableBeforeInitialSnapshot(t *testing.T) {
 	t.Parallel()
 	service := configserver.New(emptySnapshotProvider{}, staticAuthorizer{}, "production")

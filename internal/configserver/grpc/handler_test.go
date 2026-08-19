@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"math"
+	"strings"
 	"testing"
 	"time"
 
@@ -92,6 +93,9 @@ func TestGetSnapshotMapsDeterministicCollectionPayload(t *testing.T) {
 	}
 	if first.Collections[0].ChangeCursor != 23 {
 		t.Fatalf("change cursor = %d", first.Collections[0].ChangeCursor)
+	}
+	if first.Collections[0].Version.EffectiveDigest == nil || first.Collections[0].Version.EffectiveDigest.Value != "digest" || first.Collections[0].Version.BaseDigest != nil {
+		t.Fatalf("effective version digest = %+v", first.Collections[0].Version)
 	}
 	if string(first.Collections[0].Data) != string(second.Collections[0].Data) {
 		t.Fatal("same collection produced nondeterministic bytes")
@@ -183,6 +187,71 @@ func TestUnimplementedReadsStillRejectAnotherManagedEnvironment(t *testing.T) {
 	}
 }
 
+func TestDiffVersionsMapsStableChangeSets(t *testing.T) {
+	t.Parallel()
+	application := stubApplication{diffResponse: configserver.DiffVersionsResponse{
+		Identity: snapshot.Identity{ServerEpoch: "epoch", ServerInstanceID: "server", SnapshotInstance: "instance", Generation: 4},
+		Added:    []string{"added"}, Modified: []string{"modified"}, Deleted: []string{"deleted"},
+	}}
+	handler, err := configgrpc.New(application, allowRequestAuthorizer{}, "production")
+	if err != nil {
+		t.Fatal(err)
+	}
+	response, err := handler.DiffVersions(context.Background(), &configv1.DiffVersionsRequest{
+		ConsumerId: "consumer", ClientId: "client", Scope: scope("production"),
+		KnownVersions: []*configv1.VersionView{{
+			Collection: "routes", ConfigRevision: 7,
+			EffectiveDigest: &commonv1.Digest{Algorithm: "SHA-256", Value: strings.Repeat("a", 64)},
+		}},
+	})
+	if err != nil || response.Snapshot.SnapshotGeneration != 4 || response.Added[0] != "added" || response.Modified[0] != "modified" || response.Deleted[0] != "deleted" {
+		t.Fatalf("diff response = %+v, %v", response, err)
+	}
+}
+
+func TestDiffVersionsRejectsMalformedKnownVersions(t *testing.T) {
+	t.Parallel()
+	handler, err := configgrpc.New(stubApplication{}, allowRequestAuthorizer{}, "production")
+	if err != nil {
+		t.Fatal(err)
+	}
+	valid := &commonv1.Digest{Algorithm: "SHA-256", Value: strings.Repeat("a", 64)}
+	tests := []struct {
+		name     string
+		versions []*configv1.VersionView
+	}{
+		{name: "blank collection", versions: []*configv1.VersionView{{Collection: " ", EffectiveDigest: valid}}},
+		{name: "trim duplicate", versions: []*configv1.VersionView{{Collection: "routes", EffectiveDigest: valid}, {Collection: " routes ", EffectiveDigest: valid}}},
+		{name: "algorithm", versions: []*configv1.VersionView{{Collection: "routes", EffectiveDigest: &commonv1.Digest{Algorithm: "MD5", Value: strings.Repeat("a", 64)}}}},
+		{name: "uppercase", versions: []*configv1.VersionView{{Collection: "routes", EffectiveDigest: &commonv1.Digest{Algorithm: "SHA-256", Value: strings.Repeat("A", 64)}}}},
+		{name: "length", versions: []*configv1.VersionView{{Collection: "routes", EffectiveDigest: &commonv1.Digest{Algorithm: "SHA-256", Value: "abc"}}}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			_, err := handler.DiffVersions(context.Background(), &configv1.DiffVersionsRequest{
+				ConsumerId: "consumer", ClientId: "client", Scope: scope("production"), KnownVersions: test.versions,
+			})
+			if status.Code(err) != codes.InvalidArgument {
+				t.Fatalf("code = %s, err %v", status.Code(err), err)
+			}
+		})
+	}
+}
+
+func TestDiffVersionsMapsApplicationValidationToInvalidArgument(t *testing.T) {
+	t.Parallel()
+	handler, err := configgrpc.New(stubApplication{err: errors.Join(errors.New("wrapped"), configserver.ErrInvalidArgument)}, allowRequestAuthorizer{}, "production")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = handler.DiffVersions(context.Background(), &configv1.DiffVersionsRequest{
+		ConsumerId: "consumer", ClientId: "client", Scope: scope("production"),
+	})
+	if status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("code = %s, err %v", status.Code(err), err)
+	}
+}
+
 func TestConfigHandlerBindsConsumerIdentityBeforeApplication(t *testing.T) {
 	t.Parallel()
 	denied := errors.New("consumer binding denied")
@@ -257,8 +326,9 @@ func TestWatchBindsConsumerUsingStreamContextBeforeSubscription(t *testing.T) {
 }
 
 type stubApplication struct {
-	response configserver.GetSnapshotResponse
-	err      error
+	response     configserver.GetSnapshotResponse
+	diffResponse configserver.DiffVersionsResponse
+	err          error
 }
 
 type recordingApplication struct {
@@ -297,6 +367,15 @@ func (watcher *recordingWatcher) Subscribe() (*snapshot.WatchSubscription, error
 
 func (application stubApplication) GetSnapshot(context.Context, configserver.GetSnapshotRequest) (configserver.GetSnapshotResponse, error) {
 	return application.response, application.err
+}
+
+func (application stubApplication) DiffVersions(context.Context, configserver.DiffVersionsRequest) (configserver.DiffVersionsResponse, error) {
+	return application.diffResponse, application.err
+}
+
+func (application *recordingApplication) DiffVersions(context.Context, configserver.DiffVersionsRequest) (configserver.DiffVersionsResponse, error) {
+	application.called = true
+	return configserver.DiffVersionsResponse{}, nil
 }
 
 func scope(environment string) *commonv1.Scope {
