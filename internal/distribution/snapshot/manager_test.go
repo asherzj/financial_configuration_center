@@ -84,9 +84,104 @@ func TestRefreshFailureRetainsLastKnownGood(t *testing.T) {
 	}
 }
 
+func TestRefreshRetainsFailedOptionDependencyGroupAndPublishesIndependentCollection(t *testing.T) {
+	t.Parallel()
+	inputs := dependencyInputs(t, 7)
+	source := &partialStubSource{load: snapshot.EnvironmentLoad{Inputs: inputs}}
+	manager, err := snapshot.NewManager(source, snapshot.IdentitySeed{ServerEpoch: "epoch", ServerInstanceID: "server", SnapshotInstance: "instance"}, fixedClock{now: time.Now().UTC()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manager.Refresh(context.Background(), "production"); err != nil {
+		t.Fatal(err)
+	}
+
+	updated := dependencyInputs(t, 8)
+	source.load = snapshot.EnvironmentLoad{
+		Inputs:   []snapshot.CollectionInput{updated[0], updated[2]},
+		Failures: map[string]error{"providers": errors.New("provider rows are invalid")},
+	}
+	result, err := manager.Refresh(context.Background(), "production")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Generation != 2 || result.CollectionCount != 3 || len(result.FailedGroups) != 1 {
+		t.Fatalf("partial refresh result = %+v", result)
+	}
+	if got := result.FailedGroups[0].Collections; len(got) != 2 || got[0] != "payment_routes" || got[1] != "providers" {
+		t.Fatalf("failed dependency group = %v", got)
+	}
+	current := manager.Current()
+	if revision, _ := current.CollectionVersion("payment_routes"); revision != 7 {
+		t.Fatalf("consumer revision = %d, want last-known-good 7", revision)
+	}
+	if revision, _ := current.CollectionVersion("providers"); revision != 7 {
+		t.Fatalf("provider revision = %d, want last-known-good 7", revision)
+	}
+	if revision, _ := current.CollectionVersion("feature_flags"); revision != 8 {
+		t.Fatalf("independent revision = %d, want 8", revision)
+	}
+}
+
+func TestRefreshBuildFailureRetainsDependencyGroupAndAllFailureDoesNotPublish(t *testing.T) {
+	t.Parallel()
+	inputs := dependencyInputs(t, 7)
+	source := &partialStubSource{load: snapshot.EnvironmentLoad{Inputs: inputs}}
+	manager, err := snapshot.NewManager(source, snapshot.IdentitySeed{ServerEpoch: "epoch", ServerInstanceID: "server", SnapshotInstance: "instance"}, fixedClock{now: time.Now().UTC()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manager.Refresh(context.Background(), "production"); err != nil {
+		t.Fatal(err)
+	}
+
+	updated := dependencyInputs(t, 8)
+	updated[1].Records = []catalog.ConfigurationRecord{{
+		Collection: "providers", Environment: "production", RecordKey: "not-canonical",
+		Data: map[string]string{"code": "visa", "label": "Visa"}, ConfigRevision: 8,
+	}}
+	source.load = snapshot.EnvironmentLoad{Inputs: updated}
+	result, err := manager.Refresh(context.Background(), "production")
+	if err != nil || result.Generation != 2 || len(result.FailedGroups) != 1 {
+		t.Fatalf("build partial refresh = %+v, %v", result, err)
+	}
+	if revision, _ := manager.Current().CollectionVersion("feature_flags"); revision != 8 {
+		t.Fatalf("independent revision = %d, want 8", revision)
+	}
+
+	lastKnownGood := manager.Current()
+	source.load = snapshot.EnvironmentLoad{Failures: map[string]error{
+		"payment_routes": errors.New("routes unavailable"),
+		"providers":      errors.New("providers unavailable"),
+		"feature_flags":  errors.New("flags unavailable"),
+	}}
+	if _, err := manager.Refresh(context.Background(), "production"); err == nil {
+		t.Fatal("all-failed refresh succeeded")
+	}
+	if manager.Current() != lastKnownGood || manager.Current().Identity().Generation != 2 {
+		t.Fatal("all-failed refresh replaced last-known-good")
+	}
+}
+
 type stubSource struct {
 	collections []snapshot.CollectionInput
 	err         error
+}
+
+type partialStubSource struct {
+	load snapshot.EnvironmentLoad
+	err  error
+}
+
+func (source *partialStubSource) LoadEnvironment(context.Context, string) ([]snapshot.CollectionInput, error) {
+	if source.err != nil {
+		return nil, source.err
+	}
+	return source.load.Inputs, nil
+}
+
+func (source *partialStubSource) LoadEnvironmentPartial(context.Context, string) (snapshot.EnvironmentLoad, error) {
+	return source.load, source.err
 }
 
 func (source *stubSource) LoadEnvironment(context.Context, string) ([]snapshot.CollectionInput, error) {
@@ -127,4 +222,53 @@ func snapshotCatalog(t *testing.T) (catalog.CollectionDefinition, catalog.Compil
 		t.Fatal(err)
 	}
 	return definition, model
+}
+
+func dependencyInputs(t *testing.T, revision catalog.ConfigRevision) []snapshot.CollectionInput {
+	t.Helper()
+	providers, err := catalog.CompileCollection(catalog.CollectionSpec{
+		Name: "providers", KeyFields: []string{"code"}, SchemaVersion: 1,
+		Fields: []catalog.FieldDefinition{
+			{Name: "code", DisplayName: "Code", Type: catalog.FieldTypeString, Required: true, DisplayOrder: 0},
+			{Name: "label", DisplayName: "Label", Type: catalog.FieldTypeString, Required: true, DisplayOrder: 1},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	routes, err := catalog.CompileCollection(catalog.CollectionSpec{
+		Name: "payment_routes", KeyFields: []string{"route_code"}, SchemaVersion: 1,
+		Fields: []catalog.FieldDefinition{
+			{Name: "route_code", DisplayName: "Route", Type: catalog.FieldTypeString, Required: true, DisplayOrder: 0},
+			{Name: "provider", DisplayName: "Provider", Type: catalog.FieldTypeString, Required: true, DisplayOrder: 1},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	model, err := catalog.CompileModel(routes, catalog.ModelSpec{
+		Code: "payment-route-admin", Name: "Payment routes", Collection: routes.Name(), ConfigRevision: revision,
+		Fields: []catalog.ModelField{
+			{Name: "route_code", Type: catalog.FieldTypeString, Required: true, Editable: true, UIControl: catalog.UIControlInput},
+			{Name: "provider", Type: catalog.FieldTypeString, Required: true, Editable: true, UIControl: catalog.UIControlSelect, OptionSource: &catalog.OptionSourceDefinition{
+				Kind: catalog.OptionSourceCollection, Collection: providers.Name(), ValueField: "code", LabelField: "label", Limit: 100,
+			}},
+		},
+		ProjectionFields: []string{"route_code", "provider"}, KeyFields: []string{"route_code"}, DefaultPageSize: 20, MaxPageSize: 100,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	flags, err := catalog.CompileCollection(catalog.CollectionSpec{
+		Name: "feature_flags", KeyFields: []string{"name"}, SchemaVersion: 1,
+		Fields: []catalog.FieldDefinition{{Name: "name", DisplayName: "Name", Type: catalog.FieldTypeString, Required: true}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return []snapshot.CollectionInput{
+		{Definition: routes, Models: []catalog.CompiledModel{model}, Version: revision},
+		{Definition: providers, Version: revision},
+		{Definition: flags, Version: revision},
+	}
 }

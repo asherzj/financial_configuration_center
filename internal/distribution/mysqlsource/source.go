@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
+	"strings"
 	"time"
 
 	catalog "github.com/asherzj/financial_configuration_center/internal/catalog/domain"
@@ -25,7 +27,18 @@ func New(database *platformmysql.Database) (*Source, error) {
 }
 
 func (source *Source) LoadEnvironment(ctx context.Context, environment string) ([]snapshot.CollectionInput, error) {
-	var inputs []snapshot.CollectionInput
+	loaded, err := source.LoadEnvironmentPartial(ctx, environment)
+	if err != nil {
+		return nil, err
+	}
+	if len(loaded.Failures) > 0 {
+		return nil, fmt.Errorf("load distribution environment %q: %s", environment, formatFailures(loaded.Failures))
+	}
+	return loaded.Inputs, nil
+}
+
+func (source *Source) LoadEnvironmentPartial(ctx context.Context, environment string) (snapshot.EnvironmentLoad, error) {
+	loaded := snapshot.EnvironmentLoad{Failures: make(map[string]error)}
 	err := source.database.WithinTransaction(ctx, &sql.TxOptions{Isolation: sql.LevelRepeatableRead, ReadOnly: true}, func(db *gorm.DB) error {
 		type collectionRow struct {
 			Name               string
@@ -47,35 +60,55 @@ func (source *Source) LoadEnvironment(ctx context.Context, environment string) (
 		`, environment).Scan(&collections).Error; err != nil {
 			return err
 		}
-		inputs = make([]snapshot.CollectionInput, len(collections))
-		for index, row := range collections {
+		loaded.Inputs = make([]snapshot.CollectionInput, 0, len(collections))
+		for _, row := range collections {
 			definition, err := compileCollection(row)
 			if err != nil {
-				return err
+				loaded.Failures[row.Name] = err
+				continue
 			}
 			models, err := loadModels(ctx, db, definition)
 			if err != nil {
-				return err
+				loaded.Failures[row.Name] = err
+				continue
 			}
 			records, err := loadRecords(ctx, db, definition.Name(), environment)
 			if err != nil {
-				return err
+				loaded.Failures[row.Name] = err
+				continue
 			}
 			overlayRules, err := loadOverlayRules(ctx, db, definition.Name(), environment)
 			if err != nil {
-				return err
+				loaded.Failures[row.Name] = err
+				continue
 			}
-			inputs[index] = snapshot.CollectionInput{
+			loaded.Inputs = append(loaded.Inputs, snapshot.CollectionInput{
 				Definition: definition, Models: models, Version: catalog.ConfigRevision(row.ConfigRevision),
 				Records: records, OverlayRules: overlayRules,
-			}
+			})
+		}
+		if err := ctx.Err(); err != nil {
+			return err
 		}
 		return nil
 	})
 	if err != nil {
-		return nil, fmt.Errorf("load distribution environment %q: %w", environment, err)
+		return snapshot.EnvironmentLoad{}, fmt.Errorf("load distribution environment %q: %w", environment, err)
 	}
-	return inputs, nil
+	return loaded, nil
+}
+
+func formatFailures(failures map[string]error) string {
+	names := make([]string, 0, len(failures))
+	for name := range failures {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	parts := make([]string, len(names))
+	for index, name := range names {
+		parts[index] = fmt.Sprintf("%s: %v", name, failures[name])
+	}
+	return strings.Join(parts, "; ")
 }
 
 func (source *Source) AuthorizedCollections(ctx context.Context, consumerID string) ([]string, error) {

@@ -18,6 +18,12 @@ type Source interface {
 	LoadEnvironment(context.Context, string) ([]CollectionInput, error)
 }
 
+// PartialSource returns one repeatable-read environment view while preserving
+// collection-local load failures for dependency-group fallback.
+type PartialSource interface {
+	LoadEnvironmentPartial(context.Context, string) (EnvironmentLoad, error)
+}
+
 type Clock interface {
 	Now() time.Time
 }
@@ -44,9 +50,20 @@ type CollectionInput struct {
 	OverlayRules []overlay.Rule
 }
 
+type EnvironmentLoad struct {
+	Inputs   []CollectionInput
+	Failures map[string]error
+}
+
+type DependencyGroupFailure struct {
+	Collections []string
+	Reason      string
+}
+
 type RefreshResult struct {
 	Generation      uint64
 	CollectionCount int
+	FailedGroups    []DependencyGroupFailure
 }
 
 type collectionView struct {
@@ -110,12 +127,22 @@ func (manager *Manager) Refresh(ctx context.Context, environment string) (Refres
 	manager.mu.Lock()
 	defer manager.mu.Unlock()
 
-	inputs, err := manager.source.LoadEnvironment(ctx, environment)
+	loaded, err := loadEnvironment(ctx, manager.source, environment)
 	if err != nil {
 		return RefreshResult{}, fmt.Errorf("refresh snapshot source: %w", err)
 	}
 	previous := manager.Current()
-	candidate, err := buildSnapshot(manager.seed, previous.identity.Generation+1, manager.clock.Now().UTC(), environment, inputs)
+	initial := previous.identity.Generation == 0 || previous.environment != environment
+	if initial && len(loaded.Failures) > 0 {
+		return RefreshResult{}, fmt.Errorf("refresh initial snapshot: %s", formatCollectionFailures(loaded.Failures))
+	}
+	var candidate *Snapshot
+	var failedGroups []DependencyGroupFailure
+	if initial {
+		candidate, err = buildSnapshot(manager.seed, previous.identity.Generation+1, manager.clock.Now().UTC(), environment, loaded.Inputs)
+	} else {
+		candidate, failedGroups, err = buildPartialSnapshot(manager.seed, previous, manager.clock.Now().UTC(), environment, loaded)
+	}
 	if err != nil {
 		return RefreshResult{}, err
 	}
@@ -123,7 +150,221 @@ func (manager *Manager) Refresh(ctx context.Context, environment string) (Refres
 	if manager.publisher != nil {
 		manager.publisher.Publish(candidate)
 	}
-	return RefreshResult{Generation: candidate.identity.Generation, CollectionCount: len(candidate.collections)}, nil
+	return RefreshResult{Generation: candidate.identity.Generation, CollectionCount: len(candidate.collections), FailedGroups: failedGroups}, nil
+}
+
+func loadEnvironment(ctx context.Context, source Source, environment string) (EnvironmentLoad, error) {
+	if partial, ok := source.(PartialSource); ok {
+		loaded, err := partial.LoadEnvironmentPartial(ctx, environment)
+		if loaded.Failures == nil {
+			loaded.Failures = map[string]error{}
+		}
+		return loaded, err
+	}
+	inputs, err := source.LoadEnvironment(ctx, environment)
+	return EnvironmentLoad{Inputs: inputs, Failures: map[string]error{}}, err
+}
+
+func buildPartialSnapshot(seed IdentitySeed, previous *Snapshot, publishedAt time.Time, environment string, loaded EnvironmentLoad) (*Snapshot, []DependencyGroupFailure, error) {
+	incoming := make(map[string]CollectionInput, len(loaded.Inputs))
+	for _, input := range loaded.Inputs {
+		name := input.Definition.Name()
+		if name == "" {
+			return nil, nil, errors.New("refresh partial snapshot: collection identity is required")
+		}
+		if _, duplicate := incoming[name]; duplicate {
+			return nil, nil, fmt.Errorf("refresh partial snapshot: duplicate collection %q", name)
+		}
+		incoming[name] = input
+	}
+	failures := make(map[string]error, len(loaded.Failures))
+	for name, failure := range loaded.Failures {
+		name = strings.TrimSpace(name)
+		if name == "" || failure == nil {
+			return nil, nil, errors.New("refresh partial snapshot: failures require collection and error")
+		}
+		failures[name] = failure
+	}
+
+	groups := dependencyGroups(previous, incoming, failures)
+	accepted := make([]CollectionInput, 0, len(incoming)+len(previous.collections))
+	failedGroups := make([]DependencyGroupFailure, 0)
+	successfulGroups := 0
+	for _, group := range groups {
+		groupFailure := firstGroupFailure(group, failures)
+		candidateInputs := inputsForGroup(group, incoming)
+		if groupFailure == nil && len(candidateInputs) > 0 {
+			_, groupFailure = buildSnapshot(seed, previous.identity.Generation+1, publishedAt, environment, candidateInputs)
+		}
+		if groupFailure != nil {
+			accepted = append(accepted, previousInputs(previous, group)...)
+			failedGroups = append(failedGroups, DependencyGroupFailure{Collections: append([]string(nil), group...), Reason: groupFailure.Error()})
+			continue
+		}
+		accepted = append(accepted, candidateInputs...)
+		successfulGroups++
+	}
+	if successfulGroups == 0 {
+		return nil, nil, fmt.Errorf("refresh partial snapshot: all dependency groups failed: %s", formatGroupFailures(failedGroups))
+	}
+	candidate, err := buildSnapshot(seed, previous.identity.Generation+1, publishedAt, environment, accepted)
+	if err != nil {
+		return nil, nil, fmt.Errorf("refresh partial snapshot: compose accepted groups: %w", err)
+	}
+	return candidate, failedGroups, nil
+}
+
+func dependencyGroups(previous *Snapshot, incoming map[string]CollectionInput, failures map[string]error) [][]string {
+	edges := make(map[string]map[string]struct{})
+	addNode := func(name string) {
+		if name != "" && edges[name] == nil {
+			edges[name] = make(map[string]struct{})
+		}
+	}
+	addEdge := func(left, right string) {
+		addNode(left)
+		addNode(right)
+		if left != "" && right != "" && left != right {
+			edges[left][right] = struct{}{}
+			edges[right][left] = struct{}{}
+		}
+	}
+	for name := range previous.collections {
+		addNode(name)
+	}
+	for name := range incoming {
+		addNode(name)
+	}
+	for name := range failures {
+		addNode(name)
+	}
+	modelOwners := make(map[string]string)
+	addModels := func(models []catalog.CompiledModel) {
+		for _, model := range models {
+			owner := model.Collection()
+			addNode(owner)
+			if existing := modelOwners[model.Code()]; existing != "" && existing != owner {
+				addEdge(existing, owner)
+			} else {
+				modelOwners[model.Code()] = owner
+			}
+			for _, field := range model.Fields() {
+				if field.OptionSource != nil && field.OptionSource.Kind == catalog.OptionSourceCollection {
+					addEdge(owner, field.OptionSource.Collection)
+				}
+			}
+		}
+	}
+	previousModels := make([]catalog.CompiledModel, 0, len(previous.models))
+	for _, model := range previous.models {
+		previousModels = append(previousModels, model)
+	}
+	addModels(previousModels)
+	for _, input := range incoming {
+		addModels(input.Models)
+	}
+
+	names := make([]string, 0, len(edges))
+	for name := range edges {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	visited := make(map[string]bool, len(names))
+	groups := make([][]string, 0, len(names))
+	for _, name := range names {
+		if visited[name] {
+			continue
+		}
+		visited[name] = true
+		queue := []string{name}
+		group := make([]string, 0, 1)
+		for len(queue) > 0 {
+			current := queue[0]
+			queue = queue[1:]
+			group = append(group, current)
+			neighbors := make([]string, 0, len(edges[current]))
+			for neighbor := range edges[current] {
+				neighbors = append(neighbors, neighbor)
+			}
+			sort.Strings(neighbors)
+			for _, neighbor := range neighbors {
+				if !visited[neighbor] {
+					visited[neighbor] = true
+					queue = append(queue, neighbor)
+				}
+			}
+		}
+		sort.Strings(group)
+		groups = append(groups, group)
+	}
+	return groups
+}
+
+func firstGroupFailure(group []string, failures map[string]error) error {
+	for _, name := range group {
+		if failure := failures[name]; failure != nil {
+			return fmt.Errorf("collection %s: %w", name, failure)
+		}
+	}
+	return nil
+}
+
+func inputsForGroup(group []string, inputs map[string]CollectionInput) []CollectionInput {
+	selected := make([]CollectionInput, 0, len(group))
+	for _, name := range group {
+		if input, exists := inputs[name]; exists {
+			selected = append(selected, input)
+		}
+	}
+	return selected
+}
+
+func previousInputs(previous *Snapshot, group []string) []CollectionInput {
+	inputs := make([]CollectionInput, 0, len(group))
+	for _, name := range group {
+		view, exists := previous.collections[name]
+		if !exists {
+			continue
+		}
+		models := make([]catalog.CompiledModel, 0)
+		for _, model := range previous.models {
+			if model.Collection() == name {
+				models = append(models, model)
+			}
+		}
+		sort.Slice(models, func(left, right int) bool { return models[left].Code() < models[right].Code() })
+		records := make([]catalog.ConfigurationRecord, len(view.ordered))
+		for index, key := range view.ordered {
+			records[index] = cloneRecord(view.records[key])
+		}
+		rules := make([]overlay.Rule, len(view.overlayRules))
+		for index, rule := range view.overlayRules {
+			rules[index] = cloneOverlayRule(rule)
+		}
+		inputs = append(inputs, CollectionInput{Definition: view.definition, Models: models, Version: view.version, Records: records, OverlayRules: rules})
+	}
+	return inputs
+}
+
+func formatCollectionFailures(failures map[string]error) string {
+	names := make([]string, 0, len(failures))
+	for name := range failures {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	parts := make([]string, len(names))
+	for index, name := range names {
+		parts[index] = fmt.Sprintf("%s: %v", name, failures[name])
+	}
+	return strings.Join(parts, "; ")
+}
+
+func formatGroupFailures(failures []DependencyGroupFailure) string {
+	parts := make([]string, len(failures))
+	for index, failure := range failures {
+		parts[index] = fmt.Sprintf("[%s]: %s", strings.Join(failure.Collections, ","), failure.Reason)
+	}
+	return strings.Join(parts, "; ")
 }
 
 func (manager *Manager) SetPublisher(publisher PublicationPublisher) error {

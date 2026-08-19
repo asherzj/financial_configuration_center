@@ -124,6 +124,75 @@ func TestRealMySQLSensitiveRevealUsesCurrentAuthorityAndCommitsAudit(t *testing.
 	assertCount(t, raw, `SELECT COUNT(*) FROM audit_records WHERE action = 'SENSITIVE_FIELD_REVEALED'`, 1)
 }
 
+func TestRealMySQLSnapshotRefreshRetainsFailedOptionDependencyGroup(t *testing.T) {
+	dsn := isolatedDatabase(t)
+	ctx := context.Background()
+	raw, err := sql.Open("mysql", dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer raw.Close()
+	seedDynamicPriorityOptions(t, raw)
+	now := time.Date(2026, 8, 19, 23, 30, 0, 0, time.UTC)
+	flagFields, _ := json.Marshal([]catalog.FieldDefinition{{Name: "name", DisplayName: "Name", Type: catalog.FieldTypeString, Required: true, DisplayOrder: 0}})
+	flagKeys, _ := json.Marshal([]string{"name"})
+	if _, err := raw.Exec(`
+		INSERT INTO configuration_collections (
+			name, description, fields, key_fields, sdk_delivery_enabled, schema_version,
+			status, config_revision, created_at, created_by, updated_at, updated_by
+		) VALUES ('feature_flags', 'Flags', ?, ?, FALSE, 1, 'ENABLED', 7, ?, 'seed', ?, 'seed')
+	`, flagFields, flagKeys, now, now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := raw.Exec(`
+		INSERT INTO configuration_versions (collection_name, environment, config_revision, base_digest, overlay_digest, updated_at)
+		VALUES ('feature_flags', 'production', 7,
+			'4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945',
+			'4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945', ?)
+	`, now); err != nil {
+		t.Fatal(err)
+	}
+
+	database, err := platformmysql.Open(ctx, platformmysql.Config{DSN: dsn, MaxOpenConns: 4, MaxIdleConns: 2, ConnMaxLifetime: time.Minute, ConnMaxIdleTime: time.Minute})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = database.Close() })
+	source, err := mysqlsource.New(database)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager, err := snapshot.NewManager(source, snapshot.IdentitySeed{ServerEpoch: "group-epoch", ServerInstanceID: "group-server", SnapshotInstance: "group-snapshot"}, fixedClock{now: now})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manager.Refresh(ctx, "production"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := raw.Exec(`UPDATE configuration_collections SET fields = JSON_ARRAY(JSON_OBJECT('name', 'broken', 'displayName', 'Broken', 'type', 'NOPE', 'displayOrder', 0)) WHERE name = 'priorities'`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := raw.Exec(`UPDATE configuration_versions SET config_revision = 8, updated_at = ? WHERE environment = 'production' AND collection_name IN ('payment_routes', 'feature_flags')`, now.Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	result, err := manager.Refresh(ctx, "production")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Generation != 2 || len(result.FailedGroups) != 1 || !reflect.DeepEqual(result.FailedGroups[0].Collections, []string{"payment_routes", "priorities"}) {
+		t.Fatalf("partial MySQL refresh = %+v", result)
+	}
+	current := manager.Current()
+	for _, name := range []string{"payment_routes", "priorities"} {
+		if revision, _ := current.CollectionVersion(name); revision != 7 {
+			t.Fatalf("dependency %s revision = %d, want 7", name, revision)
+		}
+	}
+	if revision, _ := current.CollectionVersion("feature_flags"); revision != 8 {
+		t.Fatalf("independent revision = %d, want 8", revision)
+	}
+}
+
 func TestRealMySQLPollConvergesWithoutHintOrWatch(t *testing.T) {
 	dsn := isolatedDatabase(t)
 	ctx := context.Background()
