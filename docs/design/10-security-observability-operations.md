@@ -159,6 +159,8 @@ Kitex backend UDS 额外配置规范绝对路径、四位八进制字符串 `bac
 
 Control Plane ready：DB 可用、migration version 符合、RPC running。Config Server 还要求已有 snapshot。BFF 要求至少一个下游 client 可用和静态资源可读。
 
+Config Server MySQL readiness 使用后台成功水位而不是 `/readyz` 请求内直接 Ping：立即 probe，之后固定 interval；每次 probe 使用严格更短的独立 timeout，全 tracker 最多一个 in-flight。失败不覆盖 last-success，age 在 grace 内继续 ready，超过 grace 才摘流；从未成功、时钟回退和超时后才返回的伪成功均 fail closed。时钟回退状态必须由追平后的下一次合法成功 probe 清除，不能只因墙钟自然追平自动 ready。不合作的底层调用不得阻塞 tracker caller 或 shutdown，最多滞留一个等待 DB Close 释放。数据库恢复后的下一次成功 probe 自动恢复该 check，LKG snapshot 在整个期间继续可读。
+
 关闭流程：ready=false → 停止接新请求/流 → 取消后台循环 → 等待事务/handler → flush telemetry（有界）→ 关闭连接。不得 `os.Exit` 跳过 defer；仅 composition root 处理 fatal exit。
 
 ## 10. Outbox 运行
