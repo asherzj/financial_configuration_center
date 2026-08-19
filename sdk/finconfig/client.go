@@ -80,15 +80,17 @@ type WatchTransport interface {
 }
 
 type Config struct {
-	ConsumerID       string
-	ClientID         string
-	Region           string
-	Environment      string
-	Stage            string
-	Transport        Transport
-	PollInterval     time.Duration
-	WatchEnabled     bool
-	ReconnectBackoff time.Duration
+	ConsumerID        string
+	ClientID          string
+	Region            string
+	Environment       string
+	Stage             string
+	Transport         Transport
+	PollInterval      time.Duration
+	WatchEnabled      bool
+	ReconnectBackoff  time.Duration
+	CallbackWorkers   int
+	CallbackQueueSize int
 }
 
 var (
@@ -143,6 +145,11 @@ type Client struct {
 	lifecycle        lifecycleState
 	cancel           context.CancelFunc
 	closed           chan struct{}
+	subscriptionMu   sync.RWMutex
+	subscriptions    map[string]map[uint64]UpdateHandler
+	nextSubscription uint64
+	updates          chan updateDelivery
+	callbackWorkers  int
 }
 
 func New(config Config) (*Client, error) {
@@ -175,11 +182,21 @@ func New(config Config) (*Client, error) {
 			return nil, errors.New("new FinConfig client: watch-enabled transport does not implement Watch")
 		}
 	}
+	if config.CallbackWorkers < 0 || config.CallbackWorkers > 64 || config.CallbackQueueSize < 0 || config.CallbackQueueSize > 4096 {
+		return nil, errors.New("new FinConfig client: callback worker or queue limits are invalid")
+	}
+	if config.CallbackWorkers == 0 {
+		config.CallbackWorkers = 4
+	}
+	if config.CallbackQueueSize == 0 {
+		config.CallbackQueueSize = 256
+	}
 	client := &Client{
 		consumerID: config.ConsumerID, clientID: config.ClientID, region: config.Region,
 		environment: config.Environment, stage: config.Stage, bucket: bucket,
 		transport: config.Transport, pollInterval: config.PollInterval,
 		watchEnabled: config.WatchEnabled, reconnectBackoff: config.ReconnectBackoff, closed: make(chan struct{}),
+		subscriptions: make(map[string]map[uint64]UpdateHandler), updates: make(chan updateDelivery, config.CallbackQueueSize), callbackWorkers: config.CallbackWorkers,
 	}
 	client.current.Store(&clientSnapshot{environment: config.Environment, collections: map[string]collectionSnapshot{}})
 	return client, nil
@@ -265,6 +282,13 @@ func (client *Client) run(ctx context.Context) {
 		go func() {
 			defer loops.Done()
 			client.watch(ctx)
+		}()
+	}
+	for range client.callbackWorkers {
+		loops.Add(1)
+		go func() {
+			defer loops.Done()
+			client.deliverUpdates(ctx)
 		}()
 	}
 	loops.Wait()
@@ -372,6 +396,7 @@ func (client *Client) Refresh(ctx context.Context) error {
 		}
 	}
 	client.current.Store(candidate)
+	client.publishUpdates(changes, candidate)
 	return nil
 }
 
