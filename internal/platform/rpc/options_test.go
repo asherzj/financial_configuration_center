@@ -27,3 +27,16 @@ func TestStandardGRPCClientOptionsRequireVerifiedModernTLS(t *testing.T) {
 		t.Fatalf("option count = %d, want transport and TLS", len(options))
 	}
 }
+
+func TestPrivateBackendServerOptionsOnlyAcceptSamePodSocket(t *testing.T) {
+	t.Parallel()
+	for _, invalid := range []string{"127.0.0.1:9000", "/tmp/backend.sock", "/var/run/finconfig/../public.sock", "/var/run/finconfig/backend"} {
+		if _, err := platformrpc.PrivateBackendServerOptions(invalid); err == nil {
+			t.Fatalf("unsafe backend address %q accepted", invalid)
+		}
+	}
+	options, err := platformrpc.PrivateBackendServerOptions("/var/run/finconfig/backend.sock")
+	if err != nil || len(options) != 1 {
+		t.Fatalf("private backend options=%d err=%v", len(options), err)
+	}
+}

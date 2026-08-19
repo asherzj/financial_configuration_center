@@ -36,3 +36,6 @@ The entire V1 runs securely and observably, survives lifecycle faults and is doc
 - Added strict RS256 OIDC ID-token verification (issuer, audience/azp, subject, nonce, iat, exp), bounded HTTPS JWKS loading/caching with key rotation, a confidential token endpoint client, payload-free auth errors, logout and session routes.
 - Added CSP, HSTS, nosniff, no-referrer and frame denial headers to all Admin BFF responses; updated the OpenAPI authentication/session contract.
 - Verified OIDC/auth with `go test ./...` and `go test -race ./internal/platform/auth ./internal/adminbff`.
+- Added the accepted Envoy/Kitex production transport boundary: Envoy requires client certificates, TLS 1.2+, ALPN h2 and an exact client SAN, sanitizes forwarded certificate identity, and uses explicit HTTP/2 h2c only over `/var/run/finconfig/backend.sock`.
+- Added Kitex server options that reject TCP, temporary and path-traversal backend addresses; added an Envoy sidecar Dockerfile that requires the release pipeline to supply a reviewed digest-pinned base image.
+- Verified the static deployment boundary and Kitex options with `go test ./internal/platform/rpc ./deploy/envoy`.

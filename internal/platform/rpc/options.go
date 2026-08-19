@@ -3,8 +3,12 @@ package rpc
 import (
 	"crypto/tls"
 	"errors"
+	"net"
+	"path/filepath"
+	"strings"
 
 	"github.com/cloudwego/kitex/client"
+	"github.com/cloudwego/kitex/server"
 	"github.com/cloudwego/kitex/transport"
 )
 
@@ -29,4 +33,15 @@ func StandardGRPCClientOptions(tlsConfig *tls.Config) ([]client.Option, error) {
 		client.WithTransportProtocol(transport.GRPC),
 		client.WithGRPCTLSConfig(configured),
 	}, nil
+}
+
+// PrivateBackendServerOptions binds Kitex to a same-Pod Unix domain socket.
+// Envoy is the only network listener and forwards standard HTTP/2 gRPC over
+// this private h2c channel.
+func PrivateBackendServerOptions(socketPath string) ([]server.Option, error) {
+	clean := filepath.Clean(socketPath)
+	if !filepath.IsAbs(socketPath) || clean != socketPath || !strings.HasPrefix(clean, "/var/run/finconfig/") || !strings.HasSuffix(clean, ".sock") {
+		return nil, errors.New("Kitex backend must use a normalized .sock path under /var/run/finconfig")
+	}
+	return []server.Option{server.WithServiceAddr(&net.UnixAddr{Name: clean, Net: "unix"})}, nil
 }
