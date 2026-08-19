@@ -4,12 +4,15 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 
 	access "github.com/asherzj/financial_configuration_center/internal/access/application"
 	catalog "github.com/asherzj/financial_configuration_center/internal/catalog/domain"
+	"github.com/asherzj/financial_configuration_center/internal/outbox"
 	"github.com/asherzj/financial_configuration_center/internal/pagequery"
 	"github.com/asherzj/financial_configuration_center/internal/release/application"
 	release "github.com/asherzj/financial_configuration_center/internal/release/domain"
@@ -41,12 +44,119 @@ type SensitiveAccess interface {
 	Reveal(context.Context, access.RevealCommand) (access.RevealResult, error)
 }
 
+type OutboxOperations interface {
+	List(context.Context, outbox.Principal, outbox.ListRequest) (outbox.EventPage, error)
+	Replay(context.Context, outbox.ReplayCommand) (outbox.Event, error)
+}
+
 type Handler struct {
 	queries   PageQueries
 	releases  ReleaseCommands
 	sensitive SensitiveAccess
+	outbox    OutboxOperations
 	auth      Authenticator
 	mux       *http.ServeMux
+}
+
+func NewWithOutbox(queries PageQueries, releases ReleaseCommands, auth Authenticator, operations OutboxOperations, sensitive ...SensitiveAccess) (*Handler, error) {
+	if operations == nil {
+		return nil, errors.New("new Admin BFF: outbox operations are required")
+	}
+	handler, err := New(queries, releases, auth, sensitive...)
+	if err != nil {
+		return nil, err
+	}
+	handler.outbox = operations
+	handler.mux.HandleFunc("GET /api/v1/outbox-events", handler.listOutboxEvents)
+	handler.mux.HandleFunc("POST /api/v1/outbox-events/{id}/replay", handler.replayOutboxEvent)
+	return handler, nil
+}
+
+func (handler *Handler) listOutboxEvents(writer http.ResponseWriter, request *http.Request) {
+	principal, ok := handler.authenticate(writer, request)
+	if !ok {
+		return
+	}
+	pageNumber, err := positiveQueryInt(request, "page", 1)
+	if err != nil {
+		writeError(writer, http.StatusBadRequest, "INVALID_ARGUMENT", err.Error())
+		return
+	}
+	pageSize, err := positiveQueryInt(request, "size", 20)
+	if err != nil {
+		writeError(writer, http.StatusBadRequest, "INVALID_ARGUMENT", err.Error())
+		return
+	}
+	var statusFilter *outbox.Status
+	if raw := strings.TrimSpace(request.URL.Query().Get("status")); raw != "" {
+		value := outbox.Status(raw)
+		statusFilter = &value
+	}
+	result, err := handler.outbox.List(request.Context(), outbox.Principal{Subject: principal.Subject, Roles: append([]string(nil), principal.Roles...)}, outbox.ListRequest{
+		Status: statusFilter, PageNumber: pageNumber, PageSize: pageSize,
+	})
+	if err != nil {
+		writeDomainError(writer, err)
+		return
+	}
+	events := make([]map[string]any, len(result.Events))
+	for index, event := range result.Events {
+		events[index] = outboxEventResponse(event)
+	}
+	writeJSON(writer, http.StatusOK, map[string]any{
+		"events": events,
+		"page":   map[string]any{"number": result.PageNumber, "size": result.PageSize, "totalNumber": result.TotalNumber, "totalPages": result.TotalPages},
+	})
+}
+
+type replayOutboxEventRequest struct {
+	ExpectedEventRevision outbox.LeaseRevision `json:"expectedEventRevision"`
+	Reason                string               `json:"reason"`
+	Confirmation          string               `json:"confirmation"`
+}
+
+func (handler *Handler) replayOutboxEvent(writer http.ResponseWriter, request *http.Request) {
+	principal, ok := handler.authenticate(writer, request)
+	if !ok {
+		return
+	}
+	var body replayOutboxEventRequest
+	if !decodeJSON(writer, request, &body) {
+		return
+	}
+	event, err := handler.outbox.Replay(request.Context(), outbox.ReplayCommand{
+		EventID: request.PathValue("id"), ExpectedRevision: body.ExpectedEventRevision,
+		Reason: body.Reason, Confirmation: body.Confirmation,
+		Principal: outbox.Principal{Subject: principal.Subject, Roles: append([]string(nil), principal.Roles...)},
+	})
+	if err != nil {
+		writeDomainError(writer, err)
+		return
+	}
+	writeJSON(writer, http.StatusOK, map[string]any{"event": outboxEventResponse(event)})
+}
+
+func positiveQueryInt(request *http.Request, name string, fallback int) (int, error) {
+	raw := strings.TrimSpace(request.URL.Query().Get(name))
+	if raw == "" {
+		return fallback, nil
+	}
+	value, err := strconv.Atoi(raw)
+	if err != nil || value <= 0 {
+		return 0, fmt.Errorf("%s must be a positive integer", name)
+	}
+	return value, nil
+}
+
+func outboxEventResponse(event outbox.Event) map[string]any {
+	result := map[string]any{
+		"id": event.ID, "sequenceNo": event.Sequence, "eventType": event.Type, "status": event.Status,
+		"leaseRevision": event.LeaseRevision, "attempts": event.Attempts, "nextAttemptAt": event.NextAttemptAt,
+	}
+	if event.LastError != "" {
+		result["lastError"] = event.LastError
+	}
+	return result
 }
 
 func New(queries PageQueries, releases ReleaseCommands, auth Authenticator, sensitive ...SensitiveAccess) (*Handler, error) {
@@ -355,6 +465,14 @@ func decodeJSON(writer http.ResponseWriter, request *http.Request, target any) b
 
 func writeDomainError(writer http.ResponseWriter, err error) {
 	switch {
+	case errors.Is(err, outbox.ErrOperationsInvalid):
+		writeError(writer, http.StatusBadRequest, "INVALID_ARGUMENT", err.Error())
+	case errors.Is(err, outbox.ErrOperationsForbidden):
+		writeError(writer, http.StatusForbidden, "PERMISSION_DENIED", err.Error())
+	case errors.Is(err, outbox.ErrLeaseLost):
+		writeError(writer, http.StatusConflict, "REVISION_CONFLICT", err.Error())
+	case errors.Is(err, outbox.ErrNotDeadLetter):
+		writeError(writer, http.StatusPreconditionFailed, "NOT_DEAD_LETTER", err.Error())
 	case errors.Is(err, access.ErrInvalid):
 		writeError(writer, http.StatusBadRequest, "INVALID_ARGUMENT", err.Error())
 	case errors.Is(err, access.ErrForbidden):

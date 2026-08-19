@@ -400,6 +400,37 @@ export interface components {
         CreateCompensatingRelease: {
             description: string;
         };
+        OutboxEvent: {
+            /** Format: uuid */
+            id: string;
+            /** Format: int64 */
+            sequenceNo: number;
+            eventType: string;
+            /** @enum {string} */
+            status: "PENDING" | "PROCESSING" | "SENT" | "DEAD_LETTER";
+            /** Format: int64 */
+            leaseRevision: number;
+            attempts: number;
+            /** Format: date-time */
+            nextAttemptAt: string;
+            lastError?: string;
+        };
+        OutboxEventPage: {
+            events: components["schemas"]["OutboxEvent"][];
+            page: {
+                number: number;
+                size: number;
+                /** Format: int64 */
+                totalNumber: number;
+                totalPages: number;
+            };
+        };
+        ReplayOutboxEvent: {
+            /** Format: int64 */
+            expectedEventRevision: number;
+            reason: string;
+            confirmation: string;
+        };
         ReleaseOrderDetail: {
             order: {
                 id: string;
@@ -943,41 +974,54 @@ export interface operations {
     };
     listOutboxEvents: {
         parameters: {
-            query?: never;
+            query?: {
+                status?: "PENDING" | "PROCESSING" | "SENT" | "DEAD_LETTER";
+                page?: number;
+                size?: number;
+            };
             header?: never;
             path?: never;
             cookie?: never;
         };
         requestBody?: never;
         responses: {
-            /** @description Outbox metadata */
+            /** @description Outbox metadata without event payloads */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["OutboxEventPage"];
+                };
             };
+            default: components["responses"]["Error"];
         };
     };
     replayOutboxEvent: {
         parameters: {
             query?: never;
-            header: {
-                "If-Match": components["parameters"]["ExpectedRevision"];
-            };
+            header?: never;
             path: {
                 id: string;
             };
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ReplayOutboxEvent"];
+            };
+        };
         responses: {
             /** @description Replay scheduled */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": {
+                        event: components["schemas"]["OutboxEvent"];
+                    };
+                };
             };
             default: components["responses"]["Error"];
         };

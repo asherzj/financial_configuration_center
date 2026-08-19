@@ -12,6 +12,7 @@ import (
 	access "github.com/asherzj/financial_configuration_center/internal/access/application"
 	"github.com/asherzj/financial_configuration_center/internal/adminbff"
 	catalog "github.com/asherzj/financial_configuration_center/internal/catalog/domain"
+	"github.com/asherzj/financial_configuration_center/internal/outbox"
 	"github.com/asherzj/financial_configuration_center/internal/pagequery"
 	"github.com/asherzj/financial_configuration_center/internal/release/application"
 	release "github.com/asherzj/financial_configuration_center/internal/release/domain"
@@ -241,6 +242,34 @@ func TestBFFCreatesLinkedCompensation(t *testing.T) {
 	}
 }
 
+func TestBFFListsSafeOutboxMetadataAndMapsReplay(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 8, 20, 8, 0, 0, 0, time.UTC)
+	operations := &outboxStub{page: outbox.EventPage{
+		Events: []outbox.Event{{
+			ID: "event", Sequence: 12, Type: "CONFIGURATION_CHANGED", Payload: []byte(`{"secret":"must-not-leak"}`),
+			Status: outbox.StatusDeadLetter, LeaseRevision: 6, Attempts: 20, NextAttemptAt: now, LastError: "delivery failed",
+		}},
+		PageNumber: 1, PageSize: 20, TotalNumber: 1, TotalPages: 1,
+	}, replayed: outbox.Event{ID: "event", Status: outbox.StatusPending, LeaseRevision: 7, NextAttemptAt: now}}
+	handler, err := adminbff.NewWithOutbox(&queryStub{}, &releaseStub{}, authenticator{roles: []string{outbox.PlatformOperatorRole}}, operations)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodGet, "/api/v1/outbox-events?status=DEAD_LETTER&page=1&size=20", nil)
+	listed := httptest.NewRecorder()
+	handler.ServeHTTP(listed, request)
+	if listed.Code != http.StatusOK || operations.lastList.Status == nil || *operations.lastList.Status != outbox.StatusDeadLetter || operations.lastPrincipal.Subject != "operator@example.com" || !bytes.Contains(listed.Body.Bytes(), []byte(`"leaseRevision":6`)) || bytes.Contains(listed.Body.Bytes(), []byte("must-not-leak")) {
+		t.Fatalf("list=%d principal=%+v request=%+v body=%s", listed.Code, operations.lastPrincipal, operations.lastList, listed.Body.String())
+	}
+	replayed := serveJSON(t, handler, http.MethodPost, "/api/v1/outbox-events/event/replay", "", map[string]any{
+		"expectedEventRevision": 6, "reason": "downstream recovered", "confirmation": "REPLAY event",
+	})
+	if replayed.Code != http.StatusOK || operations.lastReplay.ExpectedRevision != 6 || operations.lastReplay.Principal.Roles[0] != outbox.PlatformOperatorRole || !bytes.Contains(replayed.Body.Bytes(), []byte(`"status":"PENDING"`)) {
+		t.Fatalf("replay=%d command=%+v body=%s", replayed.Code, operations.lastReplay, replayed.Body.String())
+	}
+}
+
 type authenticator struct {
 	reject bool
 	roles  []string
@@ -283,6 +312,24 @@ type sensitiveStub struct {
 	result access.RevealResult
 	err    error
 	last   access.RevealCommand
+}
+
+type outboxStub struct {
+	page          outbox.EventPage
+	replayed      outbox.Event
+	lastPrincipal outbox.Principal
+	lastList      outbox.ListRequest
+	lastReplay    outbox.ReplayCommand
+}
+
+func (stub *outboxStub) List(_ context.Context, principal outbox.Principal, request outbox.ListRequest) (outbox.EventPage, error) {
+	stub.lastPrincipal, stub.lastList = principal, request
+	return stub.page, nil
+}
+
+func (stub *outboxStub) Replay(_ context.Context, command outbox.ReplayCommand) (outbox.Event, error) {
+	stub.lastReplay = command
+	return stub.replayed, nil
 }
 
 func (stub *sensitiveStub) Reveal(_ context.Context, command access.RevealCommand) (access.RevealResult, error) {

@@ -219,16 +219,37 @@ paths:
   /outbox-events:
     get:
       operationId: listOutboxEvents
+      parameters:
+        - {name: status, in: query, schema: {type: string, enum: [PENDING, PROCESSING, SENT, DEAD_LETTER]}}
+        - {name: page, in: query, schema: {type: integer, minimum: 1, default: 1}}
+        - {name: size, in: query, schema: {type: integer, minimum: 1, maximum: 100, default: 20}}
       responses:
-        '200': {description: Outbox metadata}
+        '200':
+          description: Outbox metadata without event payloads
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/OutboxEventPage'}
+        default: {$ref: '#/components/responses/Error'}
   /outbox-events/{id}/replay:
     post:
       operationId: replayOutboxEvent
       parameters:
         - {name: id, in: path, required: true, schema: {type: string, format: uuid}}
-        - {$ref: '#/components/parameters/ExpectedRevision'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/ReplayOutboxEvent'}
       responses:
-        '200': {description: Replay scheduled}
+        '200':
+          description: Replay scheduled
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [event]
+                properties:
+                  event: {$ref: '#/components/schemas/OutboxEvent'}
         default: {$ref: '#/components/responses/Error'}
 components:
   securitySchemes:
@@ -402,6 +423,42 @@ components:
       required: [description]
       properties:
         description: {type: string, minLength: 1}
+    OutboxEvent:
+      type: object
+      additionalProperties: false
+      required: [id, sequenceNo, eventType, status, leaseRevision, attempts, nextAttemptAt]
+      properties:
+        id: {type: string, format: uuid}
+        sequenceNo: {type: integer, format: int64, minimum: 1}
+        eventType: {type: string}
+        status: {type: string, enum: [PENDING, PROCESSING, SENT, DEAD_LETTER]}
+        leaseRevision: {type: integer, format: int64, minimum: 1}
+        attempts: {type: integer, minimum: 0}
+        nextAttemptAt: {type: string, format: date-time}
+        lastError: {type: string}
+    OutboxEventPage:
+      type: object
+      additionalProperties: false
+      required: [events, page]
+      properties:
+        events: {type: array, items: {$ref: '#/components/schemas/OutboxEvent'}}
+        page:
+          type: object
+          additionalProperties: false
+          required: [number, size, totalNumber, totalPages]
+          properties:
+            number: {type: integer, minimum: 1}
+            size: {type: integer, minimum: 1, maximum: 100}
+            totalNumber: {type: integer, format: int64, minimum: 0}
+            totalPages: {type: integer, minimum: 0}
+    ReplayOutboxEvent:
+      type: object
+      additionalProperties: false
+      required: [expectedEventRevision, reason, confirmation]
+      properties:
+        expectedEventRevision: {type: integer, format: int64, minimum: 1}
+        reason: {type: string, minLength: 1, maxLength: 1024}
+        confirmation: {type: string, minLength: 1}
     ReleaseOrderDetail:
       type: object
       required: [order, items, steps, allowedActions]
