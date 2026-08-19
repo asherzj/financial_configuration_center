@@ -147,6 +147,8 @@ Kitex backend UDS 额外配置规范绝对路径、四位八进制字符串 `bac
 
 运行时不热更新核心安全/数据库配置；变更通过重启部署。ReleaseTemplate/Model 是业务元数据，不混入进程 YAML。
 
+通用 `instanceId` 只用于 telemetry/deployment label，不是 Config Server 协议身份。`serverInstanceId` 与 `snapshotInstance` 不接受 YAML/环境变量输入，由 Config Server composition root 在每次启动时独立生成 UUIDv7；`serverEpoch` 才是部署/PITR 边界配置。
+
 ## 9. Health、Readiness 与优雅关闭
 
 每个 Go 进程暴露独立运维 HTTP：

@@ -23,6 +23,8 @@ Config Server 把 MySQL 中的可变事实转换为可并发读取的不可变 `
 
 启动顺序固定：配置校验 → 运维 HTTP（ready=false）→ DB capability/schema 检查 → 构造组件 → 有时限的初始 FULL → 发布 generation=1 snapshot → 绑定 UDS → Kitex accept loop 已启动 → 启动 poll/hint worker → ready=true。首个 FULL refresh 失败则 Kitex 不接受业务请求且进程非零退出；权威零 Collection 仍是合法 generation=1 snapshot。
 
+部署配置只提供 `ServerEpoch`，正常滚动重启保持不变，PITR 后必须更换。composition root 每次进程启动分别生成新的 UUIDv7 `ServerInstanceID` 与 `SnapshotInstance`，二者不得相同，也不得由 Pod 名、hostname 或通用 telemetry `instanceId` 配置覆盖；同一进程的所有 generation 复用该 seed。
+
 ## 3. Snapshot 结构
 
 ```go
