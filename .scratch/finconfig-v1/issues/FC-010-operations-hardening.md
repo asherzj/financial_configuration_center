@@ -39,3 +39,5 @@ The entire V1 runs securely and observably, survives lifecycle faults and is doc
 - Added the accepted Envoy/Kitex production transport boundary: Envoy requires client certificates, TLS 1.2+, ALPN h2 and an exact client SAN, sanitizes forwarded certificate identity, and uses explicit HTTP/2 h2c only over `/var/run/finconfig/backend.sock`.
 - Added Kitex server options that reject TCP, temporary and path-traversal backend addresses; added an Envoy sidecar Dockerfile that requires the release pipeline to supply a reviewed digest-pinned base image.
 - Verified the static deployment boundary and Kitex options with `go test ./internal/platform/rpc ./deploy/envoy`.
+- Added an idempotent `cmd/seed` that uses the production Catalog application service and GORM adapter to create a usable payment-route Collection, dynamic model, SDK subscription and reviewed direct-release template without bypassing ReleaseOrder for record data.
+- Verified migration plus two consecutive seed runs on MySQL 8.4.11 and 8.0.46; each database retained exactly one Collection, Model, Subscription and Template. The isolated acceptance databases were removed afterwards.

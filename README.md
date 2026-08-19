@@ -45,6 +45,18 @@
 
 V1 的冻结技术基线、整体架构、分模块详细设计和编码任务包见 [设计文档入口](./docs/design/README.md)。编码实现与本文愿景发生冲突时，以该设计包为准。
 
+## 初始化演示元数据
+
+先对空 MySQL 8.4（兼容 8.0）数据库运行 Goose migration，再执行可重复的 seed 命令：
+
+```sh
+export FINCONFIG_MYSQL_DSN='finconfig:password@tcp(127.0.0.1:3306)/finconfig?parseTime=true&loc=UTC&multiStatements=true'
+go run ./cmd/migrate -command up
+go run ./cmd/seed
+```
+
+seed 会通过正式 Catalog application service 创建支付路由 Collection、动态管理模型、SDK Subscription 和带人工复核的发布模板；重复执行不会新增版本或重复资源。它不会绕过发布流程直接写入 ConfigurationRecord。
+
 ## 初步路线图
 
 1. 冻结 Kitex/Protobuf 与 Admin BFF 契约
