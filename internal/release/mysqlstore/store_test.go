@@ -1249,6 +1249,116 @@ func TestRealMySQLBaseFinalTransaction(t *testing.T) {
 	}
 }
 
+func TestRealMySQLSucceededOrderCreatesLinkedReviewedCompensationAndRejectsDrift(t *testing.T) {
+	dsn := isolatedDatabase(t)
+	ctx := context.Background()
+	database, err := platformmysql.Open(ctx, platformmysql.Config{DSN: dsn, MaxOpenConns: 4, MaxIdleConns: 2, ConnMaxLifetime: time.Minute, ConnMaxIdleTime: time.Minute})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = database.Close() })
+	raw, err := sql.Open("mysql", dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = raw.Close() })
+	now := time.Date(2026, 8, 20, 6, 0, 0, 0, time.UTC)
+	if _, err := raw.Exec(`
+		INSERT INTO release_templates (
+			code, version, model_code, release_type_code, active_slot, final_effect,
+			template, created_at, created_by
+		) VALUES (
+			'base-compensation', 2, 'payment-route-admin', 'compensation', 'A', 'BASE_FINAL',
+			JSON_OBJECT('steps', JSON_ARRAY(
+				JSON_OBJECT('code', 'review', 'type', 'MANUAL_REVIEW', 'requiredRoles', JSON_ARRAY('RELEASE_APPROVER'), 'params', JSON_OBJECT('selfApprovalPolicy', 'DENY_PRODUCTION')),
+				JSON_OBJECT('code', 'apply', 'type', 'BASE_APPLY', 'params', JSON_OBJECT('cleanupScopeOverlay', TRUE)),
+				JSON_OBJECT('code', 'complete', 'type', 'COMPLETE', 'params', JSON_OBJECT())
+			)), ?, 'seed'
+		)
+	`, now); err != nil {
+		t.Fatal(err)
+	}
+	store, err := mysqlstore.New(database)
+	if err != nil {
+		t.Fatal(err)
+	}
+	idGenerator := &numberedIDs{next: 1800, releaseNumber: "REL-20260820-1800"}
+	service := application.NewService(store, idGenerator, fixedClock{now: now})
+	source, err := service.CreateBaseFinal(ctx, application.CreateBaseFinalCommand{
+		IdempotencyKey: "compensation-source", ModelCode: "payment-route-admin", ReleaseTypeCode: "direct",
+		Scope: release.Scope{Region: "cn", Environment: "production", Stage: "blue"}, Actor: "creator@example.com",
+		Items: []application.AddDraft{{Data: map[string]string{"route_code": "visa", "priority": "1"}, ExpectedCollectionRevision: 7}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	executed, err := service.Act(ctx, application.ActCommand{
+		OrderID: source.ID, ActionRequestID: "80000000-0000-4000-8000-000000000001", ExpectedRevision: source.Revision,
+		ExpectedCurrentStep: "base-apply", Action: application.ActionExecute, Actor: "creator@example.com",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	advanced, err := service.Act(ctx, application.ActCommand{
+		OrderID: source.ID, ActionRequestID: "80000000-0000-4000-8000-000000000002", ExpectedRevision: executed.Revision,
+		ExpectedCurrentStep: "base-apply", Action: application.ActionAdvance, Actor: "creator@example.com",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	completed, err := service.Act(ctx, application.ActCommand{
+		OrderID: source.ID, ActionRequestID: "80000000-0000-4000-8000-000000000003", ExpectedRevision: advanced.Revision,
+		ExpectedCurrentStep: "complete", Action: application.ActionExecute, Actor: "creator@example.com",
+	})
+	if err != nil || completed.Status != release.OrderSucceeded || !completed.CanCompensate {
+		t.Fatalf("complete source = %+v, %v", completed, err)
+	}
+	if _, err := service.Act(ctx, application.ActCommand{
+		OrderID: source.ID, ActionRequestID: "80000000-0000-4000-8000-000000000004", ExpectedRevision: completed.Revision,
+		ExpectedCurrentStep: "complete", Action: application.ActionRollback, Actor: "operator@example.com",
+	}); !errors.Is(err, release.ErrInvalid) {
+		t.Fatalf("successful source rollback error = %v", err)
+	}
+
+	idGenerator.releaseNumber = "REL-20260820-1801"
+	command := application.CreateCompensatingReleaseCommand{
+		OrderID: source.ID, IdempotencyKey: "compensate-success", Description: "restore the previous route set", Actor: "operator@example.com",
+	}
+	compensation, err := service.CreateCompensatingRelease(ctx, command)
+	if err != nil {
+		t.Fatalf("create compensation: %v", err)
+	}
+	if compensation.CompensatesOrderID != source.ID || compensation.CurrentStep != release.StepManualReview || !compensation.CanExecute {
+		t.Fatalf("compensation view = %+v", compensation)
+	}
+	assertCount(t, raw, `SELECT COUNT(*) FROM release_orders WHERE id = '`+compensation.ID+`' AND compensates_order_id = '`+source.ID+`' AND template_code = 'base-compensation' AND template_version = 2 AND description = 'restore the previous route set'`, 1)
+	assertCount(t, raw, `SELECT COUNT(*) FROM release_order_items WHERE release_order_id = '`+compensation.ID+`' AND action = 'DELETE' AND expected_record_revision = 8 AND expected_collection_revision = 8 AND after_data IS NULL AND JSON_UNQUOTE(JSON_EXTRACT(base_before, '$.priority')) = '1'`, 1)
+	assertCount(t, raw, `SELECT COUNT(*) FROM release_step_states WHERE release_order_id = '`+compensation.ID+`' AND step_code = 'review' AND status = 'PENDING' AND JSON_UNQUOTE(JSON_EXTRACT(context, '$.requiredRoles[0]')) = 'RELEASE_APPROVER'`, 1)
+
+	key, err := catalog.EncodeKey([]string{"route_code"}, map[string]string{"route_code": "visa"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := raw.Exec(`UPDATE configuration_records SET data = JSON_SET(data, '$.priority', '2'), config_revision = 9 WHERE collection_name = 'payment_routes' AND environment = 'production' AND record_key = ?`, key); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := raw.Exec(`UPDATE configuration_versions SET config_revision = 9 WHERE collection_name = 'payment_routes' AND environment = 'production'`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := raw.Exec(`UPDATE configuration_revision_counters SET current_revision = 9 WHERE counter_name = 'global'`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.CreateCompensatingRelease(ctx, application.CreateCompensatingReleaseCommand{
+		OrderID: source.ID, IdempotencyKey: "compensate-drift", Description: "must not overwrite drift", Actor: "other@example.com",
+	}); !errors.Is(err, release.ErrAborted) {
+		t.Fatalf("drift compensation error = %v, want ErrAborted", err)
+	}
+	replayed, err := service.CreateCompensatingRelease(ctx, command)
+	if err != nil || replayed.ID != compensation.ID || replayed.CompensatesOrderID != source.ID {
+		t.Fatalf("compensation replay after drift = %+v, %v", replayed, err)
+	}
+}
+
 func TestRealMySQLCreateRejectsFilteredCollectionOption(t *testing.T) {
 	dsn := isolatedDatabase(t)
 	raw, err := sql.Open("mysql", dsn)

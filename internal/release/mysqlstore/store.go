@@ -350,11 +350,13 @@ func (transaction *transaction) LoadOptionAuthorities(ctx context.Context, colle
 func (transaction *transaction) FindCreateResult(ctx context.Context, actor, idempotencyKey string) (application.StoredRequestResult, bool, error) {
 	type row struct {
 		ID, RequestDigest, Status, CurrentStepCode, CurrentStepType, CurrentStepStatus string
+		Description, CompensatesOrderID                                                string
 		EntityRevision                                                                 uint64
 	}
 	var loaded row
 	result := transaction.db.WithContext(ctx).Raw(`
-		SELECT o.id, o.request_digest, o.status, o.current_step_code, s.step_type AS current_step_type,
+		SELECT o.id, o.request_digest, o.status, o.current_step_code, o.description,
+			COALESCE(o.compensates_order_id, '') AS compensates_order_id, s.step_type AS current_step_type,
 			s.status AS current_step_status, o.entity_revision
 		FROM release_orders o
 		JOIN release_step_states s
@@ -369,8 +371,10 @@ func (transaction *transaction) FindCreateResult(ctx context.Context, actor, ide
 		return application.StoredRequestResult{}, false, nil
 	}
 	view := application.OrderView{
-		ID: loaded.ID, Status: release.OrderStatus(loaded.Status), CurrentStepCode: loaded.CurrentStepCode, CurrentStep: release.StepType(loaded.CurrentStepType),
+		ID: loaded.ID, Description: loaded.Description, CompensatesOrderID: loaded.CompensatesOrderID,
+		Status: release.OrderStatus(loaded.Status), CurrentStepCode: loaded.CurrentStepCode, CurrentStep: release.StepType(loaded.CurrentStepType),
 		CurrentStepStatus: release.StepStatus(loaded.CurrentStepStatus), Revision: release.EntityRevision(loaded.EntityRevision),
+		CanCompensate: release.OrderStatus(loaded.Status) == release.OrderSucceeded,
 	}
 	type stepProjectionRow struct {
 		Code, Type, Status     string
@@ -434,11 +438,11 @@ func (transaction *transaction) InsertOrder(ctx context.Context, order *release.
 			status, current_step_code, template_snapshot, description, authorized_roles,
 			batch_type, compensates_order_id, entity_revision,
 			created_at, created_by, updated_at, updated_by, completed_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '', JSON_ARRAY(), ?, NULL, ?, ?, ?, ?, ?, NULL)
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, JSON_ARRAY(), ?, ?, ?, ?, ?, ?, ?, NULL)
 	`, state.ID, state.ReleaseNumber, state.IdempotencyKey, state.RequestDigest, state.ModelCode,
 		state.TemplateCode, state.TemplateVersion, state.ReleaseTypeCode,
 		state.Scope.Region, state.Scope.Environment, state.Scope.Stage,
-		state.Status, persistedStepCode(state.Steps[state.CurrentStep]), templateSnapshot, batchType, state.Revision,
+		state.Status, persistedStepCode(state.Steps[state.CurrentStep]), templateSnapshot, state.Description, batchType, nullableString(state.CompensatesOrderID), state.Revision,
 		state.CreatedAt, state.CreatedBy, state.UpdatedAt, state.UpdatedBy)
 	if result.Error != nil {
 		return result.Error
@@ -508,6 +512,8 @@ func (transaction *transaction) LoadOrderForUpdate(ctx context.Context, orderID 
 		TemplateCode, ReleaseTypeCode                               string
 		TemplateVersion                                             uint64
 		Region, Environment, Stage                                  string
+		Description                                                 string
+		CompensatesOrderID                                          *string
 		Status, CurrentStepCode                                     string
 		EntityRevision                                              uint64
 		CreatedAt, UpdatedAt                                        time.Time
@@ -518,7 +524,7 @@ func (transaction *transaction) LoadOrderForUpdate(ctx context.Context, orderID 
 	result := transaction.db.WithContext(ctx).Raw(`
 		SELECT id, release_number, idempotency_key, request_digest, model_code,
 			template_code, template_version, release_type_code, region, environment, stage,
-			status, current_step_code, entity_revision, created_at, created_by,
+			status, current_step_code, description, compensates_order_id, entity_revision, created_at, created_by,
 			updated_at, updated_by, completed_at
 		FROM release_orders WHERE id = ? FOR UPDATE
 	`, orderID).Scan(&loaded)
@@ -634,10 +640,15 @@ func (transaction *transaction) LoadOrderForUpdate(ctx context.Context, orderID 
 			currentStep = index
 		}
 	}
+	compensatesOrderID := ""
+	if loaded.CompensatesOrderID != nil {
+		compensatesOrderID = *loaded.CompensatesOrderID
+	}
 	return release.RestoreOrder(release.OrderState{
 		ID: loaded.ID, ReleaseNumber: loaded.ReleaseNumber, IdempotencyKey: loaded.IdempotencyKey,
 		RequestDigest: loaded.RequestDigest, ModelCode: loaded.ModelCode, TemplateCode: loaded.TemplateCode,
 		TemplateVersion: loaded.TemplateVersion, ReleaseTypeCode: loaded.ReleaseTypeCode,
+		Description: loaded.Description, CompensatesOrderID: compensatesOrderID,
 		Scope:     release.Scope{Region: loaded.Region, Environment: loaded.Environment, Stage: loaded.Stage},
 		CreatedBy: loaded.CreatedBy, CreatedAt: loaded.CreatedAt, UpdatedBy: loaded.UpdatedBy, UpdatedAt: loaded.UpdatedAt,
 		CompletedAt: loaded.CompletedAt, Status: release.OrderStatus(loaded.Status), Revision: release.EntityRevision(loaded.EntityRevision),

@@ -96,13 +96,27 @@ type ReleaseDraft struct {
 }
 
 type CreateReleaseCommand struct {
-	IdempotencyKey  string
-	ModelCode       string
-	ReleaseTypeCode string
-	Scope           release.Scope
-	Actor           string
-	ActorName       string
-	Items           []ReleaseDraft
+	IdempotencyKey        string
+	ModelCode             string
+	ReleaseTypeCode       string
+	Description           string
+	Scope                 release.Scope
+	Actor                 string
+	ActorName             string
+	Items                 []ReleaseDraft
+	requestDigestOverride string
+	compensatesOrderID    string
+	requiredFinalEffect   release.FinalEffect
+}
+
+const CompensationReleaseTypeCode = "compensation"
+
+type CreateCompensatingReleaseCommand struct {
+	OrderID        string
+	IdempotencyKey string
+	Description    string
+	Actor          string
+	ActorName      string
 }
 
 type canonicalReleaseDraft struct {
@@ -147,18 +161,21 @@ type ActCommand struct {
 }
 
 type OrderView struct {
-	ID                string                 `json:"id"`
-	Status            release.OrderStatus    `json:"status"`
-	CurrentStepCode   string                 `json:"currentStepCode"`
-	CurrentStep       release.StepType       `json:"currentStep"`
-	CurrentStepStatus release.StepStatus     `json:"currentStepStatus"`
-	Revision          release.EntityRevision `json:"revision"`
-	CanExecute        bool                   `json:"canExecute"`
-	CanAdvance        bool                   `json:"canAdvance"`
-	CanApprove        bool                   `json:"canApprove"`
-	CanReject         bool                   `json:"canReject"`
-	CanRollback       bool                   `json:"canRollback"`
-	Steps             []StepView             `json:"steps"`
+	ID                 string                 `json:"id"`
+	Description        string                 `json:"description,omitempty"`
+	CompensatesOrderID string                 `json:"compensatesOrderId,omitempty"`
+	Status             release.OrderStatus    `json:"status"`
+	CurrentStepCode    string                 `json:"currentStepCode"`
+	CurrentStep        release.StepType       `json:"currentStep"`
+	CurrentStepStatus  release.StepStatus     `json:"currentStepStatus"`
+	Revision           release.EntityRevision `json:"revision"`
+	CanExecute         bool                   `json:"canExecute"`
+	CanAdvance         bool                   `json:"canAdvance"`
+	CanApprove         bool                   `json:"canApprove"`
+	CanReject          bool                   `json:"canReject"`
+	CanRollback        bool                   `json:"canRollback"`
+	CanCompensate      bool                   `json:"canCompensate"`
+	Steps              []StepView             `json:"steps"`
 }
 
 type StepView struct {
@@ -350,6 +367,9 @@ func (service *Service) CreateRelease(ctx context.Context, command CreateRelease
 		if finalEffect != release.FinalEffectBase && finalEffect != release.FinalEffectOverlay {
 			return fmt.Errorf("%w: release template final effect is invalid", release.ErrInvalid)
 		}
+		if command.requiredFinalEffect != "" && finalEffect != command.requiredFinalEffect {
+			return fmt.Errorf("%w: current compensation template final effect is %s, want %s", release.ErrFailedPrecondition, finalEffect, command.requiredFinalEffect)
+		}
 		if finalEffect == release.FinalEffectOverlay && (strings.TrimSpace(command.Scope.Region) == "" || strings.TrimSpace(command.Scope.Environment) == "" || strings.TrimSpace(command.Scope.Stage) == "") {
 			return fmt.Errorf("%w: OVERLAY_FINAL requires a full scope", release.ErrInvalid)
 		}
@@ -399,6 +419,9 @@ func (service *Service) CreateRelease(ctx context.Context, command CreateRelease
 		requestDigest, err := normalizedReleaseDigest(command, canonical)
 		if err != nil {
 			return err
+		}
+		if command.requestDigestOverride != "" {
+			requestDigest = command.requestDigestOverride
 		}
 		stored, found, err := transaction.FindCreateResult(ctx, command.Actor, command.IdempotencyKey)
 		if err != nil {
@@ -509,7 +532,8 @@ func (service *Service) CreateRelease(ctx context.Context, command CreateRelease
 			order, err := release.NewBaseFinalOrder(release.BaseFinalOrderSpec{
 				ID: orderID, ReleaseNumber: service.ids.NewReleaseNumber(createdAt), IdempotencyKey: command.IdempotencyKey,
 				ModelCode: command.ModelCode, TemplateCode: bundle.Template.Code, TemplateVersion: bundle.Template.Version,
-				ReleaseTypeCode: bundle.Template.ReleaseTypeCode, RequestDigest: requestDigest, Scope: command.Scope,
+				ReleaseTypeCode: bundle.Template.ReleaseTypeCode, RequestDigest: requestDigest,
+				Description: command.Description, CompensatesOrderID: command.compensatesOrderID, Scope: command.Scope,
 				CreatedBy: command.Actor, CreatedAt: createdAt, Items: items, Template: bundle.Template.Definition,
 			})
 			if err != nil {
@@ -553,7 +577,8 @@ func (service *Service) CreateRelease(ctx context.Context, command CreateRelease
 		order, err := release.NewOverlayFinalOrder(release.OverlayFinalOrderSpec{
 			ID: service.ids.NewID(), ReleaseNumber: service.ids.NewReleaseNumber(createdAt), IdempotencyKey: command.IdempotencyKey,
 			ModelCode: command.ModelCode, TemplateCode: bundle.Template.Code, TemplateVersion: bundle.Template.Version,
-			ReleaseTypeCode: bundle.Template.ReleaseTypeCode, RequestDigest: requestDigest, Scope: command.Scope,
+			ReleaseTypeCode: bundle.Template.ReleaseTypeCode, RequestDigest: requestDigest,
+			Description: command.Description, CompensatesOrderID: command.compensatesOrderID, Scope: command.Scope,
 			CreatedBy: command.Actor, CreatedAt: createdAt, Items: itemSpecs, Template: bundle.Template.Definition,
 		})
 		if err != nil {
@@ -572,6 +597,131 @@ func (service *Service) CreateRelease(ctx context.Context, command CreateRelease
 		return *replayed, nil
 	}
 	return project(created), nil
+}
+
+func (service *Service) CreateCompensatingRelease(ctx context.Context, command CreateCompensatingReleaseCommand) (OrderView, error) {
+	if err := service.ready(); err != nil {
+		return OrderView{}, err
+	}
+	command.OrderID = strings.TrimSpace(command.OrderID)
+	command.IdempotencyKey = strings.TrimSpace(command.IdempotencyKey)
+	command.Description = strings.TrimSpace(command.Description)
+	command.Actor = strings.TrimSpace(command.Actor)
+	if command.OrderID == "" || command.IdempotencyKey == "" || command.Actor == "" {
+		return OrderView{}, fmt.Errorf("%w: source order, idempotency key, and actor are required", release.ErrInvalid)
+	}
+	requestDigest, err := normalizedCompensationDigest(command)
+	if err != nil {
+		return OrderView{}, err
+	}
+	var planned *CreateReleaseCommand
+	var replayed *OrderView
+	err = service.withinIdempotentTransaction(ctx, func(transaction Transaction) error {
+		stored, found, findErr := transaction.FindCreateResult(ctx, command.Actor, command.IdempotencyKey)
+		if findErr != nil {
+			return fmt.Errorf("find compensation request: %w", findErr)
+		}
+		if found {
+			if stored.RequestDigest != requestDigest {
+				return fmt.Errorf("%w: compensation request", release.ErrIdempotencyKeyReused)
+			}
+			result := stored.Result
+			replayed = &result
+			return nil
+		}
+		source, loadErr := transaction.LoadOrderForUpdate(ctx, command.OrderID)
+		if loadErr != nil {
+			return fmt.Errorf("load compensated release order: %w", loadErr)
+		}
+		items := source.Items()
+		keys := make([]string, len(items))
+		for index, item := range items {
+			keys[index] = item.RecordKey
+		}
+		authority, loadErr := transaction.LoadBaseAuthority(ctx, items[0].Collection, source.Scope().Environment, keys)
+		if loadErr != nil {
+			return fmt.Errorf("load compensation base authority: %w", loadErr)
+		}
+		rules, loadErr := transaction.LoadOverlayRules(ctx, items[0].Collection, source.Scope(), keys)
+		if loadErr != nil {
+			return fmt.Errorf("load compensation overlay authority: %w", loadErr)
+		}
+		baseRecords := make([]catalog.ConfigurationRecord, 0, len(authority.Records))
+		for _, record := range authority.Records {
+			if record != nil {
+				baseRecords = append(baseRecords, *record)
+			}
+		}
+		effective, evaluateErr := overlay.Evaluate(overlay.Query{
+			Collection: items[0].Collection,
+			Scope:      overlay.Scope{Region: source.Scope().Region, Environment: source.Scope().Environment, Stage: source.Scope().Stage},
+		}, baseRecords, rules)
+		if evaluateErr != nil {
+			return fmt.Errorf("evaluate compensation authority: %w", evaluateErr)
+		}
+		effectiveByKey := make(map[string]*catalog.ConfigurationRecord, len(keys))
+		for _, key := range keys {
+			effectiveByKey[key] = nil
+		}
+		for index := range effective {
+			record := effective[index]
+			effectiveByKey[record.RecordKey] = &record
+		}
+		plan, planErr := source.PlanCompensation(release.CompensationAuthority{
+			CollectionRevision: authority.CollectionRevision, BaseRecords: authority.Records, EffectiveRecords: effectiveByKey,
+		})
+		if planErr != nil {
+			return planErr
+		}
+		drafts := make([]ReleaseDraft, len(plan.Items))
+		for index, item := range plan.Items {
+			preserved := append([]string(nil), item.PreserveSensitiveFields...)
+			if item.Action != release.ChangeModify {
+				preserved = nil
+			}
+			drafts[index] = ReleaseDraft{
+				Action: item.Action, BaseBefore: recordData(item.BaseBefore), EffectiveBefore: recordData(item.EffectiveBefore), After: recordData(item.After),
+				ExpectedRecordRevision: item.ExpectedRecordRevision, ExpectedCollectionRevision: item.ExpectedCollectionRevision,
+				PreserveSensitiveFields: preserved,
+			}
+		}
+		planned = &CreateReleaseCommand{
+			IdempotencyKey: command.IdempotencyKey, ModelCode: source.ModelCode(), ReleaseTypeCode: CompensationReleaseTypeCode,
+			Description: command.Description, Scope: source.Scope(), Actor: command.Actor, ActorName: command.ActorName, Items: drafts,
+			requestDigestOverride: requestDigest, compensatesOrderID: source.ID(), requiredFinalEffect: plan.FinalEffect,
+		}
+		return nil
+	})
+	if err != nil {
+		return OrderView{}, err
+	}
+	if replayed != nil {
+		return *replayed, nil
+	}
+	if planned == nil {
+		return OrderView{}, errors.New("compensation planning returned no command")
+	}
+	return service.CreateRelease(ctx, *planned)
+}
+
+func normalizedCompensationDigest(command CreateCompensatingReleaseCommand) (string, error) {
+	payload := struct {
+		OrderID     string `json:"orderId"`
+		Description string `json:"description"`
+	}{OrderID: command.OrderID, Description: command.Description}
+	encoded, err := json.Marshal(payload)
+	if err != nil {
+		return "", fmt.Errorf("normalize compensation request: %w", err)
+	}
+	sum := sha256.Sum256(encoded)
+	return hex.EncodeToString(sum[:]), nil
+}
+
+func recordData(record *catalog.ConfigurationRecord) map[string]string {
+	if record == nil {
+		return nil
+	}
+	return maps.Clone(record.Data)
 }
 
 func canonicalOptionalRecord(definition catalog.CollectionDefinition, environment string, data map[string]string) (*catalog.ConfigurationRecord, error) {
@@ -865,9 +1015,10 @@ func normalizedReleaseDigest(command CreateReleaseCommand, drafts []canonicalRel
 	payload := struct {
 		Model       string        `json:"model"`
 		ReleaseType string        `json:"releaseType"`
+		Description string        `json:"description"`
 		Scope       release.Scope `json:"scope"`
 		Items       any           `json:"items"`
-	}{Model: command.ModelCode, ReleaseType: command.ReleaseTypeCode, Scope: command.Scope, Items: items}
+	}{Model: command.ModelCode, ReleaseType: command.ReleaseTypeCode, Description: command.Description, Scope: command.Scope, Items: items}
 	encoded, err := json.Marshal(payload)
 	if err != nil {
 		return "", fmt.Errorf("normalize create release request: %w", err)
@@ -1219,7 +1370,11 @@ func project(order *release.Order) OrderView {
 			RolloutRanges: append([]overlay.BucketRange(nil), stateStep.RolloutRanges...), CompareResult: stateStep.CompareResult,
 		}
 	}
-	view := OrderView{ID: order.ID(), Status: order.Status(), CurrentStepCode: step.Code, CurrentStep: step.Type, CurrentStepStatus: step.Status, Revision: order.Revision(), Steps: steps}
+	view := OrderView{
+		ID: order.ID(), Description: order.Description(), CompensatesOrderID: order.CompensatesOrderID(),
+		Status: order.Status(), CurrentStepCode: step.Code, CurrentStep: step.Type, CurrentStepStatus: step.Status, Revision: order.Revision(), Steps: steps,
+		CanCompensate: order.Status() == release.OrderSucceeded,
+	}
 	applyCapabilities(&view)
 	if view.Status == release.OrderInProgress {
 		for _, step := range state.Steps {

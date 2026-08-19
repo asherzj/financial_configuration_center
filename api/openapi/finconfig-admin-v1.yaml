@@ -169,8 +169,18 @@ paths:
       - {$ref: '#/components/parameters/IdempotencyKey'}
     post:
       operationId: createCompensatingRelease
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/CreateCompensatingRelease'}
       responses:
-        '201': {description: Compensation release created}
+        '201':
+          description: Compensation release created
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ReleaseOrderDetail'}
+        default: {$ref: '#/components/responses/Error'}
   /sensitive-fields/reveal:
     post:
       operationId: revealSensitiveField
@@ -386,6 +396,12 @@ components:
         expectedOrderRevision: {type: integer, format: int64, minimum: 1}
         expectedCurrentStep: {type: string}
         comment: {type: string}
+    CreateCompensatingRelease:
+      type: object
+      additionalProperties: false
+      required: [description]
+      properties:
+        description: {type: string, minLength: 1}
     ReleaseOrderDetail:
       type: object
       required: [order, items, steps, allowedActions]
@@ -396,6 +412,9 @@ components:
           required: [id, status, currentStep, currentStepType, currentStepStatus, entityRevision]
           properties:
             id: {type: string}
+            description: {type: string}
+            compensatesOrderId: {type: string}
+            canCompensate: {type: boolean}
             status: {type: string, enum: [IN_PROGRESS, SUCCEEDED, REJECTED, ROLLED_BACK]}
             currentStep: {type: string, description: Stable step code from the template snapshot.}
             currentStepType: {type: string, enum: [MANUAL_REVIEW, OVERLAY_APPLY, PERCENT_ROLLOUT, BASE_APPLY, COMPARE, COMPLETE]}

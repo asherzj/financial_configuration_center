@@ -80,6 +80,76 @@ func TestBaseFinalApplicationIsTheOnlyRecordWritePath(t *testing.T) {
 	}
 }
 
+func TestCreateCompensatingReleaseLinksReviewedReverseOrderAndRejectsDrift(t *testing.T) {
+	t.Parallel()
+	definition, model := compiledCatalog(t)
+	store := newFakeUnitOfWork(definition, model)
+	now := time.Date(2026, 8, 20, 5, 0, 0, 0, time.UTC)
+	service := application.NewService(store, &sequenceIDs{values: []string{"source-order", "source-item", "comp-order", "comp-item"}}, fixedClock{now: now})
+	source, err := service.CreateBaseFinal(context.Background(), application.CreateBaseFinalCommand{
+		IdempotencyKey: "source-create", ModelCode: model.Code(), ReleaseTypeCode: "direct",
+		Scope: release.Scope{Region: "cn", Environment: "production", Stage: "blue"}, Actor: "creator",
+		Items: []application.AddDraft{{Data: map[string]string{"route_code": "visa", "priority": "1"}, ExpectedCollectionRevision: 7}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	executed, err := service.Act(context.Background(), application.ActCommand{OrderID: source.ID, ActionRequestID: "source-execute", ExpectedRevision: 1, ExpectedCurrentStep: "base-apply", Action: application.ActionExecute, Actor: "creator"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	advanced, err := service.Act(context.Background(), application.ActCommand{OrderID: source.ID, ActionRequestID: "source-advance", ExpectedRevision: executed.Revision, ExpectedCurrentStep: "base-apply", Action: application.ActionAdvance, Actor: "creator"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	completed, err := service.Act(context.Background(), application.ActCommand{OrderID: source.ID, ActionRequestID: "source-complete", ExpectedRevision: advanced.Revision, ExpectedCurrentStep: "complete", Action: application.ActionExecute, Actor: "creator"})
+	if err != nil || completed.Status != release.OrderSucceeded || !completed.CanCompensate {
+		t.Fatalf("complete source = %+v, %v", completed, err)
+	}
+	compensationTemplate, err := release.CompileTemplate([]byte(`{"steps":[
+		{"code":"review","type":"MANUAL_REVIEW","requiredRoles":["RELEASE_APPROVER"],"params":{"selfApprovalPolicy":"DENY_PRODUCTION"}},
+		{"code":"apply","type":"BASE_APPLY","params":{"cleanupScopeOverlay":true}},
+		{"code":"complete","type":"COMPLETE","params":{}}
+	]}`), release.FinalEffectBase)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store.template = application.TemplateRef{Code: "base-compensation", Version: 3, ReleaseTypeCode: application.CompensationReleaseTypeCode, Definition: compensationTemplate}
+	command := application.CreateCompensatingReleaseCommand{
+		OrderID: source.ID, IdempotencyKey: "compensate-source", Description: "restore pre-release state", Actor: "operator",
+	}
+	compensation, err := service.CreateCompensatingRelease(context.Background(), command)
+	if err != nil {
+		t.Fatalf("CreateCompensatingRelease: %v", err)
+	}
+	if compensation.CompensatesOrderID != source.ID || compensation.Description != command.Description || compensation.CurrentStep != release.StepManualReview || !compensation.CanExecute {
+		t.Fatalf("compensation view = %+v", compensation)
+	}
+	state := store.orders[compensation.ID].State()
+	if state.CompensatesOrderID != source.ID || state.TemplateCode != "base-compensation" || state.TemplateVersion != 3 || len(state.Items) != 1 {
+		t.Fatalf("compensation state = %+v", state)
+	}
+	item := state.Items[0]
+	if item.Action != release.ChangeDelete || item.BaseBefore == nil || item.EffectiveBefore == nil || item.After != nil || item.ExpectedRecordRevision != 8 || item.ExpectedCollectionRevision != 8 {
+		t.Fatalf("compensation item = %+v", item)
+	}
+	replayed, err := service.CreateCompensatingRelease(context.Background(), command)
+	if err != nil || replayed.ID != compensation.ID || replayed.CompensatesOrderID != source.ID {
+		t.Fatalf("compensation replay = %+v, %v", replayed, err)
+	}
+
+	drifted := store.records["production"][item.RecordKey]
+	drifted.Data["priority"] = "2"
+	drifted.ConfigRevision = 9
+	store.records["production"][item.RecordKey] = drifted
+	store.revisions["production"] = 9
+	if _, err := service.CreateCompensatingRelease(context.Background(), application.CreateCompensatingReleaseCommand{
+		OrderID: source.ID, IdempotencyKey: "compensate-after-drift", Description: "must not overwrite drift", Actor: "other",
+	}); !errors.Is(err, release.ErrAborted) {
+		t.Fatalf("drift compensation error = %v, want ErrAborted", err)
+	}
+}
+
 func TestCreateBaseFinalGeneratesAutoFillAfterReplayCheck(t *testing.T) {
 	t.Parallel()
 	definition, err := catalog.CompileCollection(catalog.CollectionSpec{
@@ -898,7 +968,8 @@ func (transaction *fakeTransaction) InsertOrder(_ context.Context, order *releas
 	transaction.createResults[state.CreatedBy+"\x00"+state.IdempotencyKey] = application.StoredRequestResult{
 		RequestDigest: state.RequestDigest,
 		Result: application.OrderView{
-			ID: state.ID, Status: state.Status, CurrentStepCode: step.Code, CurrentStep: step.Type, CurrentStepStatus: step.Status,
+			ID: state.ID, Description: state.Description, CompensatesOrderID: state.CompensatesOrderID,
+			Status: state.Status, CurrentStepCode: step.Code, CurrentStep: step.Type, CurrentStepStatus: step.Status,
 			Revision: state.Revision, CanExecute: step.Status == release.StepPending, Steps: steps,
 		},
 	}

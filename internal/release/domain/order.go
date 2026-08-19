@@ -113,19 +113,21 @@ type BaseFinalItemSpec struct {
 }
 
 type BaseFinalOrderSpec struct {
-	ID              string
-	ReleaseNumber   string
-	IdempotencyKey  string
-	ModelCode       string
-	TemplateCode    string
-	TemplateVersion uint64
-	ReleaseTypeCode string
-	RequestDigest   string
-	Scope           Scope
-	CreatedBy       string
-	CreatedAt       time.Time
-	Items           []BaseFinalItemSpec
-	Template        CompiledTemplate
+	ID                 string
+	ReleaseNumber      string
+	IdempotencyKey     string
+	ModelCode          string
+	TemplateCode       string
+	TemplateVersion    uint64
+	ReleaseTypeCode    string
+	RequestDigest      string
+	Description        string
+	CompensatesOrderID string
+	Scope              Scope
+	CreatedBy          string
+	CreatedAt          time.Time
+	Items              []BaseFinalItemSpec
+	Template           CompiledTemplate
 }
 
 type OverlayFinalItemSpec struct {
@@ -140,19 +142,21 @@ type OverlayFinalItemSpec struct {
 }
 
 type OverlayFinalOrderSpec struct {
-	ID              string
-	ReleaseNumber   string
-	IdempotencyKey  string
-	ModelCode       string
-	TemplateCode    string
-	TemplateVersion uint64
-	ReleaseTypeCode string
-	RequestDigest   string
-	Scope           Scope
-	CreatedBy       string
-	CreatedAt       time.Time
-	Items           []OverlayFinalItemSpec
-	Template        CompiledTemplate
+	ID                 string
+	ReleaseNumber      string
+	IdempotencyKey     string
+	ModelCode          string
+	TemplateCode       string
+	TemplateVersion    uint64
+	ReleaseTypeCode    string
+	RequestDigest      string
+	Description        string
+	CompensatesOrderID string
+	Scope              Scope
+	CreatedBy          string
+	CreatedAt          time.Time
+	Items              []OverlayFinalItemSpec
+	Template           CompiledTemplate
 }
 
 type Item struct {
@@ -252,6 +256,27 @@ type BaseAuthority struct {
 	Rules              map[string]*overlay.Rule
 }
 
+type CompensationAuthority struct {
+	CollectionRevision catalog.ConfigRevision
+	BaseRecords        map[string]*catalog.ConfigurationRecord
+	EffectiveRecords   map[string]*catalog.ConfigurationRecord
+}
+
+type CompensationItem struct {
+	Action                     ChangeAction
+	BaseBefore                 *catalog.ConfigurationRecord
+	EffectiveBefore            *catalog.ConfigurationRecord
+	After                      *catalog.ConfigurationRecord
+	ExpectedRecordRevision     catalog.ConfigRevision
+	ExpectedCollectionRevision catalog.ConfigRevision
+	PreserveSensitiveFields    []string
+}
+
+type CompensationPlan struct {
+	FinalEffect FinalEffect
+	Items       []CompensationItem
+}
+
 type BaseChange struct {
 	Action ChangeAction                 `json:"action"`
 	Before *catalog.ConfigurationRecord `json:"before,omitempty"`
@@ -272,25 +297,27 @@ type BaseEffect struct {
 
 // Order is the only aggregate root allowed to decide release state changes.
 type Order struct {
-	id              string
-	releaseNumber   string
-	idempotencyKey  string
-	modelCode       string
-	templateCode    string
-	templateVersion uint64
-	releaseTypeCode string
-	requestDigest   string
-	scope           Scope
-	createdBy       string
-	createdAt       time.Time
-	updatedBy       string
-	updatedAt       time.Time
-	completedAt     *time.Time
-	status          OrderStatus
-	revision        EntityRevision
-	currentStep     int
-	steps           []StepState
-	items           []Item
+	id                 string
+	releaseNumber      string
+	idempotencyKey     string
+	modelCode          string
+	templateCode       string
+	templateVersion    uint64
+	releaseTypeCode    string
+	requestDigest      string
+	description        string
+	compensatesOrderID string
+	scope              Scope
+	createdBy          string
+	createdAt          time.Time
+	updatedBy          string
+	updatedAt          time.Time
+	completedAt        *time.Time
+	status             OrderStatus
+	revision           EntityRevision
+	currentStep        int
+	steps              []StepState
+	items              []Item
 }
 
 func NewBaseFinalOrder(spec BaseFinalOrderSpec) (*Order, error) {
@@ -299,6 +326,9 @@ func NewBaseFinalOrder(spec BaseFinalOrderSpec) (*Order, error) {
 	spec.Scope.Stage = strings.TrimSpace(spec.Scope.Stage)
 	if strings.TrimSpace(spec.ID) == "" || strings.TrimSpace(spec.ReleaseNumber) == "" || strings.TrimSpace(spec.IdempotencyKey) == "" || strings.TrimSpace(spec.ModelCode) == "" || strings.TrimSpace(spec.TemplateCode) == "" || spec.TemplateVersion == 0 || strings.TrimSpace(spec.ReleaseTypeCode) == "" || len(spec.RequestDigest) != 64 {
 		return nil, fmt.Errorf("%w: order identity is required", ErrInvalid)
+	}
+	if strings.TrimSpace(spec.CompensatesOrderID) == strings.TrimSpace(spec.ID) {
+		return nil, fmt.Errorf("%w: an order cannot compensate itself", ErrInvalid)
 	}
 	if spec.Scope.Region == "" || spec.Scope.Environment == "" {
 		return nil, fmt.Errorf("%w: region and environment are required", ErrInvalid)
@@ -401,23 +431,25 @@ func NewBaseFinalOrder(spec BaseFinalOrderSpec) (*Order, error) {
 		}
 	}
 	return &Order{
-		id:              spec.ID,
-		releaseNumber:   spec.ReleaseNumber,
-		idempotencyKey:  spec.IdempotencyKey,
-		modelCode:       spec.ModelCode,
-		templateCode:    spec.TemplateCode,
-		templateVersion: spec.TemplateVersion,
-		releaseTypeCode: spec.ReleaseTypeCode,
-		requestDigest:   spec.RequestDigest,
-		scope:           spec.Scope,
-		createdBy:       spec.CreatedBy,
-		createdAt:       createdAt,
-		updatedBy:       spec.CreatedBy,
-		updatedAt:       createdAt,
-		status:          OrderInProgress,
-		revision:        1,
-		steps:           steps,
-		items:           items,
+		id:                 spec.ID,
+		releaseNumber:      spec.ReleaseNumber,
+		idempotencyKey:     spec.IdempotencyKey,
+		modelCode:          spec.ModelCode,
+		templateCode:       spec.TemplateCode,
+		templateVersion:    spec.TemplateVersion,
+		releaseTypeCode:    spec.ReleaseTypeCode,
+		requestDigest:      spec.RequestDigest,
+		description:        strings.TrimSpace(spec.Description),
+		compensatesOrderID: strings.TrimSpace(spec.CompensatesOrderID),
+		scope:              spec.Scope,
+		createdBy:          spec.CreatedBy,
+		createdAt:          createdAt,
+		updatedBy:          spec.CreatedBy,
+		updatedAt:          createdAt,
+		status:             OrderInProgress,
+		revision:           1,
+		steps:              steps,
+		items:              items,
 	}, nil
 }
 
@@ -427,6 +459,9 @@ func NewOverlayFinalOrder(spec OverlayFinalOrderSpec) (*Order, error) {
 	spec.Scope.Stage = strings.TrimSpace(spec.Scope.Stage)
 	if strings.TrimSpace(spec.ID) == "" || strings.TrimSpace(spec.ReleaseNumber) == "" || strings.TrimSpace(spec.IdempotencyKey) == "" || strings.TrimSpace(spec.ModelCode) == "" || strings.TrimSpace(spec.TemplateCode) == "" || spec.TemplateVersion == 0 || strings.TrimSpace(spec.ReleaseTypeCode) == "" || len(spec.RequestDigest) != 64 {
 		return nil, fmt.Errorf("%w: order identity is required", ErrInvalid)
+	}
+	if strings.TrimSpace(spec.CompensatesOrderID) == strings.TrimSpace(spec.ID) {
+		return nil, fmt.Errorf("%w: an order cannot compensate itself", ErrInvalid)
 	}
 	if spec.Scope.Region == "" || spec.Scope.Environment == "" || spec.Scope.Stage == "" {
 		return nil, fmt.Errorf("%w: full scope is required for OVERLAY_FINAL", ErrInvalid)
@@ -500,7 +535,8 @@ func NewOverlayFinalOrder(spec OverlayFinalOrderSpec) (*Order, error) {
 	return &Order{
 		id: spec.ID, releaseNumber: spec.ReleaseNumber, idempotencyKey: spec.IdempotencyKey,
 		modelCode: spec.ModelCode, templateCode: spec.TemplateCode, templateVersion: spec.TemplateVersion,
-		releaseTypeCode: spec.ReleaseTypeCode, requestDigest: spec.RequestDigest, scope: spec.Scope,
+		releaseTypeCode: spec.ReleaseTypeCode, requestDigest: spec.RequestDigest,
+		description: strings.TrimSpace(spec.Description), compensatesOrderID: strings.TrimSpace(spec.CompensatesOrderID), scope: spec.Scope,
 		createdBy: spec.CreatedBy, createdAt: createdAt, updatedBy: spec.CreatedBy, updatedAt: createdAt,
 		status: OrderInProgress, revision: 1, steps: steps, items: items,
 	}, nil
@@ -1237,32 +1273,39 @@ func (order *Order) ID() string { return order.id }
 
 func (order *Order) ModelCode() string { return order.modelCode }
 
+func (order *Order) Description() string { return order.description }
+
+func (order *Order) CompensatesOrderID() string { return order.compensatesOrderID }
+
 type OrderState struct {
-	ID              string
-	ReleaseNumber   string
-	IdempotencyKey  string
-	RequestDigest   string
-	ModelCode       string
-	TemplateCode    string
-	TemplateVersion uint64
-	ReleaseTypeCode string
-	Scope           Scope
-	CreatedBy       string
-	CreatedAt       time.Time
-	UpdatedBy       string
-	UpdatedAt       time.Time
-	CompletedAt     *time.Time
-	Status          OrderStatus
-	Revision        EntityRevision
-	CurrentStep     int
-	Steps           []StepState
-	Items           []Item
+	ID                 string
+	ReleaseNumber      string
+	IdempotencyKey     string
+	RequestDigest      string
+	Description        string
+	CompensatesOrderID string
+	ModelCode          string
+	TemplateCode       string
+	TemplateVersion    uint64
+	ReleaseTypeCode    string
+	Scope              Scope
+	CreatedBy          string
+	CreatedAt          time.Time
+	UpdatedBy          string
+	UpdatedAt          time.Time
+	CompletedAt        *time.Time
+	Status             OrderStatus
+	Revision           EntityRevision
+	CurrentStep        int
+	Steps              []StepState
+	Items              []Item
 }
 
 func (order *Order) State() OrderState {
 	state := OrderState{
 		ID: order.id, ReleaseNumber: order.releaseNumber, IdempotencyKey: order.idempotencyKey,
 		RequestDigest: order.requestDigest, ModelCode: order.modelCode, TemplateCode: order.templateCode,
+		Description: order.description, CompensatesOrderID: order.compensatesOrderID,
 		TemplateVersion: order.templateVersion, ReleaseTypeCode: order.releaseTypeCode, Scope: order.scope,
 		CreatedBy: order.createdBy, CreatedAt: order.createdAt, UpdatedBy: order.updatedBy, UpdatedAt: order.updatedAt,
 		Status: order.status, Revision: order.revision, CurrentStep: order.currentStep,
@@ -1281,12 +1324,16 @@ func RestoreOrder(state OrderState) (*Order, error) {
 	if state.ID == "" || state.ModelCode == "" || state.TemplateCode == "" || state.TemplateVersion == 0 || state.ReleaseTypeCode == "" || len(state.RequestDigest) != 64 || state.Revision == 0 {
 		return nil, fmt.Errorf("%w: persisted order identity is incomplete", ErrInvalid)
 	}
+	if state.CompensatesOrderID == state.ID {
+		return nil, fmt.Errorf("%w: persisted order cannot compensate itself", ErrInvalid)
+	}
 	if len(state.Steps) == 0 || state.CurrentStep < 0 || state.CurrentStep >= len(state.Steps) || len(state.Items) == 0 {
 		return nil, fmt.Errorf("%w: persisted order children are incomplete", ErrInvalid)
 	}
 	order := &Order{
 		id: state.ID, releaseNumber: state.ReleaseNumber, idempotencyKey: state.IdempotencyKey,
 		requestDigest: state.RequestDigest, modelCode: state.ModelCode, templateCode: state.TemplateCode,
+		description: state.Description, compensatesOrderID: state.CompensatesOrderID,
 		templateVersion: state.TemplateVersion, releaseTypeCode: state.ReleaseTypeCode, scope: state.Scope,
 		createdBy: state.CreatedBy, createdAt: state.CreatedAt.UTC(), updatedBy: state.UpdatedBy, updatedAt: state.UpdatedAt.UTC(),
 		status: state.Status, revision: state.Revision, currentStep: state.CurrentStep,
@@ -1324,6 +1371,109 @@ func (order *Order) Items() []Item {
 		items[index] = cloneItem(item)
 	}
 	return items
+}
+
+// PlanCompensation derives a new release from immutable successful history.
+// It never mutates the source order and refuses to plan over target drift.
+func (order *Order) PlanCompensation(authority CompensationAuthority) (CompensationPlan, error) {
+	if order.status != OrderSucceeded || authority.CollectionRevision == 0 || authority.BaseRecords == nil || authority.EffectiveRecords == nil {
+		return CompensationPlan{}, fmt.Errorf("%w: only a successful order with current authority can be compensated", ErrInvalid)
+	}
+	finalEffect, appliedRevision, changedBaseRevisions, err := order.compensatedFinalEffect()
+	if err != nil {
+		return CompensationPlan{}, err
+	}
+	plan := CompensationPlan{FinalEffect: finalEffect, Items: make([]CompensationItem, len(order.items))}
+	for index, source := range order.items {
+		if source.Status != ItemApplied {
+			return CompensationPlan{}, fmt.Errorf("%w: source item %q is not applied", ErrInvalid, source.RecordKey)
+		}
+		actualBase := authority.BaseRecords[source.RecordKey]
+		actualEffective := authority.EffectiveRecords[source.RecordKey]
+		var expectedBase, expectedEffective, desired *catalog.ConfigurationRecord
+		expectedBaseRevision := source.ExpectedRecordRevision
+		expectedEffectiveRevision := source.ExpectedRecordRevision
+		switch finalEffect {
+		case FinalEffectBase:
+			expectedBase = source.After
+			expectedEffective = source.After
+			desired = source.BaseBefore
+			if changedBaseRevisions[source.RecordKey] {
+				expectedBaseRevision = appliedRevision
+				expectedEffectiveRevision = appliedRevision
+			}
+		case FinalEffectOverlay:
+			expectedBase = source.BaseBefore
+			expectedEffective = source.After
+			desired = source.EffectiveBefore
+			if expectedEffective != nil {
+				expectedEffectiveRevision = appliedRevision
+			} else {
+				expectedEffectiveRevision = 0
+			}
+		default:
+			return CompensationPlan{}, fmt.Errorf("%w: source final effect is unsupported", ErrInvalid)
+		}
+		if !sameCompensationFact(actualBase, expectedBase, expectedBaseRevision) || !sameCompensationFact(actualEffective, expectedEffective, expectedEffectiveRevision) {
+			return CompensationPlan{}, fmt.Errorf("%w: source result for record %q has drifted", ErrAborted, source.RecordKey)
+		}
+		action := ChangeModify
+		switch {
+		case actualEffective == nil && desired != nil:
+			action = ChangeAdd
+		case actualEffective != nil && desired == nil:
+			action = ChangeDelete
+		case actualEffective == nil && desired == nil:
+			return CompensationPlan{}, fmt.Errorf("%w: source item %q has no reversible fact change", ErrInvalid, source.RecordKey)
+		}
+		recordRevision := catalog.ConfigRevision(0)
+		if actualBase != nil {
+			recordRevision = actualBase.ConfigRevision
+		}
+		plan.Items[index] = CompensationItem{
+			Action: action, BaseBefore: cloneRecordPointer(actualBase), EffectiveBefore: cloneRecordPointer(actualEffective), After: cloneRecordPointer(desired),
+			ExpectedRecordRevision: recordRevision, ExpectedCollectionRevision: authority.CollectionRevision,
+			PreserveSensitiveFields: append([]string(nil), source.PreserveSensitiveFields...),
+		}
+	}
+	return plan, nil
+}
+
+func (order *Order) compensatedFinalEffect() (FinalEffect, catalog.ConfigRevision, map[string]bool, error) {
+	for index := len(order.steps) - 1; index >= 0; index-- {
+		effect := order.steps[index].Effect
+		if effect == nil {
+			continue
+		}
+		switch effect.EffectType {
+		case StepEffectBase:
+			changed := make(map[string]bool, len(effect.Base.Changes))
+			for _, change := range effect.Base.Changes {
+				target := change.After
+				if target == nil {
+					target = change.Before
+				}
+				if target != nil {
+					changed[target.RecordKey] = true
+				}
+			}
+			return FinalEffectBase, effect.Base.AppliedRevision, changed, nil
+		case StepEffectOverlay:
+			return FinalEffectOverlay, effect.Overlay.AppliedRevision, nil, nil
+		case StepEffectPercent:
+			continue
+		default:
+			return "", 0, nil, fmt.Errorf("%w: source effect type %q cannot be compensated", ErrInvalid, effect.EffectType)
+		}
+	}
+	return "", 0, nil, fmt.Errorf("%w: successful order has no final configuration effect", ErrInvalid)
+}
+
+func sameCompensationFact(actual, expected *catalog.ConfigurationRecord, expectedRevision catalog.ConfigRevision) bool {
+	if actual == nil || expected == nil {
+		return actual == nil && expected == nil
+	}
+	return actual.Collection == expected.Collection && actual.Environment == expected.Environment && actual.RecordKey == expected.RecordKey && actual.ConfigRevision == expectedRevision && equalData(actual.Data, expected.Data)
 }
 
 // Clone returns an independent aggregate copy for transaction adapters and

@@ -17,6 +17,7 @@ import (
 
 type Commands interface {
 	CreateRelease(context.Context, application.CreateReleaseCommand) (application.OrderView, error)
+	CreateCompensatingRelease(context.Context, application.CreateCompensatingReleaseCommand) (application.OrderView, error)
 	Act(context.Context, application.ActCommand) (application.OrderView, error)
 }
 
@@ -81,8 +82,9 @@ func (handler *Handler) CreateReleaseOrder(ctx context.Context, request *control
 	}
 	view, err := handler.commands.CreateRelease(ctx, application.CreateReleaseCommand{
 		IdempotencyKey: request.IdempotencyKey, ModelCode: request.ModelCode, ReleaseTypeCode: request.ReleaseTypeCode,
-		Scope: release.Scope{Region: request.Scope.Region, Environment: request.Scope.Environment, Stage: request.Scope.Stage},
-		Actor: actor, ActorName: actorName, Items: items,
+		Description: request.Description,
+		Scope:       release.Scope{Region: request.Scope.Region, Environment: request.Scope.Environment, Stage: request.Scope.Stage},
+		Actor:       actor, ActorName: actorName, Items: items,
 	})
 	if err != nil {
 		return nil, mapError(err)
@@ -139,8 +141,26 @@ func (handler *Handler) ListReleaseOrders(context.Context, *controlv1.ListReleas
 	return nil, status.Error(codes.Unimplemented, "ListReleaseOrders is not implemented in the base-only slice")
 }
 
-func (handler *Handler) CreateCompensatingRelease(context.Context, *controlv1.CreateCompensatingReleaseRequest) (*controlv1.CreateCompensatingReleaseResponse, error) {
-	return nil, status.Error(codes.Unimplemented, "CreateCompensatingRelease is not implemented in the base-only slice")
+func (handler *Handler) CreateCompensatingRelease(ctx context.Context, request *controlv1.CreateCompensatingReleaseRequest) (*controlv1.CreateCompensatingReleaseResponse, error) {
+	if request == nil || strings.TrimSpace(request.OrderId) == "" || strings.TrimSpace(request.IdempotencyKey) == "" || strings.TrimSpace(request.Description) == "" {
+		return nil, status.Error(codes.InvalidArgument, "source order, idempotency key, and description are required")
+	}
+	actor, err := handler.actors.Subject(ctx)
+	if err != nil || strings.TrimSpace(actor) == "" {
+		return nil, status.Error(codes.Unauthenticated, "authenticated actor is required")
+	}
+	actorName := ""
+	if names, ok := handler.actors.(ActorNameResolver); ok {
+		actorName, _ = names.DisplayName(ctx)
+	}
+	view, err := handler.commands.CreateCompensatingRelease(ctx, application.CreateCompensatingReleaseCommand{
+		OrderID: request.OrderId, IdempotencyKey: request.IdempotencyKey, Description: request.Description,
+		Actor: actor, ActorName: actorName,
+	})
+	if err != nil {
+		return nil, mapError(err)
+	}
+	return &controlv1.CreateCompensatingReleaseResponse{Detail: project(view)}, nil
 }
 
 func project(view application.OrderView) *controlv1.ReleaseOrderDetail {
@@ -180,7 +200,8 @@ func project(view application.OrderView) *controlv1.ReleaseOrderDetail {
 	}
 	return &controlv1.ReleaseOrderDetail{
 		Order: &controlv1.ReleaseOrder{
-			Id: view.ID, Status: toReleaseStatus(view.Status), CurrentStepCode: view.CurrentStepCode, EntityRevision: int64(view.Revision),
+			Id: view.ID, Status: toReleaseStatus(view.Status), CurrentStepCode: view.CurrentStepCode,
+			Description: view.Description, CompensatesOrderId: view.CompensatesOrderID, EntityRevision: int64(view.Revision),
 		},
 		Items: []*controlv1.ReleaseItem{}, Steps: steps,
 		AllowedActions: allowed,

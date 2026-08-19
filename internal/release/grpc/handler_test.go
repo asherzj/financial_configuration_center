@@ -32,6 +32,13 @@ func TestReleaseHandlerMapsCreateAndAction(t *testing.T) {
 	if created.Detail.Order.Id != "order" || commands.lastCreate.Actor != "operator@example.com" || commands.lastCreate.ActorName != "Operator" || commands.lastCreate.Items[0].ExpectedCollectionRevision != 7 || len(commands.lastCreate.Items[0].PreserveSensitiveFields) != 1 {
 		t.Fatalf("create mapping response=%+v command=%+v", created, commands.lastCreate)
 	}
+	commands.compensate = application.OrderView{ID: "compensation", Description: "restore", CompensatesOrderID: "order", Status: release.OrderInProgress, CurrentStepCode: "review", CurrentStep: release.StepManualReview, Revision: 1}
+	compensation, err := handler.CreateCompensatingRelease(context.Background(), &controlv1.CreateCompensatingReleaseRequest{
+		OrderId: "order", IdempotencyKey: "compensate-id", Description: "restore",
+	})
+	if err != nil || commands.lastCompensate.ActorName != "Operator" || compensation.Detail.Order.CompensatesOrderId != "order" || compensation.Detail.Order.Description != "restore" {
+		t.Fatalf("compensation response=%+v command=%+v err=%v", compensation, commands.lastCompensate, err)
+	}
 	acted, err := handler.ActOnReleaseOrder(context.Background(), &controlv1.ActOnReleaseOrderRequest{
 		OrderId: "order", ActionRequestId: "action-id", ExpectedOrderRevision: 1,
 		ExpectedCurrentStep: "base-apply", Action: commonv1.ReleaseAction_RELEASE_ACTION_EXECUTE,
@@ -98,11 +105,18 @@ func (actorResolver) Roles(context.Context) ([]string, error) {
 }
 
 type commandStub struct {
-	create     application.OrderView
-	act        application.OrderView
-	lastCreate application.CreateReleaseCommand
-	lastAct    application.ActCommand
-	actErr     error
+	create         application.OrderView
+	act            application.OrderView
+	compensate     application.OrderView
+	lastCreate     application.CreateReleaseCommand
+	lastAct        application.ActCommand
+	lastCompensate application.CreateCompensatingReleaseCommand
+	actErr         error
+}
+
+func (stub *commandStub) CreateCompensatingRelease(_ context.Context, command application.CreateCompensatingReleaseCommand) (application.OrderView, error) {
+	stub.lastCompensate = command
+	return stub.compensate, nil
 }
 
 func (stub *commandStub) CreateRelease(_ context.Context, command application.CreateReleaseCommand) (application.OrderView, error) {

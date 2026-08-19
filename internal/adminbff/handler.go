@@ -33,6 +33,7 @@ type PageQueries interface {
 
 type ReleaseCommands interface {
 	CreateRelease(context.Context, application.CreateReleaseCommand) (application.OrderView, error)
+	CreateCompensatingRelease(context.Context, application.CreateCompensatingReleaseCommand) (application.OrderView, error)
 	Act(context.Context, application.ActCommand) (application.OrderView, error)
 }
 
@@ -62,6 +63,7 @@ func New(queries PageQueries, releases ReleaseCommands, auth Authenticator, sens
 	handler.mux.HandleFunc("POST /api/v1/query-page", handler.queryPage)
 	handler.mux.HandleFunc("POST /api/v1/releases", handler.createRelease)
 	handler.mux.HandleFunc("POST /api/v1/releases/{id}/actions", handler.actOnRelease)
+	handler.mux.HandleFunc("POST /api/v1/releases/{id}/compensations", handler.createCompensatingRelease)
 	if handler.sensitive != nil {
 		handler.mux.HandleFunc("POST /api/v1/sensitive-fields/reveal", handler.revealSensitiveField)
 	}
@@ -231,8 +233,42 @@ func (handler *Handler) createRelease(writer http.ResponseWriter, request *http.
 	}
 	result, err := handler.releases.CreateRelease(request.Context(), application.CreateReleaseCommand{
 		IdempotencyKey: idempotency, ModelCode: body.ModelCode, ReleaseTypeCode: body.ReleaseTypeCode,
-		Scope: release.Scope{Region: body.Scope.Region, Environment: body.Scope.Environment, Stage: body.Scope.Stage},
-		Actor: principal.Subject, ActorName: principal.DisplayName, Items: drafts,
+		Description: body.Description,
+		Scope:       release.Scope{Region: body.Scope.Region, Environment: body.Scope.Environment, Stage: body.Scope.Stage},
+		Actor:       principal.Subject, ActorName: principal.DisplayName, Items: drafts,
+	})
+	if err != nil {
+		writeDomainError(writer, err)
+		return
+	}
+	writeJSON(writer, http.StatusCreated, releaseDetail(result))
+}
+
+type createCompensatingReleaseRequest struct {
+	Description string `json:"description"`
+}
+
+func (handler *Handler) createCompensatingRelease(writer http.ResponseWriter, request *http.Request) {
+	principal, ok := handler.authenticate(writer, request)
+	if !ok {
+		return
+	}
+	idempotency := strings.TrimSpace(request.Header.Get("Idempotency-Key"))
+	if idempotency == "" {
+		writeError(writer, http.StatusBadRequest, "IDEMPOTENCY_KEY_REQUIRED", "Idempotency-Key header is required")
+		return
+	}
+	var body createCompensatingReleaseRequest
+	if !decodeJSON(writer, request, &body) {
+		return
+	}
+	if strings.TrimSpace(body.Description) == "" {
+		writeError(writer, http.StatusBadRequest, "INVALID_ARGUMENT", "compensation description is required")
+		return
+	}
+	result, err := handler.releases.CreateCompensatingRelease(request.Context(), application.CreateCompensatingReleaseCommand{
+		OrderID: request.PathValue("id"), IdempotencyKey: idempotency, Description: body.Description,
+		Actor: principal.Subject, ActorName: principal.DisplayName,
 	})
 	if err != nil {
 		writeDomainError(writer, err)
@@ -388,7 +424,11 @@ func releaseDetail(view application.OrderView) map[string]any {
 		steps[index] = projected
 	}
 	return map[string]any{
-		"order": map[string]any{"id": view.ID, "status": view.Status, "currentStep": view.CurrentStepCode, "currentStepType": view.CurrentStep, "currentStepStatus": view.CurrentStepStatus, "entityRevision": view.Revision},
+		"order": map[string]any{
+			"id": view.ID, "description": view.Description, "compensatesOrderId": view.CompensatesOrderID,
+			"status": view.Status, "currentStep": view.CurrentStepCode, "currentStepType": view.CurrentStep, "currentStepStatus": view.CurrentStepStatus,
+			"entityRevision": view.Revision, "canCompensate": view.CanCompensate,
+		},
 		"items": []any{}, "steps": steps, "allowedActions": allowed,
 	}
 }

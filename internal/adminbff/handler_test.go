@@ -225,6 +225,22 @@ func TestBFFMapsOverlayReleaseAndRollbackCapability(t *testing.T) {
 	}
 }
 
+func TestBFFCreatesLinkedCompensation(t *testing.T) {
+	t.Parallel()
+	releases := &releaseStub{compensated: application.OrderView{
+		ID: "compensation", Description: "restore", CompensatesOrderID: "source", Status: release.OrderInProgress,
+		CurrentStepCode: "review", CurrentStep: release.StepManualReview, CurrentStepStatus: release.StepPending, Revision: 1, CanExecute: true,
+	}}
+	handler, err := adminbff.New(&queryStub{}, releases, authenticator{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	response := serveJSON(t, handler, http.MethodPost, "/api/v1/releases/source/compensations", "compensation-id", map[string]string{"description": "restore"})
+	if response.Code != http.StatusCreated || releases.lastCompensate.OrderID != "source" || releases.lastCompensate.ActorName != "Operator" || !bytes.Contains(response.Body.Bytes(), []byte(`"compensatesOrderId":"source"`)) {
+		t.Fatalf("compensation=%d command=%+v body=%s", response.Code, releases.lastCompensate, response.Body.String())
+	}
+}
+
 type authenticator struct {
 	reject bool
 	roles  []string
@@ -249,11 +265,18 @@ func (stub *queryStub) Query(request pagequery.Request) (pagequery.Result, error
 }
 
 type releaseStub struct {
-	created    application.OrderView
-	acted      application.OrderView
-	lastCreate application.CreateReleaseCommand
-	lastAct    application.ActCommand
-	actErr     error
+	created        application.OrderView
+	acted          application.OrderView
+	compensated    application.OrderView
+	lastCreate     application.CreateReleaseCommand
+	lastAct        application.ActCommand
+	lastCompensate application.CreateCompensatingReleaseCommand
+	actErr         error
+}
+
+func (stub *releaseStub) CreateCompensatingRelease(_ context.Context, command application.CreateCompensatingReleaseCommand) (application.OrderView, error) {
+	stub.lastCompensate = command
+	return stub.compensated, nil
 }
 
 type sensitiveStub struct {
