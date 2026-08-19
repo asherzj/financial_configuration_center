@@ -178,7 +178,7 @@ WatchHub 在 snapshot 成功发布后接收 UpdateEvent。每个 subscriber 有�
 - `/healthz`：进程 event loop 活着。
 - `/readyz`：generation 至少为 1、snapshot Environment 等于 ManagedEnvironment、MySQL 最近成功 probe 未超过 grace、Kitex accept loop 已启动。
 - MySQL 短暂失败不清空 ready；超过配置阈值后 ready=false，但继续服务 last-known-good 读取。
-- 关闭时固定执行：ready=false → Envoy localhost admin drain → 停止接收 Hint/Poll → WatchHub resync/close → 有界等待 Kitex Stop → 停运维 HTTP → flush telemetry → 关闭 DB → 清理自己拥有的 UDS。总 timeout、Envoy、Kitex 与 telemetry timeout 分别配置；单阶段超时仍继续后续清理并返回聚合错误。
+- 关闭时固定执行：ready=false → Envoy localhost admin drain → 停止接收 Hint/Poll → WatchHub resync/close → 有界等待 Kitex Stop → 停运维 HTTP → flush telemetry → 关闭 DB → 清理自己拥有的 UDS。总 timeout、Envoy、Kitex 与 telemetry timeout 分别配置；Kitex timeout 是该阶段总预算，由 wrapper 分配给 bootstrap 等待、关闭 listener 后等待 Run 退出和框架 drain，不得把同一预算重复用于每段；单阶段超时仍继续后续清理并返回聚合错误。
 
 ## 13. RPC 认证矩阵
 

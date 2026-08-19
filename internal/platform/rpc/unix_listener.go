@@ -12,6 +12,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/cloudwego/kitex/server"
 	"golang.org/x/sys/unix"
 )
 
@@ -349,6 +350,13 @@ func (listener *ManagedUnixListener) Accept() (net.Conn, error) {
 
 func (listener *ManagedUnixListener) Addr() net.Addr { return listener.listener.Addr() }
 
+// KitexServerOption keeps the concrete *net.UnixListener adaptation inside
+// this ownership boundary; callers never receive a pointer that bypasses the
+// managed Close/Cleanup state.
+func (listener *ManagedUnixListener) KitexServerOption() server.Option {
+	return server.WithListener(listener.listener)
+}
+
 func (listener *ManagedUnixListener) Close() error {
 	if listener == nil {
 		return nil
@@ -357,6 +365,9 @@ func (listener *ManagedUnixListener) Close() error {
 	defer listener.mu.Unlock()
 	if !listener.closed {
 		listener.closeErr = listener.listener.Close()
+		if errors.Is(listener.closeErr, net.ErrClosed) {
+			listener.closeErr = nil
+		}
 		listener.closed = true
 	}
 	return listener.closeErr
