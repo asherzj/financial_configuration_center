@@ -22,10 +22,22 @@ describe("DiagnosticsPage", () => {
 		const afterReplay: OutboxEventPage = { events: [], page: { number: 1, size: 20, totalNumber: 0, totalPages: 0 } };
 		const listOutboxEvents = vi.fn().mockResolvedValueOnce(initial).mockResolvedValue(afterReplay);
 		const replayOutboxEvent = vi.fn().mockResolvedValue({ event: { ...deadLetter, status: "PENDING", leaseRevision: 7 } });
-		const api: DiagnosticsApi = { listOutboxEvents, replayOutboxEvent };
+		const api: DiagnosticsApi = {
+			getSnapshotDiagnostics: vi.fn().mockResolvedValue({
+				snapshot: { serverEpoch: "epoch", serverInstanceId: "server", snapshotInstance: "instance", generation: 3, publishedAt: "2026-08-20T08:00:00Z" },
+				environment: "production",
+				collections: [{ name: "payment_routes", revision: 8, digest: { algorithm: "SHA-256", value: "safe-digest" } }],
+				failedDependencyGroups: [["payment_routes", "priorities"]],
+				lastErrorCode: "",
+			}),
+			listOutboxEvents,
+			replayOutboxEvent,
+		};
 
 		render(<DiagnosticsPage api={api} />);
 		expect(await screen.findByText("delivery failed")).toBeInTheDocument();
+		expect(await screen.findByText("safe-digest")).toBeInTheDocument();
+		expect(screen.getByText("payment_routes ↔ priorities")).toBeInTheDocument();
 		expect(screen.queryByText(/payload.*must-not-leak/i)).not.toBeInTheDocument();
 		expect(listOutboxEvents).toHaveBeenCalledWith("DEAD_LETTER", 1, 20);
 		fireEvent.click(screen.getByRole("button", { name: "重放死信" }));

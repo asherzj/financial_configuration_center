@@ -12,6 +12,7 @@ import (
 
 	access "github.com/asherzj/financial_configuration_center/internal/access/application"
 	catalog "github.com/asherzj/financial_configuration_center/internal/catalog/domain"
+	"github.com/asherzj/financial_configuration_center/internal/distribution/snapshot"
 	"github.com/asherzj/financial_configuration_center/internal/outbox"
 	"github.com/asherzj/financial_configuration_center/internal/pagequery"
 	"github.com/asherzj/financial_configuration_center/internal/release/application"
@@ -49,16 +50,32 @@ type OutboxOperations interface {
 	Replay(context.Context, outbox.ReplayCommand) (outbox.Event, error)
 }
 
+type SnapshotDiagnostics interface {
+	Diagnostics() snapshot.Diagnostics
+}
+
 type Handler struct {
-	queries   PageQueries
-	releases  ReleaseCommands
-	sensitive SensitiveAccess
-	outbox    OutboxOperations
-	auth      Authenticator
-	mux       *http.ServeMux
+	queries     PageQueries
+	releases    ReleaseCommands
+	sensitive   SensitiveAccess
+	outbox      OutboxOperations
+	diagnostics SnapshotDiagnostics
+	auth        Authenticator
+	mux         *http.ServeMux
 }
 
 func NewWithOutbox(queries PageQueries, releases ReleaseCommands, auth Authenticator, operations OutboxOperations, sensitive ...SensitiveAccess) (*Handler, error) {
+	return newWithOperations(queries, releases, auth, operations, nil, sensitive...)
+}
+
+func NewWithOperations(queries PageQueries, releases ReleaseCommands, auth Authenticator, operations OutboxOperations, diagnostics SnapshotDiagnostics, sensitive ...SensitiveAccess) (*Handler, error) {
+	if diagnostics == nil {
+		return nil, errors.New("new Admin BFF: snapshot diagnostics are required")
+	}
+	return newWithOperations(queries, releases, auth, operations, diagnostics, sensitive...)
+}
+
+func newWithOperations(queries PageQueries, releases ReleaseCommands, auth Authenticator, operations OutboxOperations, diagnostics SnapshotDiagnostics, sensitive ...SensitiveAccess) (*Handler, error) {
 	if operations == nil {
 		return nil, errors.New("new Admin BFF: outbox operations are required")
 	}
@@ -67,9 +84,56 @@ func NewWithOutbox(queries PageQueries, releases ReleaseCommands, auth Authentic
 		return nil, err
 	}
 	handler.outbox = operations
+	handler.diagnostics = diagnostics
 	handler.mux.HandleFunc("GET /api/v1/outbox-events", handler.listOutboxEvents)
 	handler.mux.HandleFunc("POST /api/v1/outbox-events/{id}/replay", handler.replayOutboxEvent)
+	if diagnostics != nil {
+		handler.mux.HandleFunc("GET /api/v1/diagnostics/snapshot", handler.getSnapshotDiagnostics)
+		handler.mux.HandleFunc("GET /api/v1/diagnostics/collections/{name}", handler.getCollectionDiagnostics)
+	}
 	return handler, nil
+}
+
+func (handler *Handler) getSnapshotDiagnostics(writer http.ResponseWriter, request *http.Request) {
+	if _, ok := handler.authenticate(writer, request); !ok {
+		return
+	}
+	writeJSON(writer, http.StatusOK, snapshotDiagnosticsResponse(handler.diagnostics.Diagnostics()))
+}
+
+func (handler *Handler) getCollectionDiagnostics(writer http.ResponseWriter, request *http.Request) {
+	if _, ok := handler.authenticate(writer, request); !ok {
+		return
+	}
+	diagnostics := handler.diagnostics.Diagnostics()
+	name := request.PathValue("name")
+	for _, collection := range diagnostics.Collections {
+		if collection.Name == name {
+			writeJSON(writer, http.StatusOK, map[string]any{
+				"collection": collection.Name, "environment": diagnostics.Environment,
+				"revision": collection.Revision, "digest": collection.Digest,
+				"lastErrorCode": diagnostics.LastErrorCode,
+			})
+			return
+		}
+	}
+	writeError(writer, http.StatusNotFound, "NOT_FOUND", "collection is not loaded")
+}
+
+func snapshotDiagnosticsResponse(diagnostics snapshot.Diagnostics) map[string]any {
+	collections := make([]map[string]any, len(diagnostics.Collections))
+	for index, collection := range diagnostics.Collections {
+		collections[index] = map[string]any{"name": collection.Name, "revision": collection.Revision, "digest": collection.Digest}
+	}
+	return map[string]any{
+		"snapshot": map[string]any{
+			"serverEpoch": diagnostics.Identity.ServerEpoch, "serverInstanceId": diagnostics.Identity.ServerInstanceID,
+			"snapshotInstance": diagnostics.Identity.SnapshotInstance, "generation": diagnostics.Identity.Generation,
+			"publishedAt": diagnostics.Identity.PublishedAt,
+		},
+		"environment": diagnostics.Environment, "collections": collections,
+		"failedDependencyGroups": diagnostics.FailedDependencyGroups, "lastErrorCode": diagnostics.LastErrorCode,
+	}
 }
 
 func (handler *Handler) listOutboxEvents(writer http.ResponseWriter, request *http.Request) {

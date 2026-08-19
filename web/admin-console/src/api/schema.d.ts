@@ -224,6 +224,22 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/diagnostics/collections/{name}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["getCollectionDiagnostics"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/audit-records": {
         parameters: {
             query?: never;
@@ -290,6 +306,29 @@ export interface components {
             snapshotInstance: string;
             /** Format: int64 */
             snapshotGeneration: number;
+        };
+        SnapshotDiagnostics: {
+            snapshot: {
+                serverEpoch: string;
+                serverInstanceId: string;
+                snapshotInstance: string;
+                /** Format: int64 */
+                generation: number;
+                /** Format: date-time */
+                publishedAt: string;
+            };
+            environment: string;
+            collections: {
+                name: string;
+                /** Format: int64 */
+                revision: number;
+                digest: {
+                    algorithm: string;
+                    value: string;
+                };
+            }[];
+            failedDependencyGroups: string[][];
+            lastErrorCode: string;
         };
         Session: {
             subject: string;
@@ -950,8 +989,32 @@ export interface operations {
                 headers: {
                     [name: string]: unknown;
                 };
+                content: {
+                    "application/json": components["schemas"]["SnapshotDiagnostics"];
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    getCollectionDiagnostics: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                name: components["parameters"]["CollectionName"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Collection snapshot metadata without configuration values */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
                 content?: never;
             };
+            default: components["responses"]["Error"];
         };
     };
     listAuditRecords: {

@@ -12,6 +12,7 @@ import (
 	access "github.com/asherzj/financial_configuration_center/internal/access/application"
 	"github.com/asherzj/financial_configuration_center/internal/adminbff"
 	catalog "github.com/asherzj/financial_configuration_center/internal/catalog/domain"
+	"github.com/asherzj/financial_configuration_center/internal/distribution/snapshot"
 	"github.com/asherzj/financial_configuration_center/internal/outbox"
 	"github.com/asherzj/financial_configuration_center/internal/pagequery"
 	"github.com/asherzj/financial_configuration_center/internal/release/application"
@@ -252,7 +253,11 @@ func TestBFFListsSafeOutboxMetadataAndMapsReplay(t *testing.T) {
 		}},
 		PageNumber: 1, PageSize: 20, TotalNumber: 1, TotalPages: 1,
 	}, replayed: outbox.Event{ID: "event", Status: outbox.StatusPending, LeaseRevision: 7, NextAttemptAt: now}}
-	handler, err := adminbff.NewWithOutbox(&queryStub{}, &releaseStub{}, authenticator{roles: []string{outbox.PlatformOperatorRole}}, operations)
+	diagnostics := diagnosticsStub{value: snapshot.Diagnostics{
+		Identity:    snapshot.Identity{ServerEpoch: "epoch", ServerInstanceID: "server", SnapshotInstance: "instance", Generation: 3, PublishedAt: now},
+		Environment: "production", Collections: []snapshot.CollectionDiagnostic{{Name: "payment_routes", Revision: 8, Digest: catalog.Digest{Algorithm: "SHA-256", Value: "digest"}}},
+	}}
+	handler, err := adminbff.NewWithOperations(&queryStub{}, &releaseStub{}, authenticator{roles: []string{outbox.PlatformOperatorRole}}, operations, diagnostics)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -267,6 +272,12 @@ func TestBFFListsSafeOutboxMetadataAndMapsReplay(t *testing.T) {
 	})
 	if replayed.Code != http.StatusOK || operations.lastReplay.ExpectedRevision != 6 || operations.lastReplay.Principal.Roles[0] != outbox.PlatformOperatorRole || !bytes.Contains(replayed.Body.Bytes(), []byte(`"status":"PENDING"`)) {
 		t.Fatalf("replay=%d command=%+v body=%s", replayed.Code, operations.lastReplay, replayed.Body.String())
+	}
+	snapshotRequest := httptest.NewRequest(http.MethodGet, "/api/v1/diagnostics/snapshot", nil)
+	snapshotResponse := httptest.NewRecorder()
+	handler.ServeHTTP(snapshotResponse, snapshotRequest)
+	if snapshotResponse.Code != http.StatusOK || !bytes.Contains(snapshotResponse.Body.Bytes(), []byte(`"generation":3`)) || !bytes.Contains(snapshotResponse.Body.Bytes(), []byte(`"revision":8`)) || bytes.Contains(snapshotResponse.Body.Bytes(), []byte("must-not-leak")) {
+		t.Fatalf("snapshot diagnostics=%d %s", snapshotResponse.Code, snapshotResponse.Body.String())
 	}
 }
 
@@ -321,6 +332,10 @@ type outboxStub struct {
 	lastList      outbox.ListRequest
 	lastReplay    outbox.ReplayCommand
 }
+
+type diagnosticsStub struct{ value snapshot.Diagnostics }
+
+func (stub diagnosticsStub) Diagnostics() snapshot.Diagnostics { return stub.value }
 
 func (stub *outboxStub) List(_ context.Context, principal outbox.Principal, request outbox.ListRequest) (outbox.EventPage, error) {
 	stub.lastPrincipal, stub.lastList = principal, request

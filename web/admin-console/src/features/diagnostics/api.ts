@@ -10,6 +10,7 @@ async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 export const diagnosticsApi: DiagnosticsApi = {
+	getSnapshotDiagnostics: () => requestJson("/api/v1/diagnostics/snapshot"),
 	listOutboxEvents: (status: OutboxStatus | undefined, page: number, size: number) => {
 		const search = new URLSearchParams({ page: String(page), size: String(size) });
 		if (status) search.set("status", status);

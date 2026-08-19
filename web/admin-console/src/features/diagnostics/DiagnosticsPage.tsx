@@ -2,7 +2,7 @@ import { Alert, Button, Card, Descriptions, Flex, Input, Modal, Select, Space, T
 import { useCallback, useEffect, useState } from "react";
 
 import { diagnosticsApi } from "./api";
-import type { DiagnosticsApi, OutboxEventMetadata, OutboxEventPage, OutboxStatus } from "./types";
+import type { DiagnosticsApi, OutboxEventMetadata, OutboxEventPage, OutboxStatus, SnapshotDiagnostics } from "./types";
 
 const pageSize = 20;
 
@@ -10,6 +10,7 @@ export function DiagnosticsPage({ api = diagnosticsApi }: { api?: DiagnosticsApi
 	const [status, setStatus] = useState<OutboxStatus | undefined>("DEAD_LETTER");
 	const [pageNumber, setPageNumber] = useState(1);
 	const [page, setPage] = useState<OutboxEventPage>();
+	const [snapshotStatus, setSnapshotStatus] = useState<SnapshotDiagnostics>();
 	const [loading, setLoading] = useState(true);
 	const [error, setError] = useState<string>();
 	const [replayTarget, setReplayTarget] = useState<OutboxEventMetadata>();
@@ -30,6 +31,10 @@ export function DiagnosticsPage({ api = diagnosticsApi }: { api?: DiagnosticsApi
 	}, [api, pageNumber, status]);
 
 	useEffect(() => { void load(); }, [load]);
+
+	useEffect(() => {
+		api.getSnapshotDiagnostics().then(setSnapshotStatus).catch((cause: unknown) => setError(cause instanceof Error ? cause.message : "加载 Snapshot 诊断失败"));
+	}, [api]);
 
 	const closeReplay = () => {
 		setReplayTarget(undefined);
@@ -66,6 +71,31 @@ export function DiagnosticsPage({ api = diagnosticsApi }: { api?: DiagnosticsApi
 				<Button onClick={() => void load()} loading={loading}>刷新</Button>
 			</Flex>
 			{error ? <Alert type="error" showIcon title={error} /> : null}
+			<Card title="Snapshot 状态">
+				<Descriptions bordered size="small" column={{ xs: 1, md: 2 }}>
+					<Descriptions.Item label="Server epoch">{snapshotStatus?.snapshot.serverEpoch ?? "—"}</Descriptions.Item>
+					<Descriptions.Item label="Server instance">{snapshotStatus?.snapshot.serverInstanceId ?? "—"}</Descriptions.Item>
+					<Descriptions.Item label="Snapshot instance">{snapshotStatus?.snapshot.snapshotInstance ?? "—"}</Descriptions.Item>
+					<Descriptions.Item label="Generation">{snapshotStatus?.snapshot.generation ?? "—"}</Descriptions.Item>
+					<Descriptions.Item label="Environment">{snapshotStatus?.environment || "—"}</Descriptions.Item>
+					<Descriptions.Item label="Published at">{snapshotStatus?.snapshot.publishedAt ?? "—"}</Descriptions.Item>
+				</Descriptions>
+				{snapshotStatus?.lastErrorCode ? <Alert type="error" showIcon title={snapshotStatus.lastErrorCode} /> : null}
+				{(snapshotStatus?.failedDependencyGroups.length ?? 0) > 0 ? (
+					<Alert type="warning" showIcon title="部分依赖组保留 Last-known-good" description={snapshotStatus?.failedDependencyGroups.map((group) => group.join(" ↔ ")).join("；")} />
+				) : null}
+				<Table
+					rowKey="name"
+					size="small"
+					pagination={false}
+					dataSource={snapshotStatus?.collections ?? []}
+					columns={[
+						{ title: "Collection", dataIndex: "name" },
+						{ title: "Revision", dataIndex: "revision" },
+						{ title: "Digest", dataIndex: ["digest", "value"], render: (value: string) => <Typography.Text code>{value}</Typography.Text> },
+					]}
+				/>
+			</Card>
 			<Card title="Outbox 投递状态">
 				<Space orientation="vertical" className="operation-full-width">
 					<Select

@@ -24,6 +24,7 @@ Administrators can safely manage metadata and operators can diagnose snapshots/a
 
 - Completed bounded, payload-free Outbox metadata listing and DEAD_LETTER replay across MySQL, application authorization, Kitex gRPC, Admin BFF, OpenAPI, and the `/diagnostics` console page.
 - Replay requires `PLATFORM_OPERATOR`, the current LeaseRevision, a reason, and the exact event-specific confirmation phrase. MySQL 8.0/8.4 verify stale CAS rejection, one replay audit row, and payload/idempotency preservation.
+- Completed payload-free Snapshot/collection diagnostics across the atomic Snapshot Manager, Kitex DiagnosticsService, Admin BFF, OpenAPI, and console. Refresh failures expose only stable error codes; partial dependency groups expose collection names and retain LKG revisions/digests.
 - `go test ./... -count=1`
 - `go test -race ./internal/adminbff ./internal/outbox/... -count=1`
 - `pnpm --dir web/admin-console test`

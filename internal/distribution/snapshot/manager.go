@@ -85,12 +85,28 @@ type Snapshot struct {
 }
 
 type Manager struct {
-	source    Source
-	seed      IdentitySeed
-	clock     Clock
-	mu        sync.Mutex
-	value     atomic.Pointer[Snapshot]
-	publisher PublicationPublisher
+	source           Source
+	seed             IdentitySeed
+	clock            Clock
+	mu               sync.Mutex
+	value            atomic.Pointer[Snapshot]
+	publisher        PublicationPublisher
+	lastFailedGroups [][]string
+	lastErrorCode    string
+}
+
+type CollectionDiagnostic struct {
+	Name     string
+	Revision catalog.ConfigRevision
+	Digest   catalog.Digest
+}
+
+type Diagnostics struct {
+	Identity               Identity
+	Environment            string
+	Collections            []CollectionDiagnostic
+	FailedDependencyGroups [][]string
+	LastErrorCode          string
 }
 
 func NewManager(source Source, seed IdentitySeed, clock Clock) (*Manager, error) {
@@ -119,13 +135,25 @@ func (manager *Manager) Current() *Snapshot { return manager.value.Load() }
 
 // Refresh builds a complete candidate before one atomic pointer swap. Any
 // source, validation, or digest error leaves the previous snapshot untouched.
-func (manager *Manager) Refresh(ctx context.Context, environment string) (RefreshResult, error) {
+func (manager *Manager) Refresh(ctx context.Context, environment string) (result RefreshResult, resultErr error) {
 	environment = strings.TrimSpace(environment)
 	if environment == "" {
 		return RefreshResult{}, errors.New("refresh snapshot: environment is required")
 	}
 	manager.mu.Lock()
-	defer manager.mu.Unlock()
+	defer func() {
+		if resultErr != nil {
+			manager.lastFailedGroups = nil
+			manager.lastErrorCode = "SNAPSHOT_REFRESH_FAILED"
+		} else {
+			manager.lastFailedGroups = make([][]string, len(result.FailedGroups))
+			for index, group := range result.FailedGroups {
+				manager.lastFailedGroups[index] = append([]string(nil), group.Collections...)
+			}
+			manager.lastErrorCode = ""
+		}
+		manager.mu.Unlock()
+	}()
 
 	loaded, err := loadEnvironment(ctx, manager.source, environment)
 	if err != nil {
@@ -151,6 +179,27 @@ func (manager *Manager) Refresh(ctx context.Context, environment string) (Refres
 		manager.publisher.Publish(candidate)
 	}
 	return RefreshResult{Generation: candidate.identity.Generation, CollectionCount: len(candidate.collections), FailedGroups: failedGroups}, nil
+}
+
+func (manager *Manager) Diagnostics() Diagnostics {
+	manager.mu.Lock()
+	defer manager.mu.Unlock()
+	current := manager.Current()
+	result := Diagnostics{
+		Identity: current.Identity(), Environment: current.Environment(), LastErrorCode: manager.lastErrorCode,
+		FailedDependencyGroups: make([][]string, len(manager.lastFailedGroups)),
+	}
+	for index, group := range manager.lastFailedGroups {
+		result.FailedDependencyGroups[index] = append([]string(nil), group...)
+	}
+	names := current.CollectionNames()
+	result.Collections = make([]CollectionDiagnostic, len(names))
+	for index, name := range names {
+		revision, _ := current.CollectionVersion(name)
+		digest, _ := current.CollectionDigest(name)
+		result.Collections[index] = CollectionDiagnostic{Name: name, Revision: revision, Digest: digest}
+	}
+	return result
 }
 
 func loadEnvironment(ctx context.Context, source Source, environment string) (EnvironmentLoad, error) {

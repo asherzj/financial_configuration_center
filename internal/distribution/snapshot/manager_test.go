@@ -82,6 +82,10 @@ func TestRefreshFailureRetainsLastKnownGood(t *testing.T) {
 	if manager.Current() != lastKnownGood || manager.Current().Identity().Generation != 1 {
 		t.Fatal("refresh failure replaced last-known-good")
 	}
+	diagnostics := manager.Diagnostics()
+	if diagnostics.LastErrorCode != "SNAPSHOT_REFRESH_FAILED" || diagnostics.Identity.Generation != 1 || len(diagnostics.Collections) != 1 {
+		t.Fatalf("failure diagnostics = %+v", diagnostics)
+	}
 }
 
 func TestRefreshRetainsFailedOptionDependencyGroupAndPublishesIndependentCollection(t *testing.T) {
@@ -110,6 +114,10 @@ func TestRefreshRetainsFailedOptionDependencyGroupAndPublishesIndependentCollect
 	}
 	if got := result.FailedGroups[0].Collections; len(got) != 2 || got[0] != "payment_routes" || got[1] != "providers" {
 		t.Fatalf("failed dependency group = %v", got)
+	}
+	diagnostics := manager.Diagnostics()
+	if diagnostics.LastErrorCode != "" || len(diagnostics.FailedDependencyGroups) != 1 || len(diagnostics.FailedDependencyGroups[0]) != 2 || diagnostics.FailedDependencyGroups[0][0] != "payment_routes" {
+		t.Fatalf("partial diagnostics = %+v", diagnostics)
 	}
 	current := manager.Current()
 	if revision, _ := current.CollectionVersion("payment_routes"); revision != 7 {

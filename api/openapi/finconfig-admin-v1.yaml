@@ -210,7 +210,21 @@ paths:
     get:
       operationId: getSnapshotDiagnostics
       responses:
-        '200': {description: Snapshot metadata without configuration values}
+        '200':
+          description: Snapshot metadata without configuration values
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/SnapshotDiagnostics'}
+        default: {$ref: '#/components/responses/Error'}
+  /diagnostics/collections/{name}:
+    get:
+      operationId: getCollectionDiagnostics
+      parameters:
+        - {$ref: '#/components/parameters/CollectionName'}
+      responses:
+        '200':
+          description: Collection snapshot metadata without configuration values
+        default: {$ref: '#/components/responses/Error'}
   /audit-records:
     get:
       operationId: listAuditRecords
@@ -307,6 +321,39 @@ components:
         serverInstanceId: {type: string, format: uuid}
         snapshotInstance: {type: string, format: uuid}
         snapshotGeneration: {type: integer, format: int64, minimum: 1}
+    SnapshotDiagnostics:
+      type: object
+      additionalProperties: false
+      required: [snapshot, environment, collections, failedDependencyGroups, lastErrorCode]
+      properties:
+        snapshot:
+          type: object
+          additionalProperties: false
+          required: [serverEpoch, serverInstanceId, snapshotInstance, generation, publishedAt]
+          properties:
+            serverEpoch: {type: string}
+            serverInstanceId: {type: string}
+            snapshotInstance: {type: string}
+            generation: {type: integer, format: int64, minimum: 0}
+            publishedAt: {type: string, format: date-time}
+        environment: {type: string}
+        collections:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            required: [name, revision, digest]
+            properties:
+              name: {type: string}
+              revision: {type: integer, format: int64, minimum: 1}
+              digest:
+                type: object
+                required: [algorithm, value]
+                properties:
+                  algorithm: {type: string}
+                  value: {type: string}
+        failedDependencyGroups: {type: array, items: {type: array, items: {type: string}}}
+        lastErrorCode: {type: string}
     Session:
       type: object
       required: [subject, displayName, roles, scopes, expiresAt]
