@@ -226,8 +226,17 @@ type PercentEffect struct {
 	ExecutedBy       string                 `json:"executedBy"`
 }
 
+type StepEffectType string
+
+const (
+	StepEffectBase    StepEffectType = "BASE"
+	StepEffectOverlay StepEffectType = "OVERLAY"
+	StepEffectPercent StepEffectType = "PERCENT"
+)
+
 type StepEffectEnvelope struct {
 	EffectVersion int32          `json:"effectVersion"`
+	EffectType    StepEffectType `json:"effectType"`
 	Overlay       *OverlayEffect `json:"overlay,omitempty"`
 	Percent       *PercentEffect `json:"percent,omitempty"`
 	Base          *BaseEffect    `json:"base,omitempty"`
@@ -607,7 +616,7 @@ func (order *Order) ExecuteBase(authority BaseAuthority, newRevision catalog.Con
 	step.Status = StepExecuted
 	step.ExecutedAt = timePointer(at)
 	step.ExecutedBy = actor
-	step.Effect = &StepEffectEnvelope{EffectVersion: 1, Base: cloneBaseEffectPointer(&effect)}
+	step.Effect = &StepEffectEnvelope{EffectVersion: 1, EffectType: StepEffectBase, Base: cloneBaseEffectPointer(&effect)}
 	order.bump(actor, at)
 	return *cloneBaseEffectPointer(&effect), nil
 }
@@ -737,7 +746,7 @@ func (order *Order) ExecuteOverlay(authority OverlayAuthority, newRevision catal
 	step.Status = StepExecuted
 	step.ExecutedAt = timePointer(at)
 	step.ExecutedBy = actor
-	step.Effect = &StepEffectEnvelope{EffectVersion: 1, Overlay: cloneOverlayEffectPointer(&effect)}
+	step.Effect = &StepEffectEnvelope{EffectVersion: 1, EffectType: StepEffectOverlay, Overlay: cloneOverlayEffectPointer(&effect)}
 	order.bump(actor, at)
 	return *cloneOverlayEffectPointer(&effect), nil
 }
@@ -819,7 +828,7 @@ func (order *Order) ExecutePercentRollout(authority OverlayAuthority, newRevisio
 	step.Status = StepExecuted
 	step.ExecutedAt = timePointer(executionAt)
 	step.ExecutedBy = actor
-	step.Effect = &StepEffectEnvelope{EffectVersion: 1, Percent: clonePercentEffectPointer(&effect)}
+	step.Effect = &StepEffectEnvelope{EffectVersion: 1, EffectType: StepEffectPercent, Percent: clonePercentEffectPointer(&effect)}
 	order.bump(actor, executionAt)
 	return *clonePercentEffectPointer(&effect), nil
 }
@@ -1042,6 +1051,11 @@ func RestoreOrder(state OrderState) (*Order, error) {
 		steps: make([]StepState, len(state.Steps)), items: make([]Item, len(state.Items)),
 	}
 	for index, step := range state.Steps {
+		if step.Effect != nil {
+			if err := ValidateStepEffect(step.Effect); err != nil {
+				return nil, fmt.Errorf("%w: persisted step %q effect: %v", ErrInvalid, step.Code, err)
+			}
+		}
 		order.steps[index] = cloneStep(step)
 	}
 	for index, item := range state.Items {

@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"runtime"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -191,6 +192,50 @@ func TestRealMySQLSnapshotRefreshRetainsFailedOptionDependencyGroup(t *testing.T
 	if revision, _ := current.CollectionVersion("feature_flags"); revision != 8 {
 		t.Fatalf("independent revision = %d, want 8", revision)
 	}
+}
+
+func TestRealMySQLRejectsUnknownPersistedStepEffectVersion(t *testing.T) {
+	dsn := isolatedDatabase(t)
+	ctx := context.Background()
+	now := time.Date(2026, 8, 20, 1, 30, 0, 0, time.UTC)
+	database, err := platformmysql.Open(ctx, platformmysql.Config{DSN: dsn, MaxOpenConns: 4, MaxIdleConns: 2, ConnMaxLifetime: time.Minute, ConnMaxIdleTime: time.Minute})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = database.Close() })
+	store, err := mysqlstore.New(database)
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := application.NewService(store, &numberedIDs{next: 1600, releaseNumber: "REL-20260820-1600"}, fixedClock{now: now})
+	created, err := service.CreateBaseFinal(ctx, baseCreate("unknown-effect-create", "operator@example.com", "production", "unknown-effect", 7))
+	if err != nil {
+		t.Fatal(err)
+	}
+	executed, err := service.Act(ctx, application.ActCommand{
+		OrderID: created.ID, ActionRequestID: "70000000-0000-4000-8000-000000000001",
+		ExpectedRevision: 1, ExpectedCurrentStep: "base-apply", Action: application.ActionExecute, Actor: "operator@example.com",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := sql.Open("mysql", dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer raw.Close()
+	if _, err := raw.Exec(`UPDATE release_step_states SET effect = JSON_SET(effect, '$.effectVersion', 2) WHERE release_order_id = ? AND effect IS NOT NULL`, created.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.Act(ctx, application.ActCommand{
+		OrderID: created.ID, ActionRequestID: "70000000-0000-4000-8000-000000000002",
+		ExpectedRevision: executed.Revision, ExpectedCurrentStep: "base-apply", Action: application.ActionRollback, Actor: "operator@example.com",
+	}); err == nil || !strings.Contains(err.Error(), "unsupported step effect envelope version") {
+		t.Fatalf("unknown effect rollback = %v", err)
+	}
+	assertCount(t, raw, `SELECT COUNT(*) FROM configuration_records WHERE collection_name = 'payment_routes' AND environment = 'production'`, 1)
+	assertCount(t, raw, `SELECT COUNT(*) FROM configuration_versions WHERE collection_name = 'payment_routes' AND environment = 'production' AND config_revision = 8`, 1)
+	assertCount(t, raw, `SELECT COUNT(*) FROM release_orders WHERE id = '`+created.ID+`' AND status = 'IN_PROGRESS' AND entity_revision = 2`, 1)
 }
 
 func TestRealMySQLPollConvergesWithoutHintOrWatch(t *testing.T) {
@@ -719,7 +764,7 @@ func TestRealMySQLPercentageRolloutTransaction(t *testing.T) {
 	created, err := service.CreateRelease(ctx, application.CreateReleaseCommand{
 		IdempotencyKey: "percent-create", ModelCode: "payment-route-admin", ReleaseTypeCode: "percentage",
 		Scope: release.Scope{Region: "cn", Environment: "production", Stage: "blue"}, Actor: "operator@example.com",
-		Items: []application.ReleaseDraft{{Action: release.ChangeAdd, After: map[string]string{"route_code": "visa", "priority": "9"}, ExpectedCollectionRevision: 7}},
+		Items: []application.ReleaseDraft{{Action: release.ChangeAdd, After: map[string]string{"route_code": "visa", "priority": "7"}, ExpectedCollectionRevision: 7}},
 	})
 	if err != nil {
 		t.Fatalf("CreateRelease: %v", err)
@@ -768,8 +813,8 @@ func TestRealMySQLPercentageRolloutTransaction(t *testing.T) {
 		t.Fatal(err)
 	}
 	definition, _ := manager.Current().Definition("payment_routes")
-	rolloutRecord, _ := definition.NewRecord("production", map[string]string{"route_code": "visa", "priority": "9"})
-	if record, ok := selectedClient.GetByKey("payment_routes", rolloutRecord.RecordKey); !ok || record.Values["priority"] != "9" {
+	rolloutRecord, _ := definition.NewRecord("production", map[string]string{"route_code": "visa", "priority": "7"})
+	if record, ok := selectedClient.GetByKey("payment_routes", rolloutRecord.RecordKey); !ok || record.Values["priority"] != "7" {
 		t.Fatalf("selected SDK record = %+v, %t", record, ok)
 	}
 	if _, ok := unselectedClient.GetByKey("payment_routes", rolloutRecord.RecordKey); ok {
@@ -807,7 +852,7 @@ func TestRealMySQLPercentageRolloutTransaction(t *testing.T) {
 	if !promoted.CanRollback {
 		t.Fatalf("promoted order cannot roll back: %+v", promoted)
 	}
-	assertCount(t, raw, `SELECT COUNT(*) FROM configuration_records WHERE collection_name = 'payment_routes' AND environment = 'production' AND JSON_UNQUOTE(JSON_EXTRACT(data, '$.priority')) = '9'`, 1)
+	assertCount(t, raw, `SELECT COUNT(*) FROM configuration_records WHERE collection_name = 'payment_routes' AND environment = 'production' AND JSON_UNQUOTE(JSON_EXTRACT(data, '$.priority')) = '7'`, 1)
 	assertCount(t, raw, `SELECT COUNT(*) FROM configuration_overlays WHERE release_order_id = '`+created.ID+`'`, 0)
 	assertCount(t, raw, `SELECT COUNT(*) FROM configuration_versions WHERE collection_name = 'payment_routes' AND environment = 'production' AND config_revision = 9 AND overlay_digest = '4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945'`, 1)
 	assertCount(t, raw, `SELECT COUNT(*) FROM release_step_states WHERE release_order_id = '`+created.ID+`' AND step_code = 'promote' AND JSON_EXTRACT(effect, '$.base.appliedRevision') = 9`, 1)
@@ -817,7 +862,7 @@ func TestRealMySQLPercentageRolloutTransaction(t *testing.T) {
 	if err := unselectedClient.Refresh(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if record, ok := unselectedClient.GetByKey("payment_routes", rolloutRecord.RecordKey); !ok || record.Values["priority"] != "9" {
+	if record, ok := unselectedClient.GetByKey("payment_routes", rolloutRecord.RecordKey); !ok || record.Values["priority"] != "7" {
 		t.Fatalf("promoted SDK record = %+v, %t", record, ok)
 	}
 

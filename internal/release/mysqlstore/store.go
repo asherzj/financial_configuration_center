@@ -610,15 +610,10 @@ func (transaction *transaction) LoadOrderForUpdate(ctx context.Context, orderID 
 		}
 		var effect *release.StepEffectEnvelope
 		if len(row.Effect) != 0 {
-			effect = &release.StepEffectEnvelope{}
-			if err := json.Unmarshal(row.Effect, effect); err != nil {
+			var err error
+			effect, err = release.DecodeStepEffect(row.Effect)
+			if err != nil {
 				return nil, fmt.Errorf("decode step %q effect: %w", row.StepCode, err)
-			}
-			validOverlay := effect.EffectVersion == 1 && effect.Overlay != nil && effect.Percent == nil && effect.Base == nil && effect.Overlay.EffectVersion == 1
-			validPercent := effect.EffectVersion == 1 && effect.Percent != nil && effect.Overlay == nil && effect.Base == nil && effect.Percent.EffectVersion == 1
-			validBase := effect.EffectVersion == 1 && effect.Base != nil && effect.Overlay == nil && effect.Percent == nil && effect.Base.EffectVersion == 1
-			if !validOverlay && !validPercent && !validBase {
-				return nil, fmt.Errorf("decode step %q effect: unsupported effect envelope", row.StepCode)
 			}
 		}
 		var compareResult *release.CompareStepResult
@@ -697,8 +692,8 @@ func (transaction *transaction) AllocateConfigRevision(ctx context.Context) (cat
 }
 
 func (transaction *transaction) ApplyBaseEffect(ctx context.Context, orderID string, effect release.BaseEffect) error {
-	if effect.EffectVersion != 1 || effect.AppliedRevision <= effect.PreviousRevision || len(effect.Changes) == 0 {
-		return errors.New("invalid base effect")
+	if err := release.ValidateStepEffect(&release.StepEffectEnvelope{EffectVersion: 1, EffectType: release.StepEffectBase, Base: &effect}); err != nil {
+		return fmt.Errorf("invalid base effect: %w", err)
 	}
 	for _, change := range effect.Changes {
 		before, err := marshalRecordData(change.Before)
@@ -858,15 +853,15 @@ func (transaction *transaction) ApplyBaseEffect(ctx context.Context, orderID str
 }
 
 func (transaction *transaction) ApplyOverlayEffect(ctx context.Context, orderID string, effect release.OverlayEffect) error {
-	if effect.EffectVersion != 1 || effect.AppliedRevision <= effect.PreviousRevision || len(effect.Changes) == 0 {
-		return fmt.Errorf("invalid overlay effect")
+	if err := release.ValidateStepEffect(&release.StepEffectEnvelope{EffectVersion: 1, EffectType: release.StepEffectOverlay, Overlay: &effect}); err != nil {
+		return fmt.Errorf("invalid overlay effect: %w", err)
 	}
 	return transaction.applyOverlayRuleChanges(ctx, orderID, effect, "OVERLAY_APPLY")
 }
 
 func (transaction *transaction) ApplyPercentEffect(ctx context.Context, orderID string, effect release.PercentEffect) error {
-	if effect.EffectVersion != 1 || effect.AppliedRevision <= effect.PreviousRevision || len(effect.AddedRanges) == 0 || len(effect.Changes) == 0 {
-		return fmt.Errorf("invalid percentage effect")
+	if err := release.ValidateStepEffect(&release.StepEffectEnvelope{EffectVersion: 1, EffectType: release.StepEffectPercent, Percent: &effect}); err != nil {
+		return fmt.Errorf("invalid percentage effect: %w", err)
 	}
 	return transaction.applyOverlayRuleChanges(ctx, orderID, release.OverlayEffect{
 		EffectVersion: effect.EffectVersion, Collection: effect.Collection, Scope: effect.Scope,
@@ -1076,7 +1071,7 @@ func (transaction *transaction) SaveOrder(ctx context.Context, order *release.Or
 		}
 		var effect any
 		if step.Effect != nil {
-			encoded, err := json.Marshal(step.Effect)
+			encoded, err := release.EncodeStepEffect(step.Effect)
 			if err != nil {
 				return err
 			}
