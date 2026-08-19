@@ -10,6 +10,7 @@ import (
 	"time"
 
 	catalog "github.com/asherzj/financial_configuration_center/internal/catalog/domain"
+	release "github.com/asherzj/financial_configuration_center/internal/release/domain"
 )
 
 const (
@@ -132,6 +133,92 @@ type SubscriptionPage struct {
 	TotalPages    int
 }
 
+type ModelInput struct {
+	Code       string
+	Name       string
+	Collection string
+	Definition []byte
+	Enabled    bool
+}
+
+type ModelMutation struct {
+	ModelInput
+	ExpectedRevision catalog.ConfigRevision
+	Actor            Principal
+	At               time.Time
+}
+
+type ModelView struct {
+	ModelInput
+	ConfigRevision catalog.ConfigRevision
+	Audit          AuditStamp
+}
+
+type ModelQuery struct {
+	Collection string
+	PageNumber int
+	PageSize   int
+}
+
+type ModelPage struct {
+	Models      []ModelView
+	PageNumber  int
+	PageSize    int
+	TotalNumber int64
+	TotalPages  int
+}
+
+type CompileIssue struct {
+	Code    string
+	Path    string
+	Message string
+}
+
+type ModelPreview struct {
+	Valid                bool
+	Issues               []CompileIssue
+	NormalizedDefinition []byte
+}
+
+type TemplateInput struct {
+	Code                     string
+	Name                     string
+	ModelCode                string
+	ReleaseTypeCode          string
+	FinalEffect              release.FinalEffect
+	SchedulingAllowed        bool
+	MaxScheduleWindowSeconds int64
+	Document                 []byte
+	AllowedRoles             []string
+	Enabled                  bool
+}
+
+type TemplateMutation struct {
+	TemplateInput
+	Actor Principal
+	At    time.Time
+}
+
+type TemplateView struct {
+	TemplateInput
+	Version int64
+	Audit   AuditStamp
+}
+
+type TemplateQuery struct {
+	ModelCode  string
+	PageNumber int
+	PageSize   int
+}
+
+type TemplatePage struct {
+	Templates   []TemplateView
+	PageNumber  int
+	PageSize    int
+	TotalNumber int64
+	TotalPages  int
+}
+
 type Repository interface {
 	CreateCollection(context.Context, CollectionMutation) (CollectionView, error)
 	UpdateCollection(context.Context, CollectionMutation) (CollectionView, error)
@@ -140,6 +227,14 @@ type Repository interface {
 	CreateSubscription(context.Context, SubscriptionMutation) (SubscriptionView, error)
 	UpdateSubscription(context.Context, SubscriptionMutation) (SubscriptionView, error)
 	ListSubscriptions(context.Context, SubscriptionQuery) (SubscriptionPage, error)
+	PreviewModel(context.Context, ModelInput) (ModelPreview, error)
+	CreateModel(context.Context, ModelMutation) (ModelView, error)
+	UpdateModel(context.Context, ModelMutation) (ModelView, error)
+	GetModel(context.Context, string) (ModelView, error)
+	ListModels(context.Context, ModelQuery) (ModelPage, error)
+	CreateTemplate(context.Context, TemplateMutation) (TemplateView, error)
+	GetTemplate(context.Context, string, int64) (TemplateView, error)
+	ListTemplates(context.Context, TemplateQuery) (TemplatePage, error)
 }
 
 type Clock interface{ Now() time.Time }
@@ -240,6 +335,121 @@ func (service *Service) ListSubscriptions(ctx context.Context, principal Princip
 	}
 	query.PageNumber, query.PageSize = page.PageNumber, page.PageSize
 	return service.repository.ListSubscriptions(ctx, query)
+}
+
+func (service *Service) PreviewModel(ctx context.Context, principal Principal, input ModelInput) (ModelPreview, error) {
+	if err := authorize(principal, true); err != nil {
+		return ModelPreview{}, err
+	}
+	if err := validateModelIdentity(input); err != nil {
+		return ModelPreview{}, err
+	}
+	return service.repository.PreviewModel(ctx, input)
+}
+
+func (service *Service) CreateModel(ctx context.Context, principal Principal, input ModelInput) (ModelView, error) {
+	if err := authorize(principal, true); err != nil {
+		return ModelView{}, err
+	}
+	if err := validateModelIdentity(input); err != nil {
+		return ModelView{}, err
+	}
+	return service.repository.CreateModel(ctx, ModelMutation{ModelInput: input, Actor: principal, At: service.clock.Now().UTC()})
+}
+
+func (service *Service) UpdateModel(ctx context.Context, principal Principal, expected catalog.ConfigRevision, input ModelInput) (ModelView, error) {
+	if err := authorize(principal, true); err != nil {
+		return ModelView{}, err
+	}
+	if expected == 0 {
+		return ModelView{}, fmt.Errorf("%w: expected model revision is required", ErrInvalid)
+	}
+	if err := validateModelIdentity(input); err != nil {
+		return ModelView{}, err
+	}
+	return service.repository.UpdateModel(ctx, ModelMutation{ModelInput: input, ExpectedRevision: expected, Actor: principal, At: service.clock.Now().UTC()})
+}
+
+func (service *Service) GetModel(ctx context.Context, principal Principal, code string) (ModelView, error) {
+	if err := authorize(principal, false); err != nil {
+		return ModelView{}, err
+	}
+	if !validIdentifier(code) {
+		return ModelView{}, fmt.Errorf("%w: model code is invalid", ErrInvalid)
+	}
+	return service.repository.GetModel(ctx, code)
+}
+
+func (service *Service) ListModels(ctx context.Context, principal Principal, query ModelQuery) (ModelPage, error) {
+	if err := authorize(principal, false); err != nil {
+		return ModelPage{}, err
+	}
+	if query.Collection != "" && !validIdentifier(query.Collection) {
+		return ModelPage{}, fmt.Errorf("%w: model collection filter is invalid", ErrInvalid)
+	}
+	page, err := boundPage(query.PageNumber, query.PageSize)
+	if err != nil {
+		return ModelPage{}, err
+	}
+	query.PageNumber, query.PageSize = page.PageNumber, page.PageSize
+	return service.repository.ListModels(ctx, query)
+}
+
+func (service *Service) CreateTemplate(ctx context.Context, principal Principal, input TemplateInput) (TemplateView, error) {
+	if err := authorize(principal, true); err != nil {
+		return TemplateView{}, err
+	}
+	if !validIdentifier(input.Code) || strings.TrimSpace(input.Name) == "" || !validIdentifier(input.ModelCode) || !validIdentifier(input.ReleaseTypeCode) || len(input.Document) == 0 || input.FinalEffect != release.FinalEffectBase && input.FinalEffect != release.FinalEffectOverlay || input.SchedulingAllowed && input.MaxScheduleWindowSeconds <= 0 || !input.SchedulingAllowed && input.MaxScheduleWindowSeconds != 0 {
+		return TemplateView{}, fmt.Errorf("%w: release template identity, effect, or scheduling policy is invalid", ErrInvalid)
+	}
+	if _, err := release.CompileTemplate(input.Document, input.FinalEffect); err != nil {
+		return TemplateView{}, fmt.Errorf("%w: %v", ErrInvalid, err)
+	}
+	roles := make(map[string]struct{}, len(input.AllowedRoles))
+	for _, role := range input.AllowedRoles {
+		if strings.TrimSpace(role) == "" || role != strings.TrimSpace(role) {
+			return TemplateView{}, fmt.Errorf("%w: template role is invalid", ErrInvalid)
+		}
+		if _, duplicate := roles[role]; duplicate {
+			return TemplateView{}, fmt.Errorf("%w: template role is duplicated", ErrInvalid)
+		}
+		roles[role] = struct{}{}
+	}
+	input.Document = append([]byte(nil), input.Document...)
+	input.AllowedRoles = slices.Clone(input.AllowedRoles)
+	return service.repository.CreateTemplate(ctx, TemplateMutation{TemplateInput: input, Actor: principal, At: service.clock.Now().UTC()})
+}
+
+func (service *Service) GetTemplate(ctx context.Context, principal Principal, code string, version int64) (TemplateView, error) {
+	if err := authorize(principal, false); err != nil {
+		return TemplateView{}, err
+	}
+	if !validIdentifier(code) || version <= 0 {
+		return TemplateView{}, fmt.Errorf("%w: template identity is invalid", ErrInvalid)
+	}
+	return service.repository.GetTemplate(ctx, code, version)
+}
+
+func (service *Service) ListTemplates(ctx context.Context, principal Principal, query TemplateQuery) (TemplatePage, error) {
+	if err := authorize(principal, false); err != nil {
+		return TemplatePage{}, err
+	}
+	if query.ModelCode != "" && !validIdentifier(query.ModelCode) {
+		return TemplatePage{}, fmt.Errorf("%w: template model filter is invalid", ErrInvalid)
+	}
+	page, err := boundPage(query.PageNumber, query.PageSize)
+	if err != nil {
+		return TemplatePage{}, err
+	}
+	query.PageNumber, query.PageSize = page.PageNumber, page.PageSize
+	return service.repository.ListTemplates(ctx, query)
+}
+
+func validateModelIdentity(input ModelInput) error {
+	if !validIdentifier(input.Code) || strings.TrimSpace(input.Name) == "" || !validIdentifier(input.Collection) || len(input.Definition) == 0 {
+		return fmt.Errorf("%w: model identity and definition are required", ErrInvalid)
+	}
+	return nil
 }
 
 func compileCollectionInput(input CollectionInput) (catalog.CollectionDefinition, error) {

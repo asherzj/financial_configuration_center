@@ -17,6 +17,8 @@ export function App() {
               <Link to="/operations">统一操作入口</Link>
               <Link to="/collections">配置集合</Link>
               <Link to="/subscriptions">消费者与订阅</Link>
+              <Link to="/models">配置模型</Link>
+              <Link to="/templates">发布模板</Link>
               <Link to="/releases">发布单</Link>
               <Link to="/diagnostics">运行诊断</Link>
             </Space>

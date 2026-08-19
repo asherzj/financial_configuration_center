@@ -69,6 +69,14 @@ type CatalogAdmin interface {
 	CreateSubscription(context.Context, catalogapp.Principal, catalogapp.SubscriptionInput) (catalogapp.SubscriptionView, error)
 	UpdateSubscription(context.Context, catalogapp.Principal, catalog.ConfigRevision, catalogapp.SubscriptionInput) (catalogapp.SubscriptionView, error)
 	ListSubscriptions(context.Context, catalogapp.Principal, catalogapp.SubscriptionQuery) (catalogapp.SubscriptionPage, error)
+	PreviewModel(context.Context, catalogapp.Principal, catalogapp.ModelInput) (catalogapp.ModelPreview, error)
+	CreateModel(context.Context, catalogapp.Principal, catalogapp.ModelInput) (catalogapp.ModelView, error)
+	UpdateModel(context.Context, catalogapp.Principal, catalog.ConfigRevision, catalogapp.ModelInput) (catalogapp.ModelView, error)
+	GetModel(context.Context, catalogapp.Principal, string) (catalogapp.ModelView, error)
+	ListModels(context.Context, catalogapp.Principal, catalogapp.ModelQuery) (catalogapp.ModelPage, error)
+	CreateTemplate(context.Context, catalogapp.Principal, catalogapp.TemplateInput) (catalogapp.TemplateView, error)
+	GetTemplate(context.Context, catalogapp.Principal, string, int64) (catalogapp.TemplateView, error)
+	ListTemplates(context.Context, catalogapp.Principal, catalogapp.TemplateQuery) (catalogapp.TemplatePage, error)
 }
 
 type Handler struct {
@@ -137,6 +145,14 @@ func newWithOperations(queries PageQueries, releases ReleaseCommands, auth Authe
 		handler.mux.HandleFunc("GET /api/v1/subscriptions", handler.listSubscriptions)
 		handler.mux.HandleFunc("POST /api/v1/subscriptions", handler.createSubscription)
 		handler.mux.HandleFunc("PUT /api/v1/subscriptions/{id}", handler.updateSubscription)
+		handler.mux.HandleFunc("POST /api/v1/models/preview", handler.previewModel)
+		handler.mux.HandleFunc("GET /api/v1/models", handler.listModels)
+		handler.mux.HandleFunc("POST /api/v1/models", handler.createModel)
+		handler.mux.HandleFunc("GET /api/v1/models/{code}", handler.getModel)
+		handler.mux.HandleFunc("PUT /api/v1/models/{code}", handler.updateModel)
+		handler.mux.HandleFunc("GET /api/v1/templates", handler.listTemplates)
+		handler.mux.HandleFunc("POST /api/v1/templates", handler.createTemplate)
+		handler.mux.HandleFunc("GET /api/v1/templates/{code}/versions/{version}", handler.getTemplate)
 	}
 	return handler, nil
 }
@@ -325,6 +341,188 @@ func (handler *Handler) listSubscriptions(writer http.ResponseWriter, request *h
 	writeJSON(writer, http.StatusOK, map[string]any{"subscriptions": subscriptions, "page": pageResponse(page.PageNumber, page.PageSize, page.TotalNumber, page.TotalPages)})
 }
 
+type modelAdminRequest struct {
+	Code       string          `json:"code"`
+	Name       string          `json:"name"`
+	Collection string          `json:"collection"`
+	Definition json.RawMessage `json:"definition"`
+	Enabled    bool            `json:"enabled"`
+}
+
+func (body modelAdminRequest) input() catalogapp.ModelInput {
+	return catalogapp.ModelInput{Code: body.Code, Name: body.Name, Collection: body.Collection, Definition: append([]byte(nil), body.Definition...), Enabled: body.Enabled}
+}
+
+func (handler *Handler) previewModel(writer http.ResponseWriter, request *http.Request) {
+	principal, ok := handler.catalogPrincipal(writer, request)
+	if !ok {
+		return
+	}
+	var body modelAdminRequest
+	if !decodeJSON(writer, request, &body) {
+		return
+	}
+	preview, err := handler.catalog.PreviewModel(request.Context(), principal, body.input())
+	if err != nil {
+		writeDomainError(writer, err)
+		return
+	}
+	response := map[string]any{"valid": preview.Valid, "issues": preview.Issues}
+	if preview.Valid {
+		response["normalizedDefinition"] = json.RawMessage(preview.NormalizedDefinition)
+	}
+	writeJSON(writer, http.StatusOK, response)
+}
+
+func (handler *Handler) createModel(writer http.ResponseWriter, request *http.Request) {
+	principal, ok := handler.catalogPrincipal(writer, request)
+	if !ok {
+		return
+	}
+	var body modelAdminRequest
+	if !decodeJSON(writer, request, &body) {
+		return
+	}
+	view, err := handler.catalog.CreateModel(request.Context(), principal, body.input())
+	if err != nil {
+		writeDomainError(writer, err)
+		return
+	}
+	writeJSON(writer, http.StatusCreated, modelAdminResponse(view))
+}
+
+func (handler *Handler) updateModel(writer http.ResponseWriter, request *http.Request) {
+	principal, ok := handler.catalogPrincipal(writer, request)
+	if !ok {
+		return
+	}
+	expected, ok := expectedRevision(writer, request)
+	if !ok {
+		return
+	}
+	var body modelAdminRequest
+	if !decodeJSON(writer, request, &body) {
+		return
+	}
+	if body.Code != request.PathValue("code") {
+		writeError(writer, http.StatusBadRequest, "INVALID_ARGUMENT", "model path and body codes must match")
+		return
+	}
+	view, err := handler.catalog.UpdateModel(request.Context(), principal, expected, body.input())
+	if err != nil {
+		writeDomainError(writer, err)
+		return
+	}
+	writeJSON(writer, http.StatusOK, modelAdminResponse(view))
+}
+
+func (handler *Handler) getModel(writer http.ResponseWriter, request *http.Request) {
+	principal, ok := handler.catalogPrincipal(writer, request)
+	if !ok {
+		return
+	}
+	view, err := handler.catalog.GetModel(request.Context(), principal, request.PathValue("code"))
+	if err != nil {
+		writeDomainError(writer, err)
+		return
+	}
+	writeJSON(writer, http.StatusOK, modelAdminResponse(view))
+}
+
+func (handler *Handler) listModels(writer http.ResponseWriter, request *http.Request) {
+	principal, ok := handler.catalogPrincipal(writer, request)
+	if !ok {
+		return
+	}
+	number, size, ok := queryPage(writer, request)
+	if !ok {
+		return
+	}
+	page, err := handler.catalog.ListModels(request.Context(), principal, catalogapp.ModelQuery{Collection: request.URL.Query().Get("collection"), PageNumber: number, PageSize: size})
+	if err != nil {
+		writeDomainError(writer, err)
+		return
+	}
+	models := make([]map[string]any, len(page.Models))
+	for index, model := range page.Models {
+		models[index] = modelAdminResponse(model)
+	}
+	writeJSON(writer, http.StatusOK, map[string]any{"models": models, "page": pageResponse(page.PageNumber, page.PageSize, page.TotalNumber, page.TotalPages)})
+}
+
+type templateAdminRequest struct {
+	Code                     string              `json:"code"`
+	Name                     string              `json:"name"`
+	ModelCode                string              `json:"modelCode"`
+	ReleaseTypeCode          string              `json:"releaseTypeCode"`
+	FinalEffect              release.FinalEffect `json:"finalEffect"`
+	SchedulingAllowed        bool                `json:"schedulingAllowed"`
+	MaxScheduleWindowSeconds int64               `json:"maxScheduleWindowSeconds"`
+	Document                 json.RawMessage     `json:"document"`
+	AllowedRoles             []string            `json:"allowedRoles"`
+	Enabled                  bool                `json:"enabled"`
+}
+
+func (body templateAdminRequest) input() catalogapp.TemplateInput {
+	return catalogapp.TemplateInput{Code: body.Code, Name: body.Name, ModelCode: body.ModelCode, ReleaseTypeCode: body.ReleaseTypeCode, FinalEffect: body.FinalEffect, SchedulingAllowed: body.SchedulingAllowed, MaxScheduleWindowSeconds: body.MaxScheduleWindowSeconds, Document: append([]byte(nil), body.Document...), AllowedRoles: body.AllowedRoles, Enabled: body.Enabled}
+}
+
+func (handler *Handler) createTemplate(writer http.ResponseWriter, request *http.Request) {
+	principal, ok := handler.catalogPrincipal(writer, request)
+	if !ok {
+		return
+	}
+	var body templateAdminRequest
+	if !decodeJSON(writer, request, &body) {
+		return
+	}
+	view, err := handler.catalog.CreateTemplate(request.Context(), principal, body.input())
+	if err != nil {
+		writeDomainError(writer, err)
+		return
+	}
+	writeJSON(writer, http.StatusCreated, templateAdminResponse(view))
+}
+
+func (handler *Handler) getTemplate(writer http.ResponseWriter, request *http.Request) {
+	principal, ok := handler.catalogPrincipal(writer, request)
+	if !ok {
+		return
+	}
+	version, err := strconv.ParseInt(request.PathValue("version"), 10, 64)
+	if err != nil || version <= 0 {
+		writeError(writer, http.StatusBadRequest, "INVALID_ARGUMENT", "template version must be positive")
+		return
+	}
+	view, err := handler.catalog.GetTemplate(request.Context(), principal, request.PathValue("code"), version)
+	if err != nil {
+		writeDomainError(writer, err)
+		return
+	}
+	writeJSON(writer, http.StatusOK, templateAdminResponse(view))
+}
+
+func (handler *Handler) listTemplates(writer http.ResponseWriter, request *http.Request) {
+	principal, ok := handler.catalogPrincipal(writer, request)
+	if !ok {
+		return
+	}
+	number, size, ok := queryPage(writer, request)
+	if !ok {
+		return
+	}
+	page, err := handler.catalog.ListTemplates(request.Context(), principal, catalogapp.TemplateQuery{ModelCode: request.URL.Query().Get("modelCode"), PageNumber: number, PageSize: size})
+	if err != nil {
+		writeDomainError(writer, err)
+		return
+	}
+	templates := make([]map[string]any, len(page.Templates))
+	for index, template := range page.Templates {
+		templates[index] = templateAdminResponse(template)
+	}
+	writeJSON(writer, http.StatusOK, map[string]any{"templates": templates, "page": pageResponse(page.PageNumber, page.PageSize, page.TotalNumber, page.TotalPages)})
+}
+
 func (handler *Handler) catalogPrincipal(writer http.ResponseWriter, request *http.Request) (catalogapp.Principal, bool) {
 	principal, ok := handler.authenticate(writer, request)
 	return catalogapp.Principal{Subject: principal.Subject, DisplayName: principal.DisplayName, Roles: append([]string(nil), principal.Roles...)}, ok
@@ -360,6 +558,14 @@ func collectionAdminResponse(view catalogapp.CollectionView) map[string]any {
 
 func subscriptionAdminResponse(view catalogapp.SubscriptionView) map[string]any {
 	return map[string]any{"id": view.ID, "consumerId": view.ConsumerID, "collection": view.Collection, "indexName": view.IndexName, "indexFields": view.IndexFields, "cardinality": view.Cardinality, "enabled": view.Enabled, "configRevision": view.ConfigRevision}
+}
+
+func modelAdminResponse(view catalogapp.ModelView) map[string]any {
+	return map[string]any{"code": view.Code, "name": view.Name, "collection": view.Collection, "definition": json.RawMessage(view.Definition), "enabled": view.Enabled, "configRevision": view.ConfigRevision, "audit": map[string]any{"createdAt": view.Audit.CreatedAt, "createdBy": view.Audit.CreatedBy, "updatedAt": view.Audit.UpdatedAt, "updatedBy": view.Audit.UpdatedBy}}
+}
+
+func templateAdminResponse(view catalogapp.TemplateView) map[string]any {
+	return map[string]any{"code": view.Code, "name": view.Name, "modelCode": view.ModelCode, "releaseTypeCode": view.ReleaseTypeCode, "version": view.Version, "finalEffect": view.FinalEffect, "schedulingAllowed": view.SchedulingAllowed, "maxScheduleWindowSeconds": view.MaxScheduleWindowSeconds, "document": json.RawMessage(view.Document), "allowedRoles": view.AllowedRoles, "enabled": view.Enabled, "audit": map[string]any{"createdAt": view.Audit.CreatedAt, "createdBy": view.Audit.CreatedBy}}
 }
 
 func pageResponse(number, size int, total int64, pages int) map[string]any {

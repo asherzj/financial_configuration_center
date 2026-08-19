@@ -118,6 +118,40 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/models/preview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["previewModel"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/models/{code}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                code: string;
+            };
+            cookie?: never;
+        };
+        get: operations["getModel"];
+        put: operations["updateModel"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/templates": {
         parameters: {
             query?: never;
@@ -128,6 +162,22 @@ export interface paths {
         get: operations["listReleaseTemplates"];
         put?: never;
         post: operations["createReleaseTemplate"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/templates/{code}/versions/{version}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["getReleaseTemplate"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -414,6 +464,51 @@ export interface components {
         };
         SubscriptionPage: {
             subscriptions: components["schemas"]["Subscription"][];
+            page: components["schemas"]["PageMetadata"];
+        };
+        Model: {
+            code: string;
+            name: string;
+            collection: string;
+            definition: Record<string, never>;
+            enabled: boolean;
+            /** Format: int64 */
+            configRevision?: number;
+            audit?: components["schemas"]["AuditStamp"];
+        };
+        ModelPage: {
+            models: components["schemas"]["Model"][];
+            page: components["schemas"]["PageMetadata"];
+        };
+        CompileIssue: {
+            code: string;
+            path: string;
+            message: string;
+        };
+        ModelPreview: {
+            valid: boolean;
+            issues: components["schemas"]["CompileIssue"][];
+            normalizedDefinition?: Record<string, never>;
+        };
+        ReleaseTemplate: {
+            code: string;
+            name: string;
+            modelCode: string;
+            releaseTypeCode: string;
+            /** Format: int64 */
+            version?: number;
+            /** @enum {string} */
+            finalEffect: "BASE_FINAL" | "OVERLAY_FINAL";
+            schedulingAllowed: boolean;
+            /** Format: int64 */
+            maxScheduleWindowSeconds: number;
+            document: Record<string, never>;
+            allowedRoles: string[];
+            enabled: boolean;
+            audit?: components["schemas"]["AuditStamp"];
+        };
+        ReleaseTemplatePage: {
+            templates: components["schemas"]["ReleaseTemplate"][];
             page: components["schemas"]["PageMetadata"];
         };
         QueryPageRequest: {
@@ -884,7 +979,11 @@ export interface operations {
     };
     listModels: {
         parameters: {
-            query?: never;
+            query?: {
+                collection?: string;
+                page?: number;
+                size?: number;
+            };
             header?: never;
             path?: never;
             cookie?: never;
@@ -896,8 +995,11 @@ export interface operations {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["ModelPage"];
+                };
             };
+            default: components["responses"]["Error"];
         };
     };
     createModel: {
@@ -907,20 +1009,108 @@ export interface operations {
             path?: never;
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["Model"];
+            };
+        };
         responses: {
             /** @description Created */
             201: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["Model"];
+                };
             };
+            default: components["responses"]["Error"];
+        };
+    };
+    previewModel: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["Model"];
+            };
+        };
+        responses: {
+            /** @description Model compiler result without persistence */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ModelPreview"];
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    getModel: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                code: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Model */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Model"];
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    updateModel: {
+        parameters: {
+            query?: never;
+            header: {
+                "If-Match": components["parameters"]["ExpectedRevision"];
+            };
+            path: {
+                code: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["Model"];
+            };
+        };
+        responses: {
+            /** @description Updated */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Model"];
+                };
+            };
+            default: components["responses"]["Error"];
         };
     };
     listReleaseTemplates: {
         parameters: {
-            query?: never;
+            query?: {
+                modelCode?: string;
+                page?: number;
+                size?: number;
+            };
             header?: never;
             path?: never;
             cookie?: never;
@@ -932,8 +1122,11 @@ export interface operations {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["ReleaseTemplatePage"];
+                };
             };
+            default: components["responses"]["Error"];
         };
     };
     createReleaseTemplate: {
@@ -943,15 +1136,46 @@ export interface operations {
             path?: never;
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ReleaseTemplate"];
+            };
+        };
         responses: {
             /** @description Immutable template version created */
             201: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["ReleaseTemplate"];
+                };
             };
+            default: components["responses"]["Error"];
+        };
+    };
+    getReleaseTemplate: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                code: string;
+                version: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Immutable template version */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReleaseTemplate"];
+                };
+            };
+            default: components["responses"]["Error"];
         };
     };
     listReleaseOrders: {

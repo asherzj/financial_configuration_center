@@ -2,12 +2,14 @@ package grpc
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"math"
 	"strings"
 
 	"github.com/asherzj/financial_configuration_center/internal/catalog/application"
 	catalog "github.com/asherzj/financial_configuration_center/internal/catalog/domain"
+	release "github.com/asherzj/financial_configuration_center/internal/release/domain"
 	commonv1 "github.com/asherzj/financial_configuration_center/kitex_gen/finconfig/common/v1"
 	configv1 "github.com/asherzj/financial_configuration_center/kitex_gen/finconfig/config/v1"
 	controlv1 "github.com/asherzj/financial_configuration_center/kitex_gen/finconfig/control/v1"
@@ -24,6 +26,13 @@ type Application interface {
 	CreateSubscription(context.Context, application.Principal, application.SubscriptionInput) (application.SubscriptionView, error)
 	UpdateSubscription(context.Context, application.Principal, catalog.ConfigRevision, application.SubscriptionInput) (application.SubscriptionView, error)
 	ListSubscriptions(context.Context, application.Principal, application.SubscriptionQuery) (application.SubscriptionPage, error)
+	CreateModel(context.Context, application.Principal, application.ModelInput) (application.ModelView, error)
+	UpdateModel(context.Context, application.Principal, catalog.ConfigRevision, application.ModelInput) (application.ModelView, error)
+	GetModel(context.Context, application.Principal, string) (application.ModelView, error)
+	ListModels(context.Context, application.Principal, application.ModelQuery) (application.ModelPage, error)
+	CreateTemplate(context.Context, application.Principal, application.TemplateInput) (application.TemplateView, error)
+	GetTemplate(context.Context, application.Principal, string, int64) (application.TemplateView, error)
+	ListTemplates(context.Context, application.Principal, application.TemplateQuery) (application.TemplatePage, error)
 }
 
 type PrincipalResolver interface {
@@ -154,26 +163,104 @@ func (handler *Handler) ListSubscriptions(ctx context.Context, request *controlv
 	return &controlv1.ListSubscriptionsResponse{Subscriptions: subscriptions, Page: projectPage(page.PageNumber, page.PageSize, page.TotalNumber, page.TotalPages)}, nil
 }
 
-func (*Handler) CreateModel(context.Context, *controlv1.CreateModelRequest) (*controlv1.CreateModelResponse, error) {
-	return nil, status.Error(codes.Unimplemented, "model administration is not implemented")
+func (handler *Handler) CreateModel(ctx context.Context, request *controlv1.CreateModelRequest) (*controlv1.CreateModelResponse, error) {
+	principal, err := handler.principal(ctx)
+	if err != nil {
+		return nil, err
+	}
+	input, err := modelInput(request.GetModel())
+	if err != nil {
+		return nil, err
+	}
+	view, err := handler.application.CreateModel(ctx, principal, input)
+	if err != nil {
+		return nil, catalogError(err)
+	}
+	return &controlv1.CreateModelResponse{Model: projectModel(view)}, nil
 }
-func (*Handler) UpdateModel(context.Context, *controlv1.UpdateModelRequest) (*controlv1.UpdateModelResponse, error) {
-	return nil, status.Error(codes.Unimplemented, "model administration is not implemented")
+func (handler *Handler) UpdateModel(ctx context.Context, request *controlv1.UpdateModelRequest) (*controlv1.UpdateModelResponse, error) {
+	principal, err := handler.principal(ctx)
+	if err != nil {
+		return nil, err
+	}
+	input, err := modelInput(request.GetModel())
+	if err != nil {
+		return nil, err
+	}
+	view, err := handler.application.UpdateModel(ctx, principal, catalog.ConfigRevision(request.GetExpectedModelRevision()), input)
+	if err != nil {
+		return nil, catalogError(err)
+	}
+	return &controlv1.UpdateModelResponse{Model: projectModel(view)}, nil
 }
-func (*Handler) GetModel(context.Context, *controlv1.GetModelRequest) (*controlv1.GetModelResponse, error) {
-	return nil, status.Error(codes.Unimplemented, "model administration is not implemented")
+func (handler *Handler) GetModel(ctx context.Context, request *controlv1.GetModelRequest) (*controlv1.GetModelResponse, error) {
+	principal, err := handler.principal(ctx)
+	if err != nil {
+		return nil, err
+	}
+	view, err := handler.application.GetModel(ctx, principal, request.GetCode())
+	if err != nil {
+		return nil, catalogError(err)
+	}
+	return &controlv1.GetModelResponse{Model: projectModel(view)}, nil
 }
-func (*Handler) ListModels(context.Context, *controlv1.ListModelsRequest) (*controlv1.ListModelsResponse, error) {
-	return nil, status.Error(codes.Unimplemented, "model administration is not implemented")
+func (handler *Handler) ListModels(ctx context.Context, request *controlv1.ListModelsRequest) (*controlv1.ListModelsResponse, error) {
+	principal, err := handler.principal(ctx)
+	if err != nil {
+		return nil, err
+	}
+	number, size := pageRequest(request.GetPage())
+	page, err := handler.application.ListModels(ctx, principal, application.ModelQuery{Collection: request.GetCollection(), PageNumber: number, PageSize: size})
+	if err != nil {
+		return nil, catalogError(err)
+	}
+	models := make([]*controlv1.Model, len(page.Models))
+	for index, model := range page.Models {
+		models[index] = projectModel(model)
+	}
+	return &controlv1.ListModelsResponse{Models: models, Page: projectPage(page.PageNumber, page.PageSize, page.TotalNumber, page.TotalPages)}, nil
 }
-func (*Handler) CreateReleaseTemplate(context.Context, *controlv1.CreateReleaseTemplateRequest) (*controlv1.CreateReleaseTemplateResponse, error) {
-	return nil, status.Error(codes.Unimplemented, "release template administration is not implemented")
+func (handler *Handler) CreateReleaseTemplate(ctx context.Context, request *controlv1.CreateReleaseTemplateRequest) (*controlv1.CreateReleaseTemplateResponse, error) {
+	principal, err := handler.principal(ctx)
+	if err != nil {
+		return nil, err
+	}
+	input, err := templateInput(request.GetReleaseTemplate())
+	if err != nil {
+		return nil, err
+	}
+	view, err := handler.application.CreateTemplate(ctx, principal, input)
+	if err != nil {
+		return nil, catalogError(err)
+	}
+	return &controlv1.CreateReleaseTemplateResponse{ReleaseTemplate: projectTemplate(view)}, nil
 }
-func (*Handler) GetReleaseTemplate(context.Context, *controlv1.GetReleaseTemplateRequest) (*controlv1.GetReleaseTemplateResponse, error) {
-	return nil, status.Error(codes.Unimplemented, "release template administration is not implemented")
+func (handler *Handler) GetReleaseTemplate(ctx context.Context, request *controlv1.GetReleaseTemplateRequest) (*controlv1.GetReleaseTemplateResponse, error) {
+	principal, err := handler.principal(ctx)
+	if err != nil {
+		return nil, err
+	}
+	view, err := handler.application.GetTemplate(ctx, principal, request.GetCode(), request.GetVersion())
+	if err != nil {
+		return nil, catalogError(err)
+	}
+	return &controlv1.GetReleaseTemplateResponse{ReleaseTemplate: projectTemplate(view)}, nil
 }
-func (*Handler) ListReleaseTemplates(context.Context, *controlv1.ListReleaseTemplatesRequest) (*controlv1.ListReleaseTemplatesResponse, error) {
-	return nil, status.Error(codes.Unimplemented, "release template administration is not implemented")
+func (handler *Handler) ListReleaseTemplates(ctx context.Context, request *controlv1.ListReleaseTemplatesRequest) (*controlv1.ListReleaseTemplatesResponse, error) {
+	principal, err := handler.principal(ctx)
+	if err != nil {
+		return nil, err
+	}
+	number, size := pageRequest(request.GetPage())
+	page, err := handler.application.ListTemplates(ctx, principal, application.TemplateQuery{ModelCode: request.GetModelCode(), PageNumber: number, PageSize: size})
+	if err != nil {
+		return nil, catalogError(err)
+	}
+	templates := make([]*controlv1.ReleaseTemplate, len(page.Templates))
+	for index, template := range page.Templates {
+		templates[index] = projectTemplate(template)
+	}
+	return &controlv1.ListReleaseTemplatesResponse{ReleaseTemplates: templates, Page: projectPage(page.PageNumber, page.PageSize, page.TotalNumber, page.TotalPages)}, nil
 }
 
 func (handler *Handler) principal(ctx context.Context) (application.Principal, error) {
@@ -224,6 +311,47 @@ func subscriptionInput(source *controlv1.Subscription) (application.Subscription
 	return application.SubscriptionInput{ID: source.Id, ConsumerID: source.ConsumerId, Collection: source.Collection, IndexName: source.IndexName, IndexFields: append([]string(nil), source.IndexFields...), Cardinality: application.Cardinality(source.Cardinality), Enabled: source.Enabled}, nil
 }
 
+func modelInput(source *controlv1.Model) (application.ModelInput, error) {
+	if source == nil {
+		return application.ModelInput{}, status.Error(codes.InvalidArgument, "model is required")
+	}
+	return application.ModelInput{Code: source.Code, Name: source.Name, Collection: source.Collection, Definition: append([]byte(nil), source.DefinitionJson...), Enabled: source.Enabled}, nil
+}
+
+func templateInput(source *controlv1.ReleaseTemplate) (application.TemplateInput, error) {
+	if source == nil {
+		return application.TemplateInput{}, status.Error(codes.InvalidArgument, "release template is required")
+	}
+	steps := make([]map[string]any, len(source.Steps))
+	for index, step := range source.Steps {
+		if step == nil {
+			return application.TemplateInput{}, status.Error(codes.InvalidArgument, "release template step is required")
+		}
+		params := make(map[string]any, len(step.Params))
+		for key, raw := range step.Params {
+			var decoded any
+			if err := json.Unmarshal([]byte(raw), &decoded); err == nil {
+				params[key] = decoded
+			} else {
+				params[key] = raw
+			}
+		}
+		steps[index] = map[string]any{"code": step.Code, "type": step.Type, "requiredRoles": append([]string(nil), step.RequiredRoles...), "params": params}
+	}
+	document, err := json.Marshal(map[string]any{"steps": steps})
+	if err != nil {
+		return application.TemplateInput{}, status.Error(codes.InvalidArgument, "release template steps are invalid")
+	}
+	finalEffect := release.FinalEffect("")
+	switch source.FinalEffect {
+	case commonv1.FinalEffect_FINAL_EFFECT_BASE_FINAL:
+		finalEffect = release.FinalEffectBase
+	case commonv1.FinalEffect_FINAL_EFFECT_OVERLAY_FINAL:
+		finalEffect = release.FinalEffectOverlay
+	}
+	return application.TemplateInput{Code: source.Code, Name: source.Name, ModelCode: source.ModelCode, ReleaseTypeCode: source.ReleaseTypeCode, FinalEffect: finalEffect, SchedulingAllowed: source.SchedulingAllowed, MaxScheduleWindowSeconds: source.MaxScheduleWindowSeconds, Document: document, AllowedRoles: append([]string(nil), source.AllowedRoles...), Enabled: source.Enabled}, nil
+}
+
 func projectCollection(view application.CollectionView) *controlv1.Collection {
 	fields := make([]*controlv1.FieldDefinition, len(view.Fields))
 	for index, field := range view.Fields {
@@ -246,6 +374,45 @@ func projectSubscription(view application.SubscriptionView) *controlv1.Subscript
 		revision = math.MaxInt64
 	}
 	return &controlv1.Subscription{Id: view.ID, ConsumerId: view.ConsumerID, Collection: view.Collection, IndexName: view.IndexName, IndexFields: append([]string(nil), view.IndexFields...), Cardinality: string(view.Cardinality), Enabled: view.Enabled, ConfigRevision: revision}
+}
+
+func projectModel(view application.ModelView) *controlv1.Model {
+	revision := int64(view.ConfigRevision)
+	if view.ConfigRevision > math.MaxInt64 {
+		revision = math.MaxInt64
+	}
+	return &controlv1.Model{Code: view.Code, Name: view.Name, Collection: view.Collection, DefinitionJson: append([]byte(nil), view.Definition...), Enabled: view.Enabled, ConfigRevision: revision}
+}
+
+func projectTemplate(view application.TemplateView) *controlv1.ReleaseTemplate {
+	var root struct {
+		Steps []struct {
+			Code          string         `json:"code"`
+			Type          string         `json:"type"`
+			RequiredRoles []string       `json:"requiredRoles"`
+			Params        map[string]any `json:"params"`
+		} `json:"steps"`
+	}
+	_ = json.Unmarshal(view.Document, &root)
+	steps := make([]*controlv1.ReleaseStepDefinition, len(root.Steps))
+	for index, step := range root.Steps {
+		params := make(map[string]string, len(step.Params))
+		for key, value := range step.Params {
+			if text, ok := value.(string); ok {
+				params[key] = text
+			} else if encoded, err := json.Marshal(value); err == nil {
+				params[key] = string(encoded)
+			}
+		}
+		steps[index] = &controlv1.ReleaseStepDefinition{Code: step.Code, Type: step.Type, Sequence: int32(index), RequiredRoles: append([]string(nil), step.RequiredRoles...), Params: params}
+	}
+	finalEffect := commonv1.FinalEffect_FINAL_EFFECT_UNSPECIFIED
+	if view.FinalEffect == release.FinalEffectBase {
+		finalEffect = commonv1.FinalEffect_FINAL_EFFECT_BASE_FINAL
+	} else if view.FinalEffect == release.FinalEffectOverlay {
+		finalEffect = commonv1.FinalEffect_FINAL_EFFECT_OVERLAY_FINAL
+	}
+	return &controlv1.ReleaseTemplate{Code: view.Code, Name: view.Name, ModelCode: view.ModelCode, ReleaseTypeCode: view.ReleaseTypeCode, Version: view.Version, FinalEffect: finalEffect, SchedulingAllowed: view.SchedulingAllowed, MaxScheduleWindowSeconds: view.MaxScheduleWindowSeconds, Steps: steps, AllowedRoles: append([]string(nil), view.AllowedRoles...), Enabled: view.Enabled}
 }
 
 func projectAudit(stamp application.AuditStamp) *commonv1.AuditStamp {

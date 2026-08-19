@@ -337,6 +337,10 @@ func TestBFFCollectionAndSubscriptionAdminUsesExpectedRevision(t *testing.T) {
 	if missingRevision.Code != http.StatusBadRequest || !bytes.Contains(missingRevision.Body.Bytes(), []byte("EXPECTED_REVISION_REQUIRED")) {
 		t.Fatalf("missing revision=%d %s", missingRevision.Code, missingRevision.Body.String())
 	}
+	preview := serveJSON(t, handler, http.MethodPost, "/api/v1/models/preview", "", map[string]any{"code": "routes-admin", "name": "Routes", "collection": "routes", "definition": map[string]any{"fields": []any{}}, "enabled": true})
+	if preview.Code != http.StatusOK || !bytes.Contains(preview.Body.Bytes(), []byte(`"valid":true`)) || !bytes.Contains(preview.Body.Bytes(), []byte(`"normalizedDefinition":{"fields":[]}`)) {
+		t.Fatalf("model preview=%d %s", preview.Code, preview.Body.String())
+	}
 }
 
 type authenticator struct {
@@ -435,6 +439,30 @@ func (stub *catalogAdminStub) UpdateSubscription(_ context.Context, principal ca
 }
 func (stub *catalogAdminStub) ListSubscriptions(context.Context, catalogapp.Principal, catalogapp.SubscriptionQuery) (catalogapp.SubscriptionPage, error) {
 	return catalogapp.SubscriptionPage{Subscriptions: []catalogapp.SubscriptionView{stub.subscription}, PageNumber: 1, PageSize: 20, TotalNumber: 1, TotalPages: 1}, nil
+}
+func (*catalogAdminStub) PreviewModel(context.Context, catalogapp.Principal, catalogapp.ModelInput) (catalogapp.ModelPreview, error) {
+	return catalogapp.ModelPreview{Valid: true, NormalizedDefinition: []byte(`{"fields":[]}`)}, nil
+}
+func (*catalogAdminStub) CreateModel(context.Context, catalogapp.Principal, catalogapp.ModelInput) (catalogapp.ModelView, error) {
+	return catalogapp.ModelView{}, nil
+}
+func (*catalogAdminStub) UpdateModel(context.Context, catalogapp.Principal, catalog.ConfigRevision, catalogapp.ModelInput) (catalogapp.ModelView, error) {
+	return catalogapp.ModelView{}, nil
+}
+func (*catalogAdminStub) GetModel(context.Context, catalogapp.Principal, string) (catalogapp.ModelView, error) {
+	return catalogapp.ModelView{}, nil
+}
+func (*catalogAdminStub) ListModels(context.Context, catalogapp.Principal, catalogapp.ModelQuery) (catalogapp.ModelPage, error) {
+	return catalogapp.ModelPage{}, nil
+}
+func (*catalogAdminStub) CreateTemplate(context.Context, catalogapp.Principal, catalogapp.TemplateInput) (catalogapp.TemplateView, error) {
+	return catalogapp.TemplateView{}, nil
+}
+func (*catalogAdminStub) GetTemplate(context.Context, catalogapp.Principal, string, int64) (catalogapp.TemplateView, error) {
+	return catalogapp.TemplateView{}, nil
+}
+func (*catalogAdminStub) ListTemplates(context.Context, catalogapp.Principal, catalogapp.TemplateQuery) (catalogapp.TemplatePage, error) {
+	return catalogapp.TemplatePage{}, nil
 }
 
 func (stub *auditStub) List(_ context.Context, principal audit.Principal, query audit.Query) (audit.Page, error) {

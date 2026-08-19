@@ -88,6 +88,30 @@ func (stub *repositoryStub) UpdateSubscription(_ context.Context, mutation appli
 func (*repositoryStub) ListSubscriptions(context.Context, application.SubscriptionQuery) (application.SubscriptionPage, error) {
 	return application.SubscriptionPage{}, nil
 }
+func (*repositoryStub) PreviewModel(context.Context, application.ModelInput) (application.ModelPreview, error) {
+	return application.ModelPreview{Valid: true}, nil
+}
+func (*repositoryStub) CreateModel(context.Context, application.ModelMutation) (application.ModelView, error) {
+	return application.ModelView{}, nil
+}
+func (*repositoryStub) UpdateModel(context.Context, application.ModelMutation) (application.ModelView, error) {
+	return application.ModelView{}, nil
+}
+func (*repositoryStub) GetModel(context.Context, string) (application.ModelView, error) {
+	return application.ModelView{}, nil
+}
+func (*repositoryStub) ListModels(context.Context, application.ModelQuery) (application.ModelPage, error) {
+	return application.ModelPage{}, nil
+}
+func (*repositoryStub) CreateTemplate(context.Context, application.TemplateMutation) (application.TemplateView, error) {
+	return application.TemplateView{}, nil
+}
+func (*repositoryStub) GetTemplate(context.Context, string, int64) (application.TemplateView, error) {
+	return application.TemplateView{}, nil
+}
+func (*repositoryStub) ListTemplates(context.Context, application.TemplateQuery) (application.TemplatePage, error) {
+	return application.TemplatePage{}, nil
+}
 
 type fixedClock struct{ now time.Time }
 

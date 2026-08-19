@@ -61,17 +61,17 @@ type OptionSourceDefinition struct {
 // ModelField adds interaction behavior to a Collection field while repeating
 // its data semantics for transport compatibility.
 type ModelField struct {
-	Name                   string
-	Type                   FieldType
-	Required               bool
-	Sensitive              bool
-	Editable               bool
-	Queryable              bool
-	DefaultValue           *string
-	UIControl              UIControlType
-	AllowedFilterOperators []FilterOperator
-	OptionSource           *OptionSourceDefinition
-	ValidationRules        []ValidationRule
+	Name                   string                  `json:"name"`
+	Type                   FieldType               `json:"type"`
+	Required               bool                    `json:"required"`
+	Sensitive              bool                    `json:"sensitive"`
+	Editable               bool                    `json:"editable"`
+	Queryable              bool                    `json:"queryable"`
+	DefaultValue           *string                 `json:"defaultValue,omitempty"`
+	UIControl              UIControlType           `json:"uiControl"`
+	AllowedFilterOperators []FilterOperator        `json:"allowedFilterOperators"`
+	OptionSource           *OptionSourceDefinition `json:"optionSource,omitempty"`
+	ValidationRules        []ValidationRule        `json:"validationRules"`
 }
 
 type AutoFillSource string
@@ -91,27 +91,27 @@ type AutoFillRule struct {
 }
 
 type ReleaseTypeDefinition struct {
-	Code                  string
-	Name                  string
-	TemplateCode          string
-	Enabled               bool
-	Available             bool
-	UnavailableReasonCode string
+	Code                  string `json:"code"`
+	Name                  string `json:"name"`
+	TemplateCode          string `json:"templateCode"`
+	Enabled               bool   `json:"enabled"`
+	Available             bool   `json:"available,omitempty"`
+	UnavailableReasonCode string `json:"unavailableReasonCode,omitempty"`
 }
 
 // ModelSpec is untrusted model input to CompileModel.
 type ModelSpec struct {
-	Code             string
-	Name             string
-	Collection       string
-	Fields           []ModelField
-	ProjectionFields []string
-	KeyFields        []string
-	DefaultPageSize  int32
-	MaxPageSize      int32
-	ReleaseTypes     []ReleaseTypeDefinition
-	AutoFillRules    []AutoFillRule
-	ConfigRevision   ConfigRevision
+	Code             string                  `json:"code,omitempty"`
+	Name             string                  `json:"name,omitempty"`
+	Collection       string                  `json:"collection,omitempty"`
+	Fields           []ModelField            `json:"fields"`
+	ProjectionFields []string                `json:"projectionFields"`
+	KeyFields        []string                `json:"keyFields"`
+	DefaultPageSize  int32                   `json:"defaultPageSize"`
+	MaxPageSize      int32                   `json:"maxPageSize"`
+	ReleaseTypes     []ReleaseTypeDefinition `json:"releaseTypes"`
+	AutoFillRules    []AutoFillRule          `json:"autoFillRules"`
+	ConfigRevision   ConfigRevision          `json:"configRevision,omitempty"`
 }
 
 // CompiledModel is safe to publish in a snapshot.

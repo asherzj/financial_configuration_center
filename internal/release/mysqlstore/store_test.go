@@ -239,10 +239,58 @@ func TestRealMySQLCollectionAndSubscriptionMetadataTransactions(t *testing.T) {
 	if _, err := service.UpdateCollection(ctx, principal, updated.ConfigRevision, input); !errors.Is(err, catalogapp.ErrFailedPrecondition) {
 		t.Fatalf("destructive collection update = %v", err)
 	}
-	assertCount(t, raw, `SELECT COUNT(*) FROM audit_records WHERE resource_type IN ('COLLECTION', 'SUBSCRIPTION')`, 4)
-	assertCount(t, raw, `SELECT COUNT(*) FROM configuration_change_log WHERE kind = 'METADATA'`, 4)
-	assertCount(t, raw, `SELECT COUNT(*) FROM outbox_events WHERE event_type = 'CONFIGURATION_CHANGED' AND aggregate_type IN ('COLLECTION', 'SUBSCRIPTION')`, 8)
-	assertCount(t, raw, `SELECT COUNT(*) FROM configuration_versions WHERE collection_name = 'routes' AND config_revision = 11`, 2)
+	modelSpec := catalog.ModelSpec{
+		Fields: []catalog.ModelField{
+			{Name: "code", Type: catalog.FieldTypeString, Required: true, Editable: true, Queryable: true, UIControl: catalog.UIControlInput, AllowedFilterOperators: []catalog.FilterOperator{catalog.FilterExact}},
+			{Name: "description", Type: catalog.FieldTypeString, Editable: true, Queryable: true, UIControl: catalog.UIControlInput, AllowedFilterOperators: []catalog.FilterOperator{catalog.FilterContains}},
+		},
+		ProjectionFields: []string{"code", "description"}, KeyFields: []string{"code"}, DefaultPageSize: 20, MaxPageSize: 100,
+		ReleaseTypes: []catalog.ReleaseTypeDefinition{{Code: "direct", Name: "Direct", TemplateCode: "base-final-routes", Enabled: true}},
+	}
+	modelJSON, _ := json.Marshal(modelSpec)
+	modelInput := catalogapp.ModelInput{Code: "routes-admin", Name: "Routes admin", Collection: "routes", Definition: modelJSON, Enabled: true}
+	preview, err := service.PreviewModel(ctx, principal, modelInput)
+	if err != nil || !preview.Valid || len(preview.NormalizedDefinition) == 0 {
+		t.Fatalf("model preview = %+v, %v", preview, err)
+	}
+	invalidInput := modelInput
+	invalidInput.Definition = []byte(`{"fields":[{"name":"missing"}]}`)
+	invalidPreview, err := service.PreviewModel(ctx, principal, invalidInput)
+	if err != nil || invalidPreview.Valid || len(invalidPreview.Issues) != 1 || invalidPreview.Issues[0].Path == "" {
+		t.Fatalf("invalid model preview = %+v, %v", invalidPreview, err)
+	}
+	model, err := service.CreateModel(ctx, principal, modelInput)
+	if err != nil || model.ConfigRevision != 12 {
+		t.Fatalf("created model = %+v, %v", model, err)
+	}
+	modelInput.Name = "Updated routes admin"
+	if _, err := service.UpdateModel(ctx, principal, 99, modelInput); !errors.Is(err, catalogapp.ErrAborted) {
+		t.Fatalf("stale model update = %v", err)
+	}
+	model, err = service.UpdateModel(ctx, principal, model.ConfigRevision, modelInput)
+	if err != nil || model.ConfigRevision != 13 {
+		t.Fatalf("updated model = %+v, %v", model, err)
+	}
+	templateInput := catalogapp.TemplateInput{
+		Code: "base-final-routes", Name: "Direct", ModelCode: "routes-admin", ReleaseTypeCode: "direct", FinalEffect: release.FinalEffectBase,
+		Document:     []byte(`{"steps":[{"code":"apply","type":"BASE_APPLY","requiredRoles":["RELEASE_OPERATOR"],"params":{"cleanupScopeOverlay":true}},{"code":"complete","type":"COMPLETE","requiredRoles":[],"params":{}}]}`),
+		AllowedRoles: []string{"RELEASE_CREATOR", "RELEASE_OPERATOR"}, Enabled: true,
+	}
+	template, err := service.CreateTemplate(ctx, principal, templateInput)
+	if err != nil || template.Version != 1 {
+		t.Fatalf("created template = %+v, %v", template, err)
+	}
+	template.Name = "Direct v2"
+	template, err = service.CreateTemplate(ctx, principal, template.TemplateInput)
+	if err != nil || template.Version != 2 {
+		t.Fatalf("versioned template = %+v, %v", template, err)
+	}
+	assertCount(t, raw, `SELECT COUNT(*) FROM release_templates WHERE code = 'base-final-routes'`, 2)
+	assertCount(t, raw, `SELECT COUNT(*) FROM release_templates WHERE code = 'base-final-routes' AND active_slot = 'A' AND version = 2`, 1)
+	assertCount(t, raw, `SELECT COUNT(*) FROM audit_records WHERE resource_type IN ('COLLECTION', 'SUBSCRIPTION', 'MODEL', 'RELEASE_TEMPLATE')`, 8)
+	assertCount(t, raw, `SELECT COUNT(*) FROM configuration_change_log WHERE kind = 'METADATA'`, 8)
+	assertCount(t, raw, `SELECT COUNT(*) FROM outbox_events WHERE event_type = 'CONFIGURATION_CHANGED' AND aggregate_type IN ('COLLECTION', 'SUBSCRIPTION', 'MODEL', 'RELEASE_TEMPLATE')`, 16)
+	assertCount(t, raw, `SELECT COUNT(*) FROM configuration_versions WHERE collection_name = 'routes' AND config_revision = 15`, 2)
 }
 
 func TestRealMySQLSnapshotRefreshRetainsFailedOptionDependencyGroup(t *testing.T) {

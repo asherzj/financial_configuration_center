@@ -1,6 +1,6 @@
 # FC-010 Operations hardening and final matrix
 
-- Status: blocked
+- Status: ready
 - Blocked by: FC-009
 - Spec: sections 7-12, acceptance scenarios 14-15
 

@@ -45,6 +45,10 @@ func TestGooseMigrationUpDownUp(t *testing.T) {
 	if err := migrations.DownOne(ctx, db, directory); err != nil {
 		t.Fatal(err)
 	}
+	assertBusinessTableCount(t, ctx, db, 16)
+	if err := migrations.DownOne(ctx, db, directory); err != nil {
+		t.Fatal(err)
+	}
 	assertBusinessTableCount(t, ctx, db, 0)
 
 	if err := migrations.Up(ctx, db, directory); err != nil {
@@ -183,6 +187,7 @@ func assertRevisionColumns(t *testing.T, ctx context.Context, db *sql.DB) {
 	assertColumn("configuration_records", "config_revision", "bigint", "bigint unsigned", "NO")
 	assertColumn("release_orders", "entity_revision", "bigint", "bigint unsigned", "NO")
 	assertColumn("outbox_events", "lease_revision", "bigint", "bigint unsigned", "NO")
+	assertColumn("release_templates", "max_schedule_window_seconds", "bigint", "bigint unsigned", "NO")
 }
 
 func assertSchemaRejectsInvalidRows(t *testing.T, ctx context.Context, db *sql.DB) {

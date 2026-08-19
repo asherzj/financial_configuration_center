@@ -15,6 +15,10 @@ const CatalogPage = lazy(() =>
 	import("../features/catalog/CatalogPage").then((module) => ({ default: module.CatalogPage })),
 );
 
+const ModelTemplatePage = lazy(() =>
+	import("../features/catalog/ModelTemplatePage").then((module) => ({ default: module.ModelTemplatePage })),
+);
+
 export const router = createBrowserRouter([
   {
     path: "/",
@@ -32,6 +36,8 @@ export const router = createBrowserRouter([
       { path: "releases", element: <PlaceholderPage title="发布单" /> },
 	  { path: "collections", element: <Suspense fallback={<div>加载配置集合…</div>}><CatalogPage /></Suspense> },
 	  { path: "subscriptions", element: <Suspense fallback={<div>加载消费者与订阅…</div>}><CatalogPage initialTab="subscriptions" /></Suspense> },
+	  { path: "models", element: <Suspense fallback={<div>加载配置模型…</div>}><ModelTemplatePage /></Suspense> },
+	  { path: "templates", element: <Suspense fallback={<div>加载发布模板…</div>}><ModelTemplatePage initialTab="templates" /></Suspense> },
 	  {
 		path: "diagnostics",
 		element: (

@@ -14,6 +14,7 @@ import (
 	"github.com/asherzj/financial_configuration_center/internal/catalog/application"
 	catalog "github.com/asherzj/financial_configuration_center/internal/catalog/domain"
 	platformmysql "github.com/asherzj/financial_configuration_center/internal/platform/mysql"
+	release "github.com/asherzj/financial_configuration_center/internal/release/domain"
 	drivermysql "github.com/go-sql-driver/mysql"
 	"gorm.io/gorm"
 )
@@ -258,6 +259,273 @@ func (store *Store) ListSubscriptions(ctx context.Context, query application.Sub
 	return page, classify(err)
 }
 
+func (store *Store) PreviewModel(ctx context.Context, input application.ModelInput) (application.ModelPreview, error) {
+	preview := application.ModelPreview{}
+	err := store.read(ctx, func(db *gorm.DB) error {
+		collectionRow, found, err := loadCollectionRow(ctx, db, input.Collection, false)
+		if err != nil {
+			return err
+		}
+		if !found {
+			preview.Issues = []application.CompileIssue{{Code: "COLLECTION_NOT_FOUND", Path: "collection", Message: "collection was not found"}}
+			return nil
+		}
+		definition, err := compileCollectionRow(collectionRow)
+		if err != nil {
+			return err
+		}
+		spec, normalized, issue := compileModelDocument(input, definition, 1)
+		if issue != nil {
+			preview.Issues = []application.CompileIssue{*issue}
+			return nil
+		}
+		_ = spec
+		preview.Valid = true
+		preview.NormalizedDefinition = normalized
+		return nil
+	})
+	return preview, classify(err)
+}
+
+func (store *Store) CreateModel(ctx context.Context, mutation application.ModelMutation) (application.ModelView, error) {
+	var view application.ModelView
+	err := store.write(ctx, func(db *gorm.DB) error {
+		collectionRow, found, err := loadCollectionRow(ctx, db, mutation.Collection, true)
+		if err != nil {
+			return err
+		}
+		if !found {
+			return fmt.Errorf("%w: model collection does not exist", application.ErrFailedPrecondition)
+		}
+		definition, err := compileCollectionRow(collectionRow)
+		if err != nil {
+			return err
+		}
+		revision, err := allocateRevision(ctx, db)
+		if err != nil {
+			return err
+		}
+		_, normalized, issue := compileModelDocument(mutation.ModelInput, definition, revision)
+		if issue != nil {
+			return fmt.Errorf("%w: %s at %s", application.ErrInvalid, issue.Message, issue.Path)
+		}
+		if err := db.WithContext(ctx).Exec(`
+			INSERT INTO configuration_models (
+				code, name, collection_name, definition, enabled, config_revision,
+				created_at, created_by, updated_at, updated_by
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		`, mutation.Code, mutation.Name, mutation.Collection, normalized, mutation.Enabled, revision, mutation.At, mutation.Actor.Subject, mutation.At, mutation.Actor.Subject).Error; err != nil {
+			return err
+		}
+		if err := appendMetadataFacts(ctx, db, "ADD", "MODEL", mutation.Code, mutation.Collection, revision, mutation.Actor, mutation.At); err != nil {
+			return err
+		}
+		view = application.ModelView{ModelInput: application.ModelInput{Code: mutation.Code, Name: mutation.Name, Collection: mutation.Collection, Definition: normalized, Enabled: mutation.Enabled}, ConfigRevision: revision, Audit: application.AuditStamp{CreatedAt: mutation.At, CreatedBy: mutation.Actor.Subject, UpdatedAt: mutation.At, UpdatedBy: mutation.Actor.Subject}}
+		return nil
+	})
+	return view, classify(err)
+}
+
+func (store *Store) UpdateModel(ctx context.Context, mutation application.ModelMutation) (application.ModelView, error) {
+	var view application.ModelView
+	err := store.write(ctx, func(db *gorm.DB) error {
+		row, found, err := loadModelRow(ctx, db, mutation.Code, true)
+		if err != nil {
+			return err
+		}
+		if !found {
+			return application.ErrNotFound
+		}
+		if catalog.ConfigRevision(row.ConfigRevision) != mutation.ExpectedRevision {
+			return fmt.Errorf("%w: current revision is %d", application.ErrAborted, row.ConfigRevision)
+		}
+		if row.CollectionName != mutation.Collection {
+			return fmt.Errorf("%w: model collection cannot be changed", application.ErrFailedPrecondition)
+		}
+		collectionRow, found, err := loadCollectionRow(ctx, db, mutation.Collection, true)
+		if err != nil {
+			return err
+		}
+		if !found {
+			return fmt.Errorf("%w: model collection does not exist", application.ErrFailedPrecondition)
+		}
+		definition, err := compileCollectionRow(collectionRow)
+		if err != nil {
+			return err
+		}
+		revision, err := allocateRevision(ctx, db)
+		if err != nil {
+			return err
+		}
+		_, normalized, issue := compileModelDocument(mutation.ModelInput, definition, revision)
+		if issue != nil {
+			return fmt.Errorf("%w: %s at %s", application.ErrInvalid, issue.Message, issue.Path)
+		}
+		result := db.WithContext(ctx).Exec(`
+			UPDATE configuration_models SET name = ?, definition = ?, enabled = ?, config_revision = ?, updated_at = ?, updated_by = ?
+			WHERE code = ? AND config_revision = ?
+		`, mutation.Name, normalized, mutation.Enabled, revision, mutation.At, mutation.Actor.Subject, mutation.Code, mutation.ExpectedRevision)
+		if result.Error != nil {
+			return result.Error
+		}
+		if result.RowsAffected != 1 {
+			return application.ErrAborted
+		}
+		if err := appendMetadataFacts(ctx, db, "MODIFY", "MODEL", mutation.Code, mutation.Collection, revision, mutation.Actor, mutation.At); err != nil {
+			return err
+		}
+		view = application.ModelView{ModelInput: application.ModelInput{Code: mutation.Code, Name: mutation.Name, Collection: mutation.Collection, Definition: normalized, Enabled: mutation.Enabled}, ConfigRevision: revision, Audit: row.auditUpdated(mutation.At, mutation.Actor.Subject)}
+		return nil
+	})
+	return view, classify(err)
+}
+
+func (store *Store) GetModel(ctx context.Context, code string) (application.ModelView, error) {
+	var view application.ModelView
+	err := store.read(ctx, func(db *gorm.DB) error {
+		row, found, err := loadModelRow(ctx, db, code, false)
+		if err != nil {
+			return err
+		}
+		if !found {
+			return application.ErrNotFound
+		}
+		view = row.view()
+		return nil
+	})
+	return view, classify(err)
+}
+
+func (store *Store) ListModels(ctx context.Context, query application.ModelQuery) (application.ModelPage, error) {
+	page := application.ModelPage{PageNumber: query.PageNumber, PageSize: query.PageSize}
+	err := store.read(ctx, func(db *gorm.DB) error {
+		if err := db.WithContext(ctx).Raw(`SELECT COUNT(*) FROM configuration_models WHERE ? = '' OR collection_name = ?`, query.Collection, query.Collection).Scan(&page.TotalNumber).Error; err != nil {
+			return err
+		}
+		var rows []modelRow
+		if err := db.WithContext(ctx).Raw(`
+			SELECT code, name, collection_name, definition, enabled, config_revision, created_at, created_by, updated_at, updated_by
+			FROM configuration_models WHERE ? = '' OR collection_name = ? ORDER BY code LIMIT ? OFFSET ?
+		`, query.Collection, query.Collection, query.PageSize, (query.PageNumber-1)*query.PageSize).Scan(&rows).Error; err != nil {
+			return err
+		}
+		page.Models = make([]application.ModelView, len(rows))
+		for index, row := range rows {
+			page.Models[index] = row.view()
+		}
+		return nil
+	})
+	page.TotalPages = totalPages(page.TotalNumber, page.PageSize)
+	return page, classify(err)
+}
+
+func (store *Store) CreateTemplate(ctx context.Context, mutation application.TemplateMutation) (application.TemplateView, error) {
+	var view application.TemplateView
+	err := store.write(ctx, func(db *gorm.DB) error {
+		model, found, err := loadModelRow(ctx, db, mutation.ModelCode, true)
+		if err != nil {
+			return err
+		}
+		if !found || !model.Enabled {
+			return fmt.Errorf("%w: enabled model is required", application.ErrFailedPrecondition)
+		}
+		var spec catalog.ModelSpec
+		if err := json.Unmarshal(model.Definition, &spec); err != nil {
+			return err
+		}
+		applicable := false
+		for _, releaseType := range spec.ReleaseTypes {
+			if releaseType.Code == mutation.ReleaseTypeCode && releaseType.TemplateCode == mutation.Code && releaseType.Enabled {
+				applicable = true
+				break
+			}
+		}
+		if !applicable {
+			return fmt.Errorf("%w: template does not match an enabled model release type", application.ErrFailedPrecondition)
+		}
+		var latest int64
+		if err := db.WithContext(ctx).Raw(`SELECT COALESCE(MAX(version), 0) FROM release_templates WHERE code = ? FOR UPDATE`, mutation.Code).Scan(&latest).Error; err != nil {
+			return err
+		}
+		version := latest + 1
+		if mutation.Enabled {
+			if err := db.WithContext(ctx).Exec(`UPDATE release_templates SET active_slot = NULL WHERE model_code = ? AND release_type_code = ? AND active_slot = 'A'`, mutation.ModelCode, mutation.ReleaseTypeCode).Error; err != nil {
+				return err
+			}
+		}
+		roles, _ := json.Marshal(mutation.AllowedRoles)
+		var activeSlot any
+		if mutation.Enabled {
+			activeSlot = "A"
+		}
+		if err := db.WithContext(ctx).Exec(`
+			INSERT INTO release_templates (
+				code, name, version, model_code, release_type_code, active_slot, final_effect,
+				scheduling_allowed, max_schedule_window_seconds, allowed_roles, template, created_at, created_by
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		`, mutation.Code, mutation.Name, version, mutation.ModelCode, mutation.ReleaseTypeCode, activeSlot, mutation.FinalEffect, mutation.SchedulingAllowed, mutation.MaxScheduleWindowSeconds, roles, mutation.Document, mutation.At, mutation.Actor.Subject).Error; err != nil {
+			return err
+		}
+		revision, err := allocateRevision(ctx, db)
+		if err != nil {
+			return err
+		}
+		if err := db.WithContext(ctx).Exec(`UPDATE configuration_models SET config_revision = ?, updated_at = ?, updated_by = ? WHERE code = ?`, revision, mutation.At, mutation.Actor.Subject, mutation.ModelCode).Error; err != nil {
+			return err
+		}
+		if err := appendMetadataFacts(ctx, db, "ADD", "RELEASE_TEMPLATE", mutation.Code, model.CollectionName, revision, mutation.Actor, mutation.At); err != nil {
+			return err
+		}
+		view = application.TemplateView{TemplateInput: mutation.TemplateInput, Version: version, Audit: application.AuditStamp{CreatedAt: mutation.At, CreatedBy: mutation.Actor.Subject}}
+		return nil
+	})
+	return view, classify(err)
+}
+
+func (store *Store) GetTemplate(ctx context.Context, code string, version int64) (application.TemplateView, error) {
+	var view application.TemplateView
+	err := store.read(ctx, func(db *gorm.DB) error {
+		row, found, err := loadTemplateRow(ctx, db, code, version)
+		if err != nil {
+			return err
+		}
+		if !found {
+			return application.ErrNotFound
+		}
+		view, err = row.view()
+		return err
+	})
+	return view, classify(err)
+}
+
+func (store *Store) ListTemplates(ctx context.Context, query application.TemplateQuery) (application.TemplatePage, error) {
+	page := application.TemplatePage{PageNumber: query.PageNumber, PageSize: query.PageSize}
+	err := store.read(ctx, func(db *gorm.DB) error {
+		if err := db.WithContext(ctx).Raw(`SELECT COUNT(*) FROM release_templates WHERE ? = '' OR model_code = ?`, query.ModelCode, query.ModelCode).Scan(&page.TotalNumber).Error; err != nil {
+			return err
+		}
+		var rows []templateRow
+		if err := db.WithContext(ctx).Raw(`
+			SELECT code, name, version, model_code, release_type_code, active_slot, final_effect,
+				scheduling_allowed, max_schedule_window_seconds, allowed_roles, template, created_at, created_by
+			FROM release_templates WHERE ? = '' OR model_code = ? ORDER BY code, version DESC LIMIT ? OFFSET ?
+		`, query.ModelCode, query.ModelCode, query.PageSize, (query.PageNumber-1)*query.PageSize).Scan(&rows).Error; err != nil {
+			return err
+		}
+		page.Templates = make([]application.TemplateView, len(rows))
+		for index, row := range rows {
+			view, err := row.view()
+			if err != nil {
+				return err
+			}
+			page.Templates[index] = view
+		}
+		return nil
+	})
+	page.TotalPages = totalPages(page.TotalNumber, page.PageSize)
+	return page, classify(err)
+}
+
 type collectionRow struct {
 	Name               string
 	Description        string
@@ -290,6 +558,53 @@ type subscriptionRow struct {
 	CreatedBy      string
 	UpdatedAt      time.Time
 	UpdatedBy      string
+}
+
+type modelRow struct {
+	Code           string
+	Name           string
+	CollectionName string
+	Definition     []byte
+	Enabled        bool
+	ConfigRevision uint64
+	CreatedAt      time.Time
+	CreatedBy      string
+	UpdatedAt      time.Time
+	UpdatedBy      string
+}
+
+func (row modelRow) view() application.ModelView {
+	return application.ModelView{ModelInput: application.ModelInput{Code: row.Code, Name: row.Name, Collection: row.CollectionName, Definition: append([]byte(nil), row.Definition...), Enabled: row.Enabled}, ConfigRevision: catalog.ConfigRevision(row.ConfigRevision), Audit: application.AuditStamp{CreatedAt: row.CreatedAt, CreatedBy: row.CreatedBy, UpdatedAt: row.UpdatedAt, UpdatedBy: row.UpdatedBy}}
+}
+
+func (row modelRow) auditUpdated(at time.Time, actor string) application.AuditStamp {
+	return application.AuditStamp{CreatedAt: row.CreatedAt, CreatedBy: row.CreatedBy, UpdatedAt: at, UpdatedBy: actor}
+}
+
+type templateRow struct {
+	Code                     string
+	Name                     string
+	Version                  int64
+	ModelCode                string
+	ReleaseTypeCode          string
+	ActiveSlot               *string
+	FinalEffect              string
+	SchedulingAllowed        bool
+	MaxScheduleWindowSeconds int64
+	AllowedRoles             []byte
+	Template                 []byte
+	CreatedAt                time.Time
+	CreatedBy                string
+}
+
+func (row templateRow) view() (application.TemplateView, error) {
+	var roles []string
+	if len(row.AllowedRoles) != 0 {
+		if err := json.Unmarshal(row.AllowedRoles, &roles); err != nil {
+			return application.TemplateView{}, fmt.Errorf("decode template %s version %d roles: %w", row.Code, row.Version, err)
+		}
+	}
+	return application.TemplateView{TemplateInput: application.TemplateInput{Code: row.Code, Name: row.Name, ModelCode: row.ModelCode, ReleaseTypeCode: row.ReleaseTypeCode, FinalEffect: release.FinalEffect(row.FinalEffect), SchedulingAllowed: row.SchedulingAllowed, MaxScheduleWindowSeconds: row.MaxScheduleWindowSeconds, Document: append([]byte(nil), row.Template...), AllowedRoles: roles, Enabled: row.ActiveSlot != nil}, Version: row.Version, Audit: application.AuditStamp{CreatedAt: row.CreatedAt, CreatedBy: row.CreatedBy}}, nil
 }
 
 func (row subscriptionRow) audit() application.AuditStamp {
@@ -428,6 +743,57 @@ func loadSubscriptionRow(ctx context.Context, db *gorm.DB, id string, lock bool)
 	var row subscriptionRow
 	result := db.WithContext(ctx).Raw(query, id).Scan(&row)
 	return row, result.RowsAffected == 1, result.Error
+}
+
+func loadModelRow(ctx context.Context, db *gorm.DB, code string, lock bool) (modelRow, bool, error) {
+	query := `SELECT code, name, collection_name, definition, enabled, config_revision, created_at, created_by, updated_at, updated_by FROM configuration_models WHERE code = ?`
+	if lock {
+		query += ` FOR UPDATE`
+	}
+	var row modelRow
+	result := db.WithContext(ctx).Raw(query, code).Scan(&row)
+	return row, result.RowsAffected == 1, result.Error
+}
+
+func loadTemplateRow(ctx context.Context, db *gorm.DB, code string, version int64) (templateRow, bool, error) {
+	var row templateRow
+	result := db.WithContext(ctx).Raw(`
+		SELECT code, name, version, model_code, release_type_code, active_slot, final_effect,
+			scheduling_allowed, max_schedule_window_seconds, allowed_roles, template, created_at, created_by
+		FROM release_templates WHERE code = ? AND version = ?
+	`, code, version).Scan(&row)
+	return row, result.RowsAffected == 1, result.Error
+}
+
+func compileModelDocument(input application.ModelInput, definition catalog.CollectionDefinition, revision catalog.ConfigRevision) (catalog.ModelSpec, []byte, *application.CompileIssue) {
+	var spec catalog.ModelSpec
+	if err := json.Unmarshal(input.Definition, &spec); err != nil {
+		return catalog.ModelSpec{}, nil, &application.CompileIssue{Code: "MODEL_JSON_INVALID", Path: "definition", Message: err.Error()}
+	}
+	spec.Code, spec.Name, spec.Collection, spec.ConfigRevision = input.Code, input.Name, input.Collection, revision
+	if _, err := catalog.CompileModel(definition, spec); err != nil {
+		return catalog.ModelSpec{}, nil, &application.CompileIssue{Code: "MODEL_COMPILE_ERROR", Path: compileIssuePath(err.Error()), Message: err.Error()}
+	}
+	normalized, err := json.Marshal(spec)
+	if err != nil {
+		return catalog.ModelSpec{}, nil, &application.CompileIssue{Code: "MODEL_JSON_INVALID", Path: "definition", Message: err.Error()}
+	}
+	return spec, normalized, nil
+}
+
+func compileIssuePath(message string) string {
+	for _, prefix := range []string{`field "`, `projection field "`, `auto-fill field "`, `release type "`} {
+		start := strings.Index(message, prefix)
+		if start < 0 {
+			continue
+		}
+		start += len(prefix)
+		end := strings.Index(message[start:], `"`)
+		if end >= 0 {
+			return "definition." + strings.ReplaceAll(strings.TrimSpace(prefix), `"`, "") + "." + message[start:start+end]
+		}
+	}
+	return "definition"
 }
 
 func validateSubscriptionCollection(ctx context.Context, db *gorm.DB, input application.SubscriptionInput) error {

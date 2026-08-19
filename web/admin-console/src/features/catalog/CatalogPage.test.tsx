@@ -15,6 +15,7 @@ describe("CatalogPage", () => {
 			createCollection: vi.fn(), updateCollection: vi.fn(),
 			listSubscriptions: vi.fn().mockResolvedValue({ subscriptions: [subscription], page: { number: 1, size: 20, totalNumber: 1, totalPages: 1 } }),
 			createSubscription: vi.fn(), updateSubscription: vi.fn(),
+			listModels: vi.fn(), previewModel: vi.fn(), createModel: vi.fn(), updateModel: vi.fn(), listTemplates: vi.fn(), createTemplate: vi.fn(),
 		};
 		render(<CatalogPage api={api} />);
 		await waitFor(() => expect(api.listCollections).toHaveBeenCalledWith(1, 20));

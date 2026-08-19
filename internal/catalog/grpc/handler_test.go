@@ -69,6 +69,30 @@ func (stub *applicationStub) ListSubscriptions(_ context.Context, _ application.
 	stub.subscriptionQuery = query
 	return stub.subscriptions, nil
 }
+func (*applicationStub) PreviewModel(context.Context, application.Principal, application.ModelInput) (application.ModelPreview, error) {
+	return application.ModelPreview{}, nil
+}
+func (*applicationStub) CreateModel(context.Context, application.Principal, application.ModelInput) (application.ModelView, error) {
+	return application.ModelView{}, nil
+}
+func (*applicationStub) UpdateModel(context.Context, application.Principal, catalog.ConfigRevision, application.ModelInput) (application.ModelView, error) {
+	return application.ModelView{}, nil
+}
+func (*applicationStub) GetModel(context.Context, application.Principal, string) (application.ModelView, error) {
+	return application.ModelView{}, nil
+}
+func (*applicationStub) ListModels(context.Context, application.Principal, application.ModelQuery) (application.ModelPage, error) {
+	return application.ModelPage{}, nil
+}
+func (*applicationStub) CreateTemplate(context.Context, application.Principal, application.TemplateInput) (application.TemplateView, error) {
+	return application.TemplateView{}, nil
+}
+func (*applicationStub) GetTemplate(context.Context, application.Principal, string, int64) (application.TemplateView, error) {
+	return application.TemplateView{}, nil
+}
+func (*applicationStub) ListTemplates(context.Context, application.Principal, application.TemplateQuery) (application.TemplatePage, error) {
+	return application.TemplatePage{}, nil
+}
 
 type principalResolver struct{}
 

@@ -137,21 +137,115 @@ paths:
   /models:
     get:
       operationId: listModels
+      parameters:
+        - {name: collection, in: query, schema: {type: string}}
+        - {name: page, in: query, schema: {type: integer, minimum: 1, default: 1}}
+        - {name: size, in: query, schema: {type: integer, minimum: 1, maximum: 100, default: 20}}
       responses:
-        '200': {description: Models}
+        '200':
+          description: Models
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ModelPage'}
+        default: {$ref: '#/components/responses/Error'}
     post:
       operationId: createModel
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/Model'}
       responses:
-        '201': {description: Created}
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Model'}
+        default: {$ref: '#/components/responses/Error'}
+  /models/preview:
+    post:
+      operationId: previewModel
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/Model'}
+      responses:
+        '200':
+          description: Model compiler result without persistence
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ModelPreview'}
+        default: {$ref: '#/components/responses/Error'}
+  /models/{code}:
+    parameters:
+      - {name: code, in: path, required: true, schema: {type: string}}
+    get:
+      operationId: getModel
+      responses:
+        '200':
+          description: Model
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Model'}
+        default: {$ref: '#/components/responses/Error'}
+    put:
+      operationId: updateModel
+      parameters:
+        - {$ref: '#/components/parameters/ExpectedRevision'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/Model'}
+      responses:
+        '200':
+          description: Updated
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Model'}
+        default: {$ref: '#/components/responses/Error'}
   /templates:
     get:
       operationId: listReleaseTemplates
+      parameters:
+        - {name: modelCode, in: query, schema: {type: string}}
+        - {name: page, in: query, schema: {type: integer, minimum: 1, default: 1}}
+        - {name: size, in: query, schema: {type: integer, minimum: 1, maximum: 100, default: 20}}
       responses:
-        '200': {description: Template versions}
+        '200':
+          description: Template versions
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ReleaseTemplatePage'}
+        default: {$ref: '#/components/responses/Error'}
     post:
       operationId: createReleaseTemplate
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/ReleaseTemplate'}
       responses:
-        '201': {description: Immutable template version created}
+        '201':
+          description: Immutable template version created
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ReleaseTemplate'}
+        default: {$ref: '#/components/responses/Error'}
+  /templates/{code}/versions/{version}:
+    get:
+      operationId: getReleaseTemplate
+      parameters:
+        - {name: code, in: path, required: true, schema: {type: string}}
+        - {name: version, in: path, required: true, schema: {type: integer, format: int64, minimum: 1}}
+      responses:
+        '200':
+          description: Immutable template version
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ReleaseTemplate'}
+        default: {$ref: '#/components/responses/Error'}
   /releases:
     get:
       operationId: listReleaseOrders
@@ -488,6 +582,65 @@ components:
       required: [subscriptions, page]
       properties:
         subscriptions: {type: array, items: {$ref: '#/components/schemas/Subscription'}}
+        page: {$ref: '#/components/schemas/PageMetadata'}
+    Model:
+      type: object
+      additionalProperties: false
+      required: [code, name, collection, definition, enabled]
+      properties:
+        code: {type: string}
+        name: {type: string}
+        collection: {type: string}
+        definition: {type: object}
+        enabled: {type: boolean}
+        configRevision: {type: integer, format: int64, minimum: 1}
+        audit: {$ref: '#/components/schemas/AuditStamp'}
+    ModelPage:
+      type: object
+      additionalProperties: false
+      required: [models, page]
+      properties:
+        models: {type: array, items: {$ref: '#/components/schemas/Model'}}
+        page: {$ref: '#/components/schemas/PageMetadata'}
+    CompileIssue:
+      type: object
+      additionalProperties: false
+      required: [code, path, message]
+      properties:
+        code: {type: string}
+        path: {type: string}
+        message: {type: string}
+    ModelPreview:
+      type: object
+      additionalProperties: false
+      required: [valid, issues]
+      properties:
+        valid: {type: boolean}
+        issues: {type: array, items: {$ref: '#/components/schemas/CompileIssue'}}
+        normalizedDefinition: {type: object}
+    ReleaseTemplate:
+      type: object
+      additionalProperties: false
+      required: [code, name, modelCode, releaseTypeCode, finalEffect, schedulingAllowed, maxScheduleWindowSeconds, document, allowedRoles, enabled]
+      properties:
+        code: {type: string}
+        name: {type: string}
+        modelCode: {type: string}
+        releaseTypeCode: {type: string}
+        version: {type: integer, format: int64, minimum: 1}
+        finalEffect: {type: string, enum: [BASE_FINAL, OVERLAY_FINAL]}
+        schedulingAllowed: {type: boolean}
+        maxScheduleWindowSeconds: {type: integer, format: int64, minimum: 0}
+        document: {type: object}
+        allowedRoles: {type: array, items: {type: string}}
+        enabled: {type: boolean}
+        audit: {$ref: '#/components/schemas/AuditStamp'}
+    ReleaseTemplatePage:
+      type: object
+      additionalProperties: false
+      required: [templates, page]
+      properties:
+        templates: {type: array, items: {$ref: '#/components/schemas/ReleaseTemplate'}}
         page: {$ref: '#/components/schemas/PageMetadata'}
     QueryPageRequest:
       type: object
