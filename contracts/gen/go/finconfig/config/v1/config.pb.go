@@ -1913,18 +1913,144 @@ func (*GetSnapshotStatusRequest) Descriptor() ([]byte, []int) {
 	return file_finconfig_config_v1_config_proto_rawDescGZIP(), []int{25}
 }
 
+type SnapshotCollectionStatus struct {
+	state           protoimpl.MessageState `protogen:"open.v1"`
+	Collection      string                 `protobuf:"bytes,1,opt,name=collection,proto3" json:"collection,omitempty"`
+	ConfigRevision  int64                  `protobuf:"varint,2,opt,name=config_revision,json=configRevision,proto3" json:"config_revision,omitempty"`
+	EffectiveDigest *v1.Digest             `protobuf:"bytes,3,opt,name=effective_digest,json=effectiveDigest,proto3" json:"effective_digest,omitempty"`
+	ChangeCursor    int64                  `protobuf:"varint,4,opt,name=change_cursor,json=changeCursor,proto3" json:"change_cursor,omitempty"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
+}
+
+func (x *SnapshotCollectionStatus) Reset() {
+	*x = SnapshotCollectionStatus{}
+	mi := &file_finconfig_config_v1_config_proto_msgTypes[26]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SnapshotCollectionStatus) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SnapshotCollectionStatus) ProtoMessage() {}
+
+func (x *SnapshotCollectionStatus) ProtoReflect() protoreflect.Message {
+	mi := &file_finconfig_config_v1_config_proto_msgTypes[26]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SnapshotCollectionStatus.ProtoReflect.Descriptor instead.
+func (*SnapshotCollectionStatus) Descriptor() ([]byte, []int) {
+	return file_finconfig_config_v1_config_proto_rawDescGZIP(), []int{26}
+}
+
+func (x *SnapshotCollectionStatus) GetCollection() string {
+	if x != nil {
+		return x.Collection
+	}
+	return ""
+}
+
+func (x *SnapshotCollectionStatus) GetConfigRevision() int64 {
+	if x != nil {
+		return x.ConfigRevision
+	}
+	return 0
+}
+
+func (x *SnapshotCollectionStatus) GetEffectiveDigest() *v1.Digest {
+	if x != nil {
+		return x.EffectiveDigest
+	}
+	return nil
+}
+
+func (x *SnapshotCollectionStatus) GetChangeCursor() int64 {
+	if x != nil {
+		return x.ChangeCursor
+	}
+	return 0
+}
+
+type FailedDependencyGroup struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Collections   []string               `protobuf:"bytes,1,rep,name=collections,proto3" json:"collections,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *FailedDependencyGroup) Reset() {
+	*x = FailedDependencyGroup{}
+	mi := &file_finconfig_config_v1_config_proto_msgTypes[27]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *FailedDependencyGroup) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*FailedDependencyGroup) ProtoMessage() {}
+
+func (x *FailedDependencyGroup) ProtoReflect() protoreflect.Message {
+	mi := &file_finconfig_config_v1_config_proto_msgTypes[27]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use FailedDependencyGroup.ProtoReflect.Descriptor instead.
+func (*FailedDependencyGroup) Descriptor() ([]byte, []int) {
+	return file_finconfig_config_v1_config_proto_rawDescGZIP(), []int{27}
+}
+
+func (x *FailedDependencyGroup) GetCollections() []string {
+	if x != nil {
+		return x.Collections
+	}
+	return nil
+}
+
 type GetSnapshotStatusResponse struct {
-	state                  protoimpl.MessageState `protogen:"open.v1"`
-	Snapshot               *v1.SnapshotIdentity   `protobuf:"bytes,1,opt,name=snapshot,proto3" json:"snapshot,omitempty"`
-	CollectionCount        int64                  `protobuf:"varint,2,opt,name=collection_count,json=collectionCount,proto3" json:"collection_count,omitempty"`
-	FailedDependencyGroups []string               `protobuf:"bytes,3,rep,name=failed_dependency_groups,json=failedDependencyGroups,proto3" json:"failed_dependency_groups,omitempty"`
-	unknownFields          protoimpl.UnknownFields
-	sizeCache              protoimpl.SizeCache
+	state    protoimpl.MessageState `protogen:"open.v1"`
+	Snapshot *v1.SnapshotIdentity   `protobuf:"bytes,1,opt,name=snapshot,proto3" json:"snapshot,omitempty"`
+	// Deprecated compatibility view. During the expand window producers MUST
+	// set this to collections.size().
+	//
+	// Deprecated: Marked as deprecated in finconfig/config/v1/config.proto.
+	CollectionCount int64 `protobuf:"varint,2,opt,name=collection_count,json=collectionCount,proto3" json:"collection_count,omitempty"`
+	// Deprecated compatibility view. During the expand window producers MUST
+	// emit one comma-joined entry for every failed_dependency_group_details
+	// entry, preserving both group and collection order. Consumers that know
+	// field 6 MUST prefer the structured representation.
+	//
+	// Deprecated: Marked as deprecated in finconfig/config/v1/config.proto.
+	FailedDependencyGroups       []string                    `protobuf:"bytes,3,rep,name=failed_dependency_groups,json=failedDependencyGroups,proto3" json:"failed_dependency_groups,omitempty"`
+	Environment                  string                      `protobuf:"bytes,4,opt,name=environment,proto3" json:"environment,omitempty"`
+	Collections                  []*SnapshotCollectionStatus `protobuf:"bytes,5,rep,name=collections,proto3" json:"collections,omitempty"`
+	FailedDependencyGroupDetails []*FailedDependencyGroup    `protobuf:"bytes,6,rep,name=failed_dependency_group_details,json=failedDependencyGroupDetails,proto3" json:"failed_dependency_group_details,omitempty"`
+	LastErrorCode                *string                     `protobuf:"bytes,7,opt,name=last_error_code,json=lastErrorCode,proto3,oneof" json:"last_error_code,omitempty"`
+	unknownFields                protoimpl.UnknownFields
+	sizeCache                    protoimpl.SizeCache
 }
 
 func (x *GetSnapshotStatusResponse) Reset() {
 	*x = GetSnapshotStatusResponse{}
-	mi := &file_finconfig_config_v1_config_proto_msgTypes[26]
+	mi := &file_finconfig_config_v1_config_proto_msgTypes[28]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1936,7 +2062,7 @@ func (x *GetSnapshotStatusResponse) String() string {
 func (*GetSnapshotStatusResponse) ProtoMessage() {}
 
 func (x *GetSnapshotStatusResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_finconfig_config_v1_config_proto_msgTypes[26]
+	mi := &file_finconfig_config_v1_config_proto_msgTypes[28]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1949,7 +2075,7 @@ func (x *GetSnapshotStatusResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetSnapshotStatusResponse.ProtoReflect.Descriptor instead.
 func (*GetSnapshotStatusResponse) Descriptor() ([]byte, []int) {
-	return file_finconfig_config_v1_config_proto_rawDescGZIP(), []int{26}
+	return file_finconfig_config_v1_config_proto_rawDescGZIP(), []int{28}
 }
 
 func (x *GetSnapshotStatusResponse) GetSnapshot() *v1.SnapshotIdentity {
@@ -1959,6 +2085,7 @@ func (x *GetSnapshotStatusResponse) GetSnapshot() *v1.SnapshotIdentity {
 	return nil
 }
 
+// Deprecated: Marked as deprecated in finconfig/config/v1/config.proto.
 func (x *GetSnapshotStatusResponse) GetCollectionCount() int64 {
 	if x != nil {
 		return x.CollectionCount
@@ -1966,11 +2093,40 @@ func (x *GetSnapshotStatusResponse) GetCollectionCount() int64 {
 	return 0
 }
 
+// Deprecated: Marked as deprecated in finconfig/config/v1/config.proto.
 func (x *GetSnapshotStatusResponse) GetFailedDependencyGroups() []string {
 	if x != nil {
 		return x.FailedDependencyGroups
 	}
 	return nil
+}
+
+func (x *GetSnapshotStatusResponse) GetEnvironment() string {
+	if x != nil {
+		return x.Environment
+	}
+	return ""
+}
+
+func (x *GetSnapshotStatusResponse) GetCollections() []*SnapshotCollectionStatus {
+	if x != nil {
+		return x.Collections
+	}
+	return nil
+}
+
+func (x *GetSnapshotStatusResponse) GetFailedDependencyGroupDetails() []*FailedDependencyGroup {
+	if x != nil {
+		return x.FailedDependencyGroupDetails
+	}
+	return nil
+}
+
+func (x *GetSnapshotStatusResponse) GetLastErrorCode() string {
+	if x != nil && x.LastErrorCode != nil {
+		return *x.LastErrorCode
+	}
+	return ""
 }
 
 type GetCollectionStatusRequest struct {
@@ -1983,7 +2139,7 @@ type GetCollectionStatusRequest struct {
 
 func (x *GetCollectionStatusRequest) Reset() {
 	*x = GetCollectionStatusRequest{}
-	mi := &file_finconfig_config_v1_config_proto_msgTypes[27]
+	mi := &file_finconfig_config_v1_config_proto_msgTypes[29]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1995,7 +2151,7 @@ func (x *GetCollectionStatusRequest) String() string {
 func (*GetCollectionStatusRequest) ProtoMessage() {}
 
 func (x *GetCollectionStatusRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_finconfig_config_v1_config_proto_msgTypes[27]
+	mi := &file_finconfig_config_v1_config_proto_msgTypes[29]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2008,7 +2164,7 @@ func (x *GetCollectionStatusRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetCollectionStatusRequest.ProtoReflect.Descriptor instead.
 func (*GetCollectionStatusRequest) Descriptor() ([]byte, []int) {
-	return file_finconfig_config_v1_config_proto_rawDescGZIP(), []int{27}
+	return file_finconfig_config_v1_config_proto_rawDescGZIP(), []int{29}
 }
 
 func (x *GetCollectionStatusRequest) GetCollection() string {
@@ -2038,7 +2194,7 @@ type GetCollectionStatusResponse struct {
 
 func (x *GetCollectionStatusResponse) Reset() {
 	*x = GetCollectionStatusResponse{}
-	mi := &file_finconfig_config_v1_config_proto_msgTypes[28]
+	mi := &file_finconfig_config_v1_config_proto_msgTypes[30]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2050,7 +2206,7 @@ func (x *GetCollectionStatusResponse) String() string {
 func (*GetCollectionStatusResponse) ProtoMessage() {}
 
 func (x *GetCollectionStatusResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_finconfig_config_v1_config_proto_msgTypes[28]
+	mi := &file_finconfig_config_v1_config_proto_msgTypes[30]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2063,7 +2219,7 @@ func (x *GetCollectionStatusResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetCollectionStatusResponse.ProtoReflect.Descriptor instead.
 func (*GetCollectionStatusResponse) Descriptor() ([]byte, []int) {
-	return file_finconfig_config_v1_config_proto_rawDescGZIP(), []int{28}
+	return file_finconfig_config_v1_config_proto_rawDescGZIP(), []int{30}
 }
 
 func (x *GetCollectionStatusResponse) GetCollection() string {
@@ -2297,11 +2453,25 @@ const file_finconfig_config_v1_config_proto_rawDesc = "" +
 	"\x0eNotifyResponse\x12\x1a\n" +
 	"\baccepted\x18\x01 \x01(\bR\baccepted\x12A\n" +
 	"\bsnapshot\x18\x02 \x01(\v2%.finconfig.common.v1.SnapshotIdentityR\bsnapshot\"\x1a\n" +
-	"\x18GetSnapshotStatusRequest\"\xc3\x01\n" +
+	"\x18GetSnapshotStatusRequest\"\xd0\x01\n" +
+	"\x18SnapshotCollectionStatus\x12\x1e\n" +
+	"\n" +
+	"collection\x18\x01 \x01(\tR\n" +
+	"collection\x12'\n" +
+	"\x0fconfig_revision\x18\x02 \x01(\x03R\x0econfigRevision\x12F\n" +
+	"\x10effective_digest\x18\x03 \x01(\v2\x1b.finconfig.common.v1.DigestR\x0feffectiveDigest\x12#\n" +
+	"\rchange_cursor\x18\x04 \x01(\x03R\fchangeCursor\"9\n" +
+	"\x15FailedDependencyGroup\x12 \n" +
+	"\vcollections\x18\x01 \x03(\tR\vcollections\"\xf2\x03\n" +
 	"\x19GetSnapshotStatusResponse\x12A\n" +
-	"\bsnapshot\x18\x01 \x01(\v2%.finconfig.common.v1.SnapshotIdentityR\bsnapshot\x12)\n" +
-	"\x10collection_count\x18\x02 \x01(\x03R\x0fcollectionCount\x128\n" +
-	"\x18failed_dependency_groups\x18\x03 \x03(\tR\x16failedDependencyGroups\"^\n" +
+	"\bsnapshot\x18\x01 \x01(\v2%.finconfig.common.v1.SnapshotIdentityR\bsnapshot\x12-\n" +
+	"\x10collection_count\x18\x02 \x01(\x03B\x02\x18\x01R\x0fcollectionCount\x12<\n" +
+	"\x18failed_dependency_groups\x18\x03 \x03(\tB\x02\x18\x01R\x16failedDependencyGroups\x12 \n" +
+	"\venvironment\x18\x04 \x01(\tR\venvironment\x12O\n" +
+	"\vcollections\x18\x05 \x03(\v2-.finconfig.config.v1.SnapshotCollectionStatusR\vcollections\x12q\n" +
+	"\x1ffailed_dependency_group_details\x18\x06 \x03(\v2*.finconfig.config.v1.FailedDependencyGroupR\x1cfailedDependencyGroupDetails\x12+\n" +
+	"\x0flast_error_code\x18\a \x01(\tH\x00R\rlastErrorCode\x88\x01\x01B\x12\n" +
+	"\x10_last_error_code\"^\n" +
 	"\x1aGetCollectionStatusRequest\x12\x1e\n" +
 	"\n" +
 	"collection\x18\x01 \x01(\tR\n" +
@@ -2341,7 +2511,7 @@ func file_finconfig_config_v1_config_proto_rawDescGZIP() []byte {
 	return file_finconfig_config_v1_config_proto_rawDescData
 }
 
-var file_finconfig_config_v1_config_proto_msgTypes = make([]protoimpl.MessageInfo, 33)
+var file_finconfig_config_v1_config_proto_msgTypes = make([]protoimpl.MessageInfo, 35)
 var file_finconfig_config_v1_config_proto_goTypes = []any{
 	(*VersionView)(nil),                 // 0: finconfig.config.v1.VersionView
 	(*GetSnapshotRequest)(nil),          // 1: finconfig.config.v1.GetSnapshotRequest
@@ -2369,98 +2539,103 @@ var file_finconfig_config_v1_config_proto_goTypes = []any{
 	(*NotifyRequest)(nil),               // 23: finconfig.config.v1.NotifyRequest
 	(*NotifyResponse)(nil),              // 24: finconfig.config.v1.NotifyResponse
 	(*GetSnapshotStatusRequest)(nil),    // 25: finconfig.config.v1.GetSnapshotStatusRequest
-	(*GetSnapshotStatusResponse)(nil),   // 26: finconfig.config.v1.GetSnapshotStatusResponse
-	(*GetCollectionStatusRequest)(nil),  // 27: finconfig.config.v1.GetCollectionStatusRequest
-	(*GetCollectionStatusResponse)(nil), // 28: finconfig.config.v1.GetCollectionStatusResponse
-	nil,                                 // 29: finconfig.config.v1.SnapshotRecord.ValuesEntry
-	nil,                                 // 30: finconfig.config.v1.ValidationRule.ParamsEntry
-	nil,                                 // 31: finconfig.config.v1.PageRow.ValuesEntry
-	nil,                                 // 32: finconfig.config.v1.PageRow.BaseValuesEntry
-	(*v1.Digest)(nil),                   // 33: finconfig.common.v1.Digest
-	(*v1.Scope)(nil),                    // 34: finconfig.common.v1.Scope
-	(*v1.SnapshotIdentity)(nil),         // 35: finconfig.common.v1.SnapshotIdentity
-	(*timestamppb.Timestamp)(nil),       // 36: google.protobuf.Timestamp
-	(v1.FieldType)(0),                   // 37: finconfig.common.v1.FieldType
-	(v1.FilterOperator)(0),              // 38: finconfig.common.v1.FilterOperator
-	(v1.QueryPageType)(0),               // 39: finconfig.common.v1.QueryPageType
-	(*v1.PageRequest)(nil),              // 40: finconfig.common.v1.PageRequest
-	(v1.UiControlType)(0),               // 41: finconfig.common.v1.UiControlType
-	(*v1.PageResponse)(nil),             // 42: finconfig.common.v1.PageResponse
+	(*SnapshotCollectionStatus)(nil),    // 26: finconfig.config.v1.SnapshotCollectionStatus
+	(*FailedDependencyGroup)(nil),       // 27: finconfig.config.v1.FailedDependencyGroup
+	(*GetSnapshotStatusResponse)(nil),   // 28: finconfig.config.v1.GetSnapshotStatusResponse
+	(*GetCollectionStatusRequest)(nil),  // 29: finconfig.config.v1.GetCollectionStatusRequest
+	(*GetCollectionStatusResponse)(nil), // 30: finconfig.config.v1.GetCollectionStatusResponse
+	nil,                                 // 31: finconfig.config.v1.SnapshotRecord.ValuesEntry
+	nil,                                 // 32: finconfig.config.v1.ValidationRule.ParamsEntry
+	nil,                                 // 33: finconfig.config.v1.PageRow.ValuesEntry
+	nil,                                 // 34: finconfig.config.v1.PageRow.BaseValuesEntry
+	(*v1.Digest)(nil),                   // 35: finconfig.common.v1.Digest
+	(*v1.Scope)(nil),                    // 36: finconfig.common.v1.Scope
+	(*v1.SnapshotIdentity)(nil),         // 37: finconfig.common.v1.SnapshotIdentity
+	(*timestamppb.Timestamp)(nil),       // 38: google.protobuf.Timestamp
+	(v1.FieldType)(0),                   // 39: finconfig.common.v1.FieldType
+	(v1.FilterOperator)(0),              // 40: finconfig.common.v1.FilterOperator
+	(v1.QueryPageType)(0),               // 41: finconfig.common.v1.QueryPageType
+	(*v1.PageRequest)(nil),              // 42: finconfig.common.v1.PageRequest
+	(v1.UiControlType)(0),               // 43: finconfig.common.v1.UiControlType
+	(*v1.PageResponse)(nil),             // 44: finconfig.common.v1.PageResponse
 }
 var file_finconfig_config_v1_config_proto_depIdxs = []int32{
-	33, // 0: finconfig.config.v1.VersionView.base_digest:type_name -> finconfig.common.v1.Digest
-	33, // 1: finconfig.config.v1.VersionView.overlay_digest:type_name -> finconfig.common.v1.Digest
-	33, // 2: finconfig.config.v1.VersionView.effective_digest:type_name -> finconfig.common.v1.Digest
-	34, // 3: finconfig.config.v1.GetSnapshotRequest.scope:type_name -> finconfig.common.v1.Scope
+	35, // 0: finconfig.config.v1.VersionView.base_digest:type_name -> finconfig.common.v1.Digest
+	35, // 1: finconfig.config.v1.VersionView.overlay_digest:type_name -> finconfig.common.v1.Digest
+	35, // 2: finconfig.config.v1.VersionView.effective_digest:type_name -> finconfig.common.v1.Digest
+	36, // 3: finconfig.config.v1.GetSnapshotRequest.scope:type_name -> finconfig.common.v1.Scope
 	0,  // 4: finconfig.config.v1.GetSnapshotRequest.known_versions:type_name -> finconfig.config.v1.VersionView
 	0,  // 5: finconfig.config.v1.CollectionPayload.version:type_name -> finconfig.config.v1.VersionView
 	4,  // 6: finconfig.config.v1.CollectionData.records:type_name -> finconfig.config.v1.SnapshotRecord
-	29, // 7: finconfig.config.v1.SnapshotRecord.values:type_name -> finconfig.config.v1.SnapshotRecord.ValuesEntry
-	35, // 8: finconfig.config.v1.GetSnapshotResponse.snapshot:type_name -> finconfig.common.v1.SnapshotIdentity
-	34, // 9: finconfig.config.v1.GetSnapshotResponse.scope:type_name -> finconfig.common.v1.Scope
+	31, // 7: finconfig.config.v1.SnapshotRecord.values:type_name -> finconfig.config.v1.SnapshotRecord.ValuesEntry
+	37, // 8: finconfig.config.v1.GetSnapshotResponse.snapshot:type_name -> finconfig.common.v1.SnapshotIdentity
+	36, // 9: finconfig.config.v1.GetSnapshotResponse.scope:type_name -> finconfig.common.v1.Scope
 	2,  // 10: finconfig.config.v1.GetSnapshotResponse.collections:type_name -> finconfig.config.v1.CollectionPayload
-	34, // 11: finconfig.config.v1.DiffVersionsRequest.scope:type_name -> finconfig.common.v1.Scope
+	36, // 11: finconfig.config.v1.DiffVersionsRequest.scope:type_name -> finconfig.common.v1.Scope
 	0,  // 12: finconfig.config.v1.DiffVersionsRequest.known_versions:type_name -> finconfig.config.v1.VersionView
-	35, // 13: finconfig.config.v1.DiffVersionsResponse.snapshot:type_name -> finconfig.common.v1.SnapshotIdentity
-	34, // 14: finconfig.config.v1.GetCollectionsRequest.scope:type_name -> finconfig.common.v1.Scope
-	35, // 15: finconfig.config.v1.GetCollectionsResponse.snapshot:type_name -> finconfig.common.v1.SnapshotIdentity
+	37, // 13: finconfig.config.v1.DiffVersionsResponse.snapshot:type_name -> finconfig.common.v1.SnapshotIdentity
+	36, // 14: finconfig.config.v1.GetCollectionsRequest.scope:type_name -> finconfig.common.v1.Scope
+	37, // 15: finconfig.config.v1.GetCollectionsResponse.snapshot:type_name -> finconfig.common.v1.SnapshotIdentity
 	2,  // 16: finconfig.config.v1.GetCollectionsResponse.collections:type_name -> finconfig.config.v1.CollectionPayload
-	34, // 17: finconfig.config.v1.WatchRequest.scope:type_name -> finconfig.common.v1.Scope
-	35, // 18: finconfig.config.v1.WatchResponse.snapshot:type_name -> finconfig.common.v1.SnapshotIdentity
+	36, // 17: finconfig.config.v1.WatchRequest.scope:type_name -> finconfig.common.v1.Scope
+	37, // 18: finconfig.config.v1.WatchResponse.snapshot:type_name -> finconfig.common.v1.SnapshotIdentity
 	0,  // 19: finconfig.config.v1.WatchResponse.versions:type_name -> finconfig.config.v1.VersionView
-	36, // 20: finconfig.config.v1.WatchResponse.occurred_at:type_name -> google.protobuf.Timestamp
-	37, // 21: finconfig.config.v1.ScalarValue.type:type_name -> finconfig.common.v1.FieldType
-	38, // 22: finconfig.config.v1.FilterCondition.operator:type_name -> finconfig.common.v1.FilterOperator
+	38, // 20: finconfig.config.v1.WatchResponse.occurred_at:type_name -> google.protobuf.Timestamp
+	39, // 21: finconfig.config.v1.ScalarValue.type:type_name -> finconfig.common.v1.FieldType
+	40, // 22: finconfig.config.v1.FilterCondition.operator:type_name -> finconfig.common.v1.FilterOperator
 	12, // 23: finconfig.config.v1.FilterCondition.value:type_name -> finconfig.config.v1.ScalarValue
 	12, // 24: finconfig.config.v1.FilterCondition.lower:type_name -> finconfig.config.v1.ScalarValue
 	12, // 25: finconfig.config.v1.FilterCondition.upper:type_name -> finconfig.config.v1.ScalarValue
 	12, // 26: finconfig.config.v1.FilterCondition.set:type_name -> finconfig.config.v1.ScalarValue
-	34, // 27: finconfig.config.v1.QueryPageRequest.scope:type_name -> finconfig.common.v1.Scope
-	39, // 28: finconfig.config.v1.QueryPageRequest.query_type:type_name -> finconfig.common.v1.QueryPageType
+	36, // 27: finconfig.config.v1.QueryPageRequest.scope:type_name -> finconfig.common.v1.Scope
+	41, // 28: finconfig.config.v1.QueryPageRequest.query_type:type_name -> finconfig.common.v1.QueryPageType
 	13, // 29: finconfig.config.v1.QueryPageRequest.conditions:type_name -> finconfig.config.v1.FilterCondition
-	40, // 30: finconfig.config.v1.QueryPageRequest.page:type_name -> finconfig.common.v1.PageRequest
-	30, // 31: finconfig.config.v1.ValidationRule.params:type_name -> finconfig.config.v1.ValidationRule.ParamsEntry
-	37, // 32: finconfig.config.v1.PageInteractionField.type:type_name -> finconfig.common.v1.FieldType
-	41, // 33: finconfig.config.v1.PageInteractionField.ui_control:type_name -> finconfig.common.v1.UiControlType
+	42, // 30: finconfig.config.v1.QueryPageRequest.page:type_name -> finconfig.common.v1.PageRequest
+	32, // 31: finconfig.config.v1.ValidationRule.params:type_name -> finconfig.config.v1.ValidationRule.ParamsEntry
+	39, // 32: finconfig.config.v1.PageInteractionField.type:type_name -> finconfig.common.v1.FieldType
+	43, // 33: finconfig.config.v1.PageInteractionField.ui_control:type_name -> finconfig.common.v1.UiControlType
 	17, // 34: finconfig.config.v1.PageInteractionField.auto_fill:type_name -> finconfig.config.v1.AutoFillRule
-	38, // 35: finconfig.config.v1.PageInteractionField.allowed_filter_operators:type_name -> finconfig.common.v1.FilterOperator
-	38, // 36: finconfig.config.v1.PageInteractionField.default_filter_operator:type_name -> finconfig.common.v1.FilterOperator
+	40, // 35: finconfig.config.v1.PageInteractionField.allowed_filter_operators:type_name -> finconfig.common.v1.FilterOperator
+	40, // 36: finconfig.config.v1.PageInteractionField.default_filter_operator:type_name -> finconfig.common.v1.FilterOperator
 	16, // 37: finconfig.config.v1.PageInteractionField.validation_rules:type_name -> finconfig.config.v1.ValidationRule
 	15, // 38: finconfig.config.v1.PageInteractionField.options:type_name -> finconfig.config.v1.SelectOption
-	31, // 39: finconfig.config.v1.PageRow.values:type_name -> finconfig.config.v1.PageRow.ValuesEntry
-	32, // 40: finconfig.config.v1.PageRow.base_values:type_name -> finconfig.config.v1.PageRow.BaseValuesEntry
-	39, // 41: finconfig.config.v1.QueryPageResponse.query_type:type_name -> finconfig.common.v1.QueryPageType
+	33, // 39: finconfig.config.v1.PageRow.values:type_name -> finconfig.config.v1.PageRow.ValuesEntry
+	34, // 40: finconfig.config.v1.PageRow.base_values:type_name -> finconfig.config.v1.PageRow.BaseValuesEntry
+	41, // 41: finconfig.config.v1.QueryPageResponse.query_type:type_name -> finconfig.common.v1.QueryPageType
 	19, // 42: finconfig.config.v1.QueryPageResponse.rows:type_name -> finconfig.config.v1.PageRow
 	18, // 43: finconfig.config.v1.QueryPageResponse.interaction_fields:type_name -> finconfig.config.v1.PageInteractionField
 	20, // 44: finconfig.config.v1.QueryPageResponse.release_types:type_name -> finconfig.config.v1.ReleaseType
-	42, // 45: finconfig.config.v1.QueryPageResponse.page:type_name -> finconfig.common.v1.PageResponse
-	35, // 46: finconfig.config.v1.QueryPageResponse.snapshot:type_name -> finconfig.common.v1.SnapshotIdentity
+	44, // 45: finconfig.config.v1.QueryPageResponse.page:type_name -> finconfig.common.v1.PageResponse
+	37, // 46: finconfig.config.v1.QueryPageResponse.snapshot:type_name -> finconfig.common.v1.SnapshotIdentity
 	22, // 47: finconfig.config.v1.NotifyRequest.targets:type_name -> finconfig.config.v1.RefreshTarget
-	34, // 48: finconfig.config.v1.NotifyRequest.scope:type_name -> finconfig.common.v1.Scope
-	35, // 49: finconfig.config.v1.NotifyResponse.snapshot:type_name -> finconfig.common.v1.SnapshotIdentity
-	35, // 50: finconfig.config.v1.GetSnapshotStatusResponse.snapshot:type_name -> finconfig.common.v1.SnapshotIdentity
-	0,  // 51: finconfig.config.v1.GetCollectionStatusResponse.version:type_name -> finconfig.config.v1.VersionView
-	1,  // 52: finconfig.config.v1.ConfigService.GetSnapshot:input_type -> finconfig.config.v1.GetSnapshotRequest
-	6,  // 53: finconfig.config.v1.ConfigService.DiffVersions:input_type -> finconfig.config.v1.DiffVersionsRequest
-	8,  // 54: finconfig.config.v1.ConfigService.GetCollections:input_type -> finconfig.config.v1.GetCollectionsRequest
-	10, // 55: finconfig.config.v1.ConfigService.Watch:input_type -> finconfig.config.v1.WatchRequest
-	14, // 56: finconfig.config.v1.PageQueryService.QueryPage:input_type -> finconfig.config.v1.QueryPageRequest
-	23, // 57: finconfig.config.v1.RefreshService.Notify:input_type -> finconfig.config.v1.NotifyRequest
-	25, // 58: finconfig.config.v1.DiagnosticsService.GetSnapshotStatus:input_type -> finconfig.config.v1.GetSnapshotStatusRequest
-	27, // 59: finconfig.config.v1.DiagnosticsService.GetCollectionStatus:input_type -> finconfig.config.v1.GetCollectionStatusRequest
-	5,  // 60: finconfig.config.v1.ConfigService.GetSnapshot:output_type -> finconfig.config.v1.GetSnapshotResponse
-	7,  // 61: finconfig.config.v1.ConfigService.DiffVersions:output_type -> finconfig.config.v1.DiffVersionsResponse
-	9,  // 62: finconfig.config.v1.ConfigService.GetCollections:output_type -> finconfig.config.v1.GetCollectionsResponse
-	11, // 63: finconfig.config.v1.ConfigService.Watch:output_type -> finconfig.config.v1.WatchResponse
-	21, // 64: finconfig.config.v1.PageQueryService.QueryPage:output_type -> finconfig.config.v1.QueryPageResponse
-	24, // 65: finconfig.config.v1.RefreshService.Notify:output_type -> finconfig.config.v1.NotifyResponse
-	26, // 66: finconfig.config.v1.DiagnosticsService.GetSnapshotStatus:output_type -> finconfig.config.v1.GetSnapshotStatusResponse
-	28, // 67: finconfig.config.v1.DiagnosticsService.GetCollectionStatus:output_type -> finconfig.config.v1.GetCollectionStatusResponse
-	60, // [60:68] is the sub-list for method output_type
-	52, // [52:60] is the sub-list for method input_type
-	52, // [52:52] is the sub-list for extension type_name
-	52, // [52:52] is the sub-list for extension extendee
-	0,  // [0:52] is the sub-list for field type_name
+	36, // 48: finconfig.config.v1.NotifyRequest.scope:type_name -> finconfig.common.v1.Scope
+	37, // 49: finconfig.config.v1.NotifyResponse.snapshot:type_name -> finconfig.common.v1.SnapshotIdentity
+	35, // 50: finconfig.config.v1.SnapshotCollectionStatus.effective_digest:type_name -> finconfig.common.v1.Digest
+	37, // 51: finconfig.config.v1.GetSnapshotStatusResponse.snapshot:type_name -> finconfig.common.v1.SnapshotIdentity
+	26, // 52: finconfig.config.v1.GetSnapshotStatusResponse.collections:type_name -> finconfig.config.v1.SnapshotCollectionStatus
+	27, // 53: finconfig.config.v1.GetSnapshotStatusResponse.failed_dependency_group_details:type_name -> finconfig.config.v1.FailedDependencyGroup
+	0,  // 54: finconfig.config.v1.GetCollectionStatusResponse.version:type_name -> finconfig.config.v1.VersionView
+	1,  // 55: finconfig.config.v1.ConfigService.GetSnapshot:input_type -> finconfig.config.v1.GetSnapshotRequest
+	6,  // 56: finconfig.config.v1.ConfigService.DiffVersions:input_type -> finconfig.config.v1.DiffVersionsRequest
+	8,  // 57: finconfig.config.v1.ConfigService.GetCollections:input_type -> finconfig.config.v1.GetCollectionsRequest
+	10, // 58: finconfig.config.v1.ConfigService.Watch:input_type -> finconfig.config.v1.WatchRequest
+	14, // 59: finconfig.config.v1.PageQueryService.QueryPage:input_type -> finconfig.config.v1.QueryPageRequest
+	23, // 60: finconfig.config.v1.RefreshService.Notify:input_type -> finconfig.config.v1.NotifyRequest
+	25, // 61: finconfig.config.v1.DiagnosticsService.GetSnapshotStatus:input_type -> finconfig.config.v1.GetSnapshotStatusRequest
+	29, // 62: finconfig.config.v1.DiagnosticsService.GetCollectionStatus:input_type -> finconfig.config.v1.GetCollectionStatusRequest
+	5,  // 63: finconfig.config.v1.ConfigService.GetSnapshot:output_type -> finconfig.config.v1.GetSnapshotResponse
+	7,  // 64: finconfig.config.v1.ConfigService.DiffVersions:output_type -> finconfig.config.v1.DiffVersionsResponse
+	9,  // 65: finconfig.config.v1.ConfigService.GetCollections:output_type -> finconfig.config.v1.GetCollectionsResponse
+	11, // 66: finconfig.config.v1.ConfigService.Watch:output_type -> finconfig.config.v1.WatchResponse
+	21, // 67: finconfig.config.v1.PageQueryService.QueryPage:output_type -> finconfig.config.v1.QueryPageResponse
+	24, // 68: finconfig.config.v1.RefreshService.Notify:output_type -> finconfig.config.v1.NotifyResponse
+	28, // 69: finconfig.config.v1.DiagnosticsService.GetSnapshotStatus:output_type -> finconfig.config.v1.GetSnapshotStatusResponse
+	30, // 70: finconfig.config.v1.DiagnosticsService.GetCollectionStatus:output_type -> finconfig.config.v1.GetCollectionStatusResponse
+	63, // [63:71] is the sub-list for method output_type
+	55, // [55:63] is the sub-list for method input_type
+	55, // [55:55] is the sub-list for extension type_name
+	55, // [55:55] is the sub-list for extension extendee
+	0,  // [0:55] is the sub-list for field type_name
 }
 
 func init() { file_finconfig_config_v1_config_proto_init() }
@@ -2474,13 +2649,14 @@ func file_finconfig_config_v1_config_proto_init() {
 	file_finconfig_config_v1_config_proto_msgTypes[18].OneofWrappers = []any{}
 	file_finconfig_config_v1_config_proto_msgTypes[20].OneofWrappers = []any{}
 	file_finconfig_config_v1_config_proto_msgTypes[28].OneofWrappers = []any{}
+	file_finconfig_config_v1_config_proto_msgTypes[30].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_finconfig_config_v1_config_proto_rawDesc), len(file_finconfig_config_v1_config_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   33,
+			NumMessages:   35,
 			NumExtensions: 0,
 			NumServices:   4,
 		},

@@ -225,10 +225,31 @@ message NotifyResponse {
 
 message GetSnapshotStatusRequest {}
 
+message SnapshotCollectionStatus {
+  string collection = 1;
+  int64 config_revision = 2;
+  finconfig.common.v1.Digest effective_digest = 3;
+  int64 change_cursor = 4;
+}
+
+message FailedDependencyGroup {
+  repeated string collections = 1;
+}
+
 message GetSnapshotStatusResponse {
   finconfig.common.v1.SnapshotIdentity snapshot = 1;
-  int64 collection_count = 2;
-  repeated string failed_dependency_groups = 3;
+  // Deprecated compatibility view. During the expand window producers MUST
+  // set this to collections.size().
+  int64 collection_count = 2 [deprecated = true];
+  // Deprecated compatibility view. During the expand window producers MUST
+  // emit one comma-joined entry for every failed_dependency_group_details
+  // entry, preserving both group and collection order. Consumers that know
+  // field 6 MUST prefer the structured representation.
+  repeated string failed_dependency_groups = 3 [deprecated = true];
+  string environment = 4;
+  repeated SnapshotCollectionStatus collections = 5;
+  repeated FailedDependencyGroup failed_dependency_group_details = 6;
+  optional string last_error_code = 7;
 }
 
 message GetCollectionStatusRequest {
