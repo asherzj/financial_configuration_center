@@ -1,0 +1,105 @@
+@baseUrl = https://admin.finconfig.local/api/v1
+@csrfToken = replace-with-finconfig-csrf-cookie-value
+@requestId = 0198c2bb-56f7-7e86-b911-6c5658b429c8
+@releaseId = replace-after-create
+@orderRevision = 1
+@currentStep = review
+
+### Begin browser OIDC login (follow redirect in a browser)
+GET {{baseUrl}}/auth/login
+
+### Current session (session cookie is HttpOnly)
+GET {{baseUrl}}/session
+
+### QueryPage ALL: first load includes dynamic interaction metadata
+POST {{baseUrl}}/query-page
+Content-Type: application/json
+Origin: https://admin.finconfig.local
+X-CSRF-Token: {{csrfToken}}
+X-Request-ID: {{requestId}}
+
+{
+  "modelCode": "payment_routes_admin",
+  "scope": {"region": "cn", "environment": "production", "stage": "blue"},
+  "queryType": "ALL",
+  "pageNumber": 1,
+  "pageSize": 20,
+  "conditions": [{"field": "enabled", "operator": "EXACT", "value": "true"}]
+}
+
+### QueryPage ONLY_DATA: pagination/filter changes reuse cached metadata
+POST {{baseUrl}}/query-page
+Content-Type: application/json
+Origin: https://admin.finconfig.local
+X-CSRF-Token: {{csrfToken}}
+X-Request-ID: {{requestId}}
+
+{
+  "modelCode": "payment_routes_admin",
+  "scope": {"region": "cn", "environment": "production", "stage": "blue"},
+  "queryType": "ONLY_DATA",
+  "pageNumber": 2,
+  "pageSize": 20,
+  "conditions": [{"field": "channel", "operator": "IN", "set": ["VISA", "MASTERCARD"]}]
+}
+
+### Dynamic SELECT options are returned by ALL for the seeded static source
+### A collection-backed option source uses the same query-page request and is
+### evaluated server-side; clients never provide table names or SQL.
+
+### Intentional validation error: priority is INT64, not free text
+POST {{baseUrl}}/query-page
+Content-Type: application/json
+Origin: https://admin.finconfig.local
+X-CSRF-Token: {{csrfToken}}
+X-Request-ID: {{requestId}}
+
+{
+  "modelCode": "payment_routes_admin",
+  "scope": {"region": "cn", "environment": "production"},
+  "queryType": "ONLY_DATA",
+  "conditions": [{"field": "priority", "operator": "EXACT", "value": "not-an-integer"}]
+}
+
+### Create a release; copy revisions and before/effectiveBefore from fresh ALL data
+POST {{baseUrl}}/releases
+Content-Type: application/json
+Origin: https://admin.finconfig.local
+X-CSRF-Token: {{csrfToken}}
+X-Request-ID: {{requestId}}
+Idempotency-Key: 0198c2bb-56f7-7e86-b911-6c5658b429c9
+
+{
+  "modelCode": "payment_routes_admin",
+  "releaseTypeCode": "direct",
+  "description": "Enable VISA route",
+  "scope": {"region": "cn", "environment": "production", "stage": "blue"},
+  "items": [{
+    "action": "ADD",
+    "baseBefore": null,
+    "effectiveBefore": null,
+    "after": {"code": "route-a", "channel": "VISA", "priority": "1", "enabled": "true"},
+    "expectedRecordRevision": 0,
+    "expectedCollectionRevision": 1
+  }]
+}
+
+### Execute an allowed action using the detail response's current authority
+POST {{baseUrl}}/releases/{{releaseId}}/actions
+Content-Type: application/json
+Origin: https://admin.finconfig.local
+X-CSRF-Token: {{csrfToken}}
+X-Request-ID: {{requestId}}
+Idempotency-Key: 0198c2bb-56f7-7e86-b911-6c5658b429ca
+
+{
+  "action": "APPROVE",
+  "expectedOrderRevision": {{orderRevision}},
+  "expectedCurrentStep": "{{currentStep}}",
+  "comment": "Reviewed against change ticket FIN-1234"
+}
+
+### Logout requires the session-bound double-submit CSRF token
+POST {{baseUrl}}/auth/logout
+Origin: https://admin.finconfig.local
+X-CSRF-Token: {{csrfToken}}
