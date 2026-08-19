@@ -8,6 +8,10 @@
 
 The entire V1 runs securely and observably, survives lifecycle faults and is documented from verified commands.
 
+## Delivery discipline
+
+Each independently usable feature is completed with its focused tests and evidence update, then committed and pushed before the next unrelated feature starts. A passing local worktree without a pushed commit is not complete.
+
 ## Work
 
 - Implement OIDC/session/CSRF, mTLS/internal JWT, Consumer JWT/JWKS and exact ScopePattern semantics.
@@ -16,11 +20,34 @@ The entire V1 runs securely and observably, survives lifecycle faults and is doc
 - Run MySQL 8.4/8.0, unit/property/fuzz/contracts, race, frontend and Playwright matrices.
 - Run independent Standards and Spec reviews from a fixed base, fix findings and do final docs pass.
 
+### Next vertical slice: runnable Config Server
+
+- Split RuntimeMode from required ManagedEnvironment and enforce the single-environment boundary.
+- Register ConfigService, PageQueryService, RefreshService and DiagnosticsService on one Kitex server.
+- Add method-policy RPC auth with RS256 Consumer JWKS and 60-second Ed25519 Internal JWT profiles for unary and Watch.
+- Add the managed UDS listener, initial snapshot readiness gate, RefreshCoordinator, Watch shutdown and Envoy drain sequence.
+- Complete currently unimplemented ConfigService methods before declaring the process runnable.
+
 ## Acceptance
 
 - `docs/design/11-testing-and-delivery.md` Definition of Done is fully evidenced.
 - Epoch change forces FULL; no secrets/config bodies/high-cardinality labels are emitted; shutdown leaks no goroutines.
 - README/runbooks reproduce a clean setup and all supported journeys.
+
+### Runnable Config Server acceptance
+
+- Strict config rejects missing MySQL, ServerEpoch, ManagedEnvironment, production auth or production UDS; SafeSummary contains no DSN, token or key.
+- Initial FULL failure never exposes generation-zero data; an authoritative empty database publishes generation 1 and becomes ready.
+- Exactly one Kitex server registers all four services on a managed UDS with no TCP backend listener.
+- grpc-go and Kitex clients can call every service path through standard gRPC; unary and Watch stream auth middleware both execute.
+- Missing/duplicate/malformed Authorization, wrong profile/alg/issuer/audience/kid/lifetime, Consumer subject mismatch and uncovered Scope are rejected before configuration data is read.
+- A cross-ManagedEnvironment read or Hint cannot change the current snapshot.
+- Hint bursts merge to the largest revision/cursor; Hint and Poll share one writer; lost Hint converges by Poll; no-op does not publish or broadcast.
+- Watch sends first state and heartbeat, applies global/per-Consumer limits, isolates overflow with RESYNC_REQUIRED and terminates on shutdown without leaks.
+- DB refresh failure retains last-known-good; readiness only falls after the configured probe grace.
+- SIGTERM lowers readiness, drains Envoy, stops new work, closes Watch, drains Kitex, flushes telemetry, closes DB/HTTP and removes only the owned socket within bounded time.
+- A PITR test changes ServerEpoch and proves the SDK forces FULL regardless of revision ordering.
+- Unit/race, real MySQL, real UDS, transport-contract and compose mTLS/drain tests provide executable evidence; fakes alone do not satisfy startup acceptance.
 
 ## Evidence
 
@@ -44,3 +71,4 @@ The entire V1 runs securely and observably, survives lifecycle faults and is doc
 - Added executable SDK documentation covering startup, immutable query, explicit decode, local subscription and independent Region clients, with transport injection left at the production Kitex/mTLS/JWT composition boundary.
 - Added a credential-free Admin BFF REST Client collection covering OIDC session, QueryPage ALL/ONLY_DATA, validation failure, ReleaseOrder creation/action and CSRF logout; the SDK example is verified by `go test -run Example ./examples/sdk`.
 - Added a shared process configuration loader with defaults → strict single-document YAML → explicit `FINCONFIG_` environment overrides → validation. Unknown YAML, unsafe production dev auth, insecure production OTLP, invalid UDS/connection pools and unbounded shutdown settings are rejected; the JSON startup summary contains no DSN or secret.
+- Accepted ADR 0006 and 0007, separating RuntimeMode from a single ManagedEnvironment and fixing method-specific Consumer/Internal authentication at the shared Kitex boundary; expanded ADR 0005 with UDS ownership and Envoy drain semantics.

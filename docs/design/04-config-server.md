@@ -8,15 +8,20 @@ Config Server 把 MySQL 中的可变事实转换为可并发读取的不可变 `
 
 `cmd/config-server` composition root 构造：
 
+- 严格区分 RuntimeMode 与唯一的 ManagedEnvironment；
 - 只读 MySQL/GORM adapter；
 - SnapshotManager；
-- ConfigService 与 PageQueryService Kitex handler；
-- VersionPoller、RefreshHint receiver、Overlay boundary 状态观察器；
+- 唯一 RefreshCoordinator，以及向它提交水位的 VersionPoller、RefreshHint receiver；
+- 同一个 Kitex server 上注册 ConfigService、PageQueryService、RefreshService 与 DiagnosticsService；
+- Consumer/Internal 双认证 profile 的 unary 与 stream middleware；
+- 应用托管的 UDS listener 和 Envoy drain adapter；
 - WatchHub；
 - health/ready/metrics HTTP server；
 - 根 context、errgroup 和优雅关闭。
 
-启动顺序固定：配置校验 → DB capability/ping → FULL refresh → 发布首个 snapshot → ready=true → 启动 RPC/Watch/poll。首个 FULL refresh 失败则启动失败；启动后刷新失败保留 last-known-good。
+一个进程只服务一个 ManagedEnvironment。所有读取和刷新入口在访问 snapshot 或入队前校验 Environment；跨环境读取返回 FailedPrecondition，跨环境 Hint 返回 InvalidArgument。
+
+启动顺序固定：配置校验 → 运维 HTTP（ready=false）→ DB capability/schema 检查 → 构造组件 → 有时限的初始 FULL → 发布 generation=1 snapshot → 绑定 UDS → Kitex accept loop 已启动 → 启动 poll/hint worker → ready=true。首个 FULL refresh 失败则 Kitex 不接受业务请求且进程非零退出；权威零 Collection 仍是合法 generation=1 snapshot。
 
 ## 3. Snapshot 结构
 
@@ -45,8 +50,9 @@ SnapshotManager 使用：
 
 - `atomic.Pointer[ConfigurationSnapshot]` 服务 reader；
 - 一个 refresh mutex 串行化 writer；
-- 合并队列把并发 RefreshRequest 按 collection 和最小目标 revision 合并；
 - refresh context 有总超时和单集合超时。
+
+合并和重试由 SnapshotManager 外唯一的 RefreshCoordinator 负责。它按 collection 保存最大目标 ConfigRevision 与 TargetCursor；启动 FULL、Hint 和 Version Poll 都提交到同一个 coordinator，同一时刻最多一个 writer。刷新前再次检查当前 snapshot 是否已达到目标；no-op 不增加 generation、不广播 Watch。失败目标不会丢失，使用有界指数退避，Poll 仍是最终兜底。
 
 ## 4. SnapshotManager 接口
 
@@ -130,8 +136,10 @@ GetCollections 只允许请求当前 Consumer 已订阅的集合，并复用 Get
 Control Plane commit 后由 outbox relay best-effort 调用 Config Server 内部 refresh endpoint。Hint 包含 EventID、目标集合、Kinds、MinRevision、TargetCursor、Scope、ReleaseOrderID、TraceID。
 
 - EventID 使用有界 TTL cache 去重。
+- Hint Environment 必须等于 ManagedEnvironment，否则拒绝且不入队。
 - 小于等于当前 revision/cursor 的旧 Hint 直接确认。
 - 乱序 Hint 合并成每集合最大目标水位。
+- EventID 去重只控制重复入队；一旦接受，权威目标水位由 RefreshCoordinator 持有，不能随 dedup TTL 丢失。
 - 接收成功只表示已入 refresh queue，不表示 snapshot 已达到目标。
 - 队列满返回 ResourceExhausted，relay 重试；version poll 仍兜底。
 
@@ -145,6 +153,8 @@ WatchHub 在 snapshot 成功发布后接收 UpdateEvent。每个 subscriber 有�
 - 首条事件包含当前 generation 和该 Consumer 可见版本水位。
 - 每条事件携带 server epoch/instance；epoch 变化强制 FULL，instance 变化时 generation 只作为新实例内观察值。
 - 心跳默认 20 秒，不携带配置正文。
+- 全局和单 Consumer 并发数分别受限；订阅只使用 middleware 建立的 ConsumerIdentity，不能相信请求自报身份。
+- shutdown 先向仍可写的订阅发送 `RESYNC_REQUIRED`，再关闭全部 channel 并拒绝新订阅，使永久 Watch 不阻塞 Kitex drain。
 
 连接断开不是错误日志洪水；按原因分类 metric。WatchHub 只持有订阅元数据，不持有可变 snapshot 副本。
 
@@ -164,11 +174,20 @@ WatchHub 在 snapshot 成功发布后接收 UpdateEvent。每个 subscriber 有�
 ## 12. 健康与关闭
 
 - `/healthz`：进程 event loop 活着。
-- `/readyz`：已有可用 snapshot、MySQL 最近一次 ping 在阈值内、RPC 正在接受请求。
+- `/readyz`：generation 至少为 1、snapshot Environment 等于 ManagedEnvironment、MySQL 最近成功 probe 未超过 grace、Kitex accept loop 已启动。
 - MySQL 短暂失败不清空 ready；超过配置阈值后 ready=false，但继续服务 last-known-good 读取。
-- 关闭时先 ready=false，停止接新流，取消 poll/refresh，等待在途请求，最后关闭 DB/HTTP/RPC；默认 30 秒。
+- 关闭时固定执行：ready=false → Envoy localhost admin drain → 停止接收 Hint/Poll → WatchHub resync/close → 有界等待 Kitex Stop → 停运维 HTTP → flush telemetry → 关闭 DB → 清理自己拥有的 UDS。总 timeout、Envoy、Kitex 与 telemetry timeout 分别配置；单阶段超时仍继续后续清理并返回聚合错误。
 
-## 13. 接口级测试
+## 13. RPC 认证矩阵
+
+- ConfigService 的 GetSnapshot、DiffVersions、GetCollections、Watch 使用 Consumer JWT，subject 必须等于请求 ConsumerID，Scope claim 必须覆盖请求 Scope。
+- PageQueryService 使用 60 秒 Internal JWT，并要求 CONFIG_VIEWER 或配置的诊断角色及 Scope。
+- RefreshService 使用 60 秒 Internal JWT，并限制为 Control Plane relay subject allow-list。
+- DiagnosticsService 使用 60 秒 Internal JWT，并要求 PLATFORM_OPERATOR 或 AUDITOR。
+- 一个 Kitex server 必须启用 unary-compatible middleware 并同时挂 unary/stream policy；无 token、重复 Authorization、错误 profile、issuer/audience/alg/kid/lifetime 全部在读取配置正文前拒绝。
+- application/domain 层只接收类型化 ConsumerIdentity 或 InternalCallerIdentity，不读取 gRPC metadata。
+
+## 14. 接口级测试
 
 - 初始 FULL、权威空集合、加载失败。
 - 每种 refresh mode、增量最终态回查和降级。
@@ -178,3 +197,6 @@ WatchHub 在 snapshot 成功发布后接收 UpdateEvent。每个 subscriber 有�
 - Watch 慢客户端、队列满、重连首事件。
 - Consumer/Scope/Client bucket 权限与过滤。
 - 关闭期间无 goroutine/stream 泄漏。
+- 真实 UDS 上四 service 共用单 Kitex server，grpc-go 与 Kitex client 都通过标准 gRPC 调用；unary 和 Watch stream middleware 均实际执行。
+- 普通文件、symlink、活动 socket 拒绝；stale socket 安全恢复；shutdown 只删除本进程拥有的 socket。
+- Hint burst 合并最大 revision/cursor，Hint 与 Poll 并发仍只有一个 writer，no-op 不发布。

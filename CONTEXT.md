@@ -38,6 +38,14 @@ _Avoid_: 页面配置、操作模型、动态表模型
 由 Region、Environment 和可空 Stage 组成的配置可见范围；V1 不包含隐式租户或内部泳道语义。
 _Avoid_: 泳道、机房标签、PPE、BOE
 
+**RuntimeMode**:
+进程运行时的安全模式，只允许 development、test 或 production；它不参与配置 Scope，也不表示进程当前承载的业务 Environment。
+_Avoid_: Environment、部署环境、配置环境
+
+**ManagedEnvironment**:
+一个 Config Server 实例唯一承载的业务 `Scope.Environment`。实例只能发布、查询和刷新该 Environment 的完整 snapshot，跨 Environment 请求或 Hint 必须在进入刷新队列前拒绝。
+_Avoid_: RuntimeMode、当前环境、默认环境
+
 **OverlayRule**:
 在特定 Scope 对基础配置执行 ADD、MODIFY 或 DELETE 的条件化覆盖，不直接改写基础记录。
 _Avoid_: 灰度表、临时数据
@@ -70,9 +78,39 @@ _Avoid_: 缓存 map、内存数据库
 由部署级 ServerEpoch、进程级 ServerInstanceID 和实例内 SnapshotGeneration 组成的快照身份；Generation 不跨实例比较大小。
 _Avoid_: 全局快照版本
 
+**ServerEpoch**:
+同一 ManagedEnvironment 的部署级恢复世代标识；正常重启保持不变，PITR 或灾备恢复后必须更换，SDK 看到变化时无条件 FULL。
+_Avoid_: 数据库 revision、启动时间、实例 ID
+
+**ServerInstanceID**:
+Config Server 进程实例的唯一标识；每次进程启动均不同，不能作为部署世代或配置版本比较。
+_Avoid_: ServerEpoch、Pod 名默认值、SnapshotGeneration
+
+**SnapshotInstance**:
+一次 snapshot lineage 的唯一标识；lineage 内 SnapshotGeneration 从 1 递增，重建 lineage 时更换。
+_Avoid_: ServerInstanceID、ConfigRevision、全局版本
+
 **RefreshHint**:
 允许丢失、重复和乱序，只用于缩短快照收敛时间的非权威提示。
 _Avoid_: 配置事件、权威变更消息
+
+**RefreshCoordinator**:
+Config Server 内唯一持有 Hint、Version Poll 和启动刷新目标水位的调度器；按集合合并最大 revision/cursor、串行触发 SnapshotManager，并在失败后有界退避重试。
+_Avoid_: Hint 队列、第二个 SnapshotManager、事件消费者
+
+## Identities
+
+**Principal**:
+通过浏览器 OIDC 建立的人类操作者身份，包含角色和允许 Scope，用于管理与发布操作。
+_Avoid_: Consumer、服务账号、用户 DTO
+
+**ConsumerIdentity**:
+通过 Consumer JWT 建立的 SDK 服务身份，以 token subject 为 ConsumerID，并在 handler 中与请求 ConsumerID 和 Scope 绑定。
+_Avoid_: Principal、ClientID、内部调用者
+
+**InternalCallerIdentity**:
+通过短期 Internal JWT 建立的 BFF、Control Plane relay 或诊断服务身份，包含服务 subject、角色和允许 Scope。
+_Avoid_: Principal、Consumer、Envoy 转发证书字段
 
 ## Page query
 
