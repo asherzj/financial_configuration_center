@@ -252,6 +252,47 @@ func TestDiffVersionsMapsApplicationValidationToInvalidArgument(t *testing.T) {
 	}
 }
 
+func TestGetCollectionsMapsRequestedPayloads(t *testing.T) {
+	t.Parallel()
+	application := stubApplication{collectionsResponse: configserver.GetCollectionsResponse{
+		Identity:    snapshot.Identity{ServerEpoch: "epoch", Generation: 5},
+		Collections: []configserver.CollectionPayload{{Name: "routes", Revision: 8, ChangeCursor: 12, Digest: strings.Repeat("a", 64)}},
+	}}
+	handler, err := configgrpc.New(application, allowRequestAuthorizer{}, "production")
+	if err != nil {
+		t.Fatal(err)
+	}
+	minimum := int64(8)
+	response, err := handler.GetCollections(context.Background(), &configv1.GetCollectionsRequest{
+		ConsumerId: "consumer", ClientId: "client", Scope: scope("production"), Collections: []string{"routes"}, MinConfigRevision: &minimum,
+	})
+	if err != nil || response.Snapshot.SnapshotGeneration != 5 || len(response.Collections) != 1 || response.Collections[0].ChangeCursor != 12 || response.Collections[0].Version.EffectiveDigest == nil {
+		t.Fatalf("collections response = %+v, %v", response, err)
+	}
+}
+
+func TestGetCollectionsPreservesContextTerminationStatus(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name string
+		err  error
+		code codes.Code
+	}{{name: "canceled", err: context.Canceled, code: codes.Canceled}, {name: "deadline", err: context.DeadlineExceeded, code: codes.DeadlineExceeded}} {
+		t.Run(test.name, func(t *testing.T) {
+			handler, err := configgrpc.New(stubApplication{err: test.err}, allowRequestAuthorizer{}, "production")
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = handler.GetCollections(context.Background(), &configv1.GetCollectionsRequest{
+				ConsumerId: "consumer", ClientId: "client", Scope: scope("production"), Collections: []string{"routes"},
+			})
+			if status.Code(err) != test.code {
+				t.Fatalf("code = %s, err %v", status.Code(err), err)
+			}
+		})
+	}
+}
+
 func TestConfigHandlerBindsConsumerIdentityBeforeApplication(t *testing.T) {
 	t.Parallel()
 	denied := errors.New("consumer binding denied")
@@ -326,9 +367,10 @@ func TestWatchBindsConsumerUsingStreamContextBeforeSubscription(t *testing.T) {
 }
 
 type stubApplication struct {
-	response     configserver.GetSnapshotResponse
-	diffResponse configserver.DiffVersionsResponse
-	err          error
+	response            configserver.GetSnapshotResponse
+	diffResponse        configserver.DiffVersionsResponse
+	collectionsResponse configserver.GetCollectionsResponse
+	err                 error
 }
 
 type recordingApplication struct {
@@ -373,9 +415,18 @@ func (application stubApplication) DiffVersions(context.Context, configserver.Di
 	return application.diffResponse, application.err
 }
 
+func (application stubApplication) GetCollections(context.Context, configserver.GetCollectionsRequest) (configserver.GetCollectionsResponse, error) {
+	return application.collectionsResponse, application.err
+}
+
 func (application *recordingApplication) DiffVersions(context.Context, configserver.DiffVersionsRequest) (configserver.DiffVersionsResponse, error) {
 	application.called = true
 	return configserver.DiffVersionsResponse{}, nil
+}
+
+func (application *recordingApplication) GetCollections(context.Context, configserver.GetCollectionsRequest) (configserver.GetCollectionsResponse, error) {
+	application.called = true
+	return configserver.GetCollectionsResponse{}, nil
 }
 
 func scope(environment string) *commonv1.Scope {

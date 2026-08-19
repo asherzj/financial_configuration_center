@@ -81,6 +81,36 @@ func TestDiffVersionsReturnsStableMutuallyExclusiveChanges(t *testing.T) {
 	}
 }
 
+func TestGetCollectionsFiltersRequestsAndNeverReturnsBelowMinimum(t *testing.T) {
+	t.Parallel()
+	manager, _ := serverSnapshot(t)
+	submitter := &recordingRefreshSubmitter{}
+	service, err := configserver.NewWithRefresh(manager, staticAuthorizer{collections: []string{"payment_routes"}}, "production", submitter, 5*time.Millisecond)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response, err := service.GetCollections(context.Background(), configserver.GetCollectionsRequest{
+		ConsumerID: "payment-service", ClientID: "pod-1", Region: "cn", Environment: "production",
+		Collections: []string{" payment_routes "}, MinRevision: 8,
+	})
+	if err != nil || len(response.Collections) != 1 || response.Collections[0].Name != "payment_routes" || response.Collections[0].Revision != 8 {
+		t.Fatalf("collections response = %+v, %v", response, err)
+	}
+	_, err = service.GetCollections(context.Background(), configserver.GetCollectionsRequest{
+		ConsumerID: "payment-service", ClientID: "pod-1", Region: "cn", Environment: "production", Collections: []string{"legacy"},
+	})
+	if !errors.Is(err, configserver.ErrCollectionForbidden) {
+		t.Fatalf("unauthorized collection error = %v", err)
+	}
+	_, err = service.GetCollections(context.Background(), configserver.GetCollectionsRequest{
+		ConsumerID: "payment-service", ClientID: "pod-1", Region: "cn", Environment: "production",
+		Collections: []string{"payment_routes"}, MinRevision: 9,
+	})
+	if !errors.Is(err, configserver.ErrSnapshotUnavailable) || len(submitter.targets) != 1 || submitter.targets[0].Collection != "payment_routes" || submitter.targets[0].MinRevision != 9 {
+		t.Fatalf("minimum wait error=%v targets=%+v", err, submitter.targets)
+	}
+}
+
 func TestGetSnapshotReportsUnavailableBeforeInitialSnapshot(t *testing.T) {
 	t.Parallel()
 	service := configserver.New(emptySnapshotProvider{}, staticAuthorizer{}, "production")
@@ -175,6 +205,13 @@ func (source serverSource) LoadEnvironment(context.Context, string) ([]snapshot.
 type serverClock struct{}
 
 func (serverClock) Now() time.Time { return time.Date(2026, 8, 19, 6, 0, 0, 0, time.UTC) }
+
+type recordingRefreshSubmitter struct{ targets []snapshot.RefreshTarget }
+
+func (submitter *recordingRefreshSubmitter) Submit(targets []snapshot.RefreshTarget) error {
+	submitter.targets = append([]snapshot.RefreshTarget(nil), targets...)
+	return nil
+}
 
 func serverSnapshot(t *testing.T) (*snapshot.Manager, string) {
 	t.Helper()

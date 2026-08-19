@@ -22,6 +22,7 @@ import (
 type Application interface {
 	GetSnapshot(context.Context, configserver.GetSnapshotRequest) (configserver.GetSnapshotResponse, error)
 	DiffVersions(context.Context, configserver.DiffVersionsRequest) (configserver.DiffVersionsResponse, error)
+	GetCollections(context.Context, configserver.GetCollectionsRequest) (configserver.GetCollectionsResponse, error)
 }
 
 type Watcher interface {
@@ -103,39 +104,10 @@ func (handler *Handler) GetSnapshot(ctx context.Context, request *configv1.GetSn
 		Snapshot:           mapIdentity(response.Identity),
 		Scope:              &commonv1.Scope{Region: response.Region, Environment: response.Environment, Stage: response.Stage},
 		DeletedCollections: append([]string(nil), response.DeletedCollections...),
-		Collections:        make([]*configv1.CollectionPayload, len(response.Collections)),
 	}
-	for index, collection := range response.Collections {
-		revision, err := revisionInt64(collection.Revision)
-		if err != nil {
-			return nil, status.Error(codes.Internal, "collection revision exceeds RPC range")
-		}
-		changeCursor, err := uint64Int64(collection.ChangeCursor)
-		if err != nil {
-			return nil, status.Error(codes.Internal, "collection cursor exceeds RPC range")
-		}
-		body := &configv1.CollectionData{Records: make([]*configv1.SnapshotRecord, len(collection.Records))}
-		for recordIndex, record := range collection.Records {
-			recordRevision, err := revisionInt64(record.RecordRevision)
-			if err != nil {
-				return nil, status.Error(codes.Internal, "record revision exceeds RPC range")
-			}
-			body.Records[recordIndex] = &configv1.SnapshotRecord{
-				RecordKey: record.RecordKey, RecordRevision: recordRevision, Values: cloneMap(record.Data),
-			}
-		}
-		data, err := proto.MarshalOptions{Deterministic: true}.Marshal(body)
-		if err != nil {
-			return nil, status.Error(codes.Internal, "encode collection payload failed")
-		}
-		converted.Collections[index] = &configv1.CollectionPayload{
-			Collection: collection.Name, Codec: "PROTOBUF", FormatVersion: 1, Data: data,
-			ChangeCursor: changeCursor,
-			Version: &configv1.VersionView{
-				Collection: collection.Name, ConfigRevision: revision,
-				EffectiveDigest: &commonv1.Digest{Algorithm: "SHA-256", Value: collection.Digest},
-			},
-		}
+	converted.Collections, err = mapCollectionPayloads(response.Collections)
+	if err != nil {
+		return nil, err
 	}
 	return converted, nil
 }
@@ -192,10 +164,52 @@ func (handler *Handler) GetCollections(ctx context.Context, request *configv1.Ge
 	if scope.Environment != handler.managedEnvironment {
 		return nil, status.Error(codes.FailedPrecondition, "requested environment is not managed by this server")
 	}
-	if err := handler.requestAuthorizer.AuthorizeConsumer(ctx, strings.TrimSpace(request.ConsumerId), scope); err != nil {
+	consumerID, clientID := strings.TrimSpace(request.ConsumerId), strings.TrimSpace(request.ClientId)
+	if err := handler.requestAuthorizer.AuthorizeConsumer(ctx, consumerID, scope); err != nil {
 		return nil, err
 	}
-	return nil, status.Error(codes.Unimplemented, "GetCollections is not implemented in the base-only slice")
+	collections := make([]string, len(request.Collections))
+	for index, collection := range request.Collections {
+		collection = strings.TrimSpace(collection)
+		if collection == "" {
+			return nil, status.Error(codes.InvalidArgument, "collections entries are required")
+		}
+		collections[index] = collection
+	}
+	minimum := catalog.ConfigRevision(0)
+	if request.MinConfigRevision != nil {
+		if *request.MinConfigRevision <= 0 {
+			return nil, status.Error(codes.InvalidArgument, "min_config_revision must be positive")
+		}
+		minimum = catalog.ConfigRevision(*request.MinConfigRevision)
+	}
+	response, err := handler.application.GetCollections(ctx, configserver.GetCollectionsRequest{
+		ConsumerID: consumerID, ClientID: clientID, Region: scope.Region, Environment: scope.Environment, Stage: scope.Stage,
+		Collections: collections, MinRevision: minimum,
+	})
+	if err != nil {
+		switch {
+		case errors.Is(err, configserver.ErrManagedEnvironmentMismatch):
+			return nil, status.Error(codes.FailedPrecondition, "requested environment is not managed by this server")
+		case errors.Is(err, configserver.ErrInvalidArgument):
+			return nil, status.Error(codes.InvalidArgument, "collections request is invalid")
+		case errors.Is(err, configserver.ErrCollectionForbidden):
+			return nil, status.Error(codes.PermissionDenied, "requested collection is not available")
+		case errors.Is(err, configserver.ErrSnapshotUnavailable):
+			return nil, status.Error(codes.Unavailable, "minimum configuration revision is not available")
+		case errors.Is(err, context.Canceled):
+			return nil, status.Error(codes.Canceled, "get collections canceled")
+		case errors.Is(err, context.DeadlineExceeded):
+			return nil, status.Error(codes.DeadlineExceeded, "get collections deadline exceeded")
+		default:
+			return nil, status.Error(codes.Internal, "get collections failed")
+		}
+	}
+	payloads, err := mapCollectionPayloads(response.Collections)
+	if err != nil {
+		return nil, err
+	}
+	return &configv1.GetCollectionsResponse{Snapshot: mapIdentity(response.Identity), Collections: payloads}, nil
 }
 
 func (handler *Handler) Watch(request *configv1.WatchRequest, stream configv1.ConfigService_WatchServer) error {
@@ -315,6 +329,42 @@ func validSHA256Digest(digest *commonv1.Digest) bool {
 	}
 	_, err := hex.DecodeString(digest.Value)
 	return err == nil
+}
+
+func mapCollectionPayloads(collections []configserver.CollectionPayload) ([]*configv1.CollectionPayload, error) {
+	converted := make([]*configv1.CollectionPayload, len(collections))
+	for index, collection := range collections {
+		revision, err := revisionInt64(collection.Revision)
+		if err != nil {
+			return nil, status.Error(codes.Internal, "collection revision exceeds RPC range")
+		}
+		changeCursor, err := uint64Int64(collection.ChangeCursor)
+		if err != nil {
+			return nil, status.Error(codes.Internal, "collection cursor exceeds RPC range")
+		}
+		body := &configv1.CollectionData{Records: make([]*configv1.SnapshotRecord, len(collection.Records))}
+		for recordIndex, record := range collection.Records {
+			recordRevision, err := revisionInt64(record.RecordRevision)
+			if err != nil {
+				return nil, status.Error(codes.Internal, "record revision exceeds RPC range")
+			}
+			body.Records[recordIndex] = &configv1.SnapshotRecord{
+				RecordKey: record.RecordKey, RecordRevision: recordRevision, Values: cloneMap(record.Data),
+			}
+		}
+		data, err := proto.MarshalOptions{Deterministic: true}.Marshal(body)
+		if err != nil {
+			return nil, status.Error(codes.Internal, "encode collection payload failed")
+		}
+		converted[index] = &configv1.CollectionPayload{
+			Collection: collection.Name, Codec: "PROTOBUF", FormatVersion: 1, Data: data, ChangeCursor: changeCursor,
+			Version: &configv1.VersionView{
+				Collection: collection.Name, ConfigRevision: revision,
+				EffectiveDigest: &commonv1.Digest{Algorithm: "SHA-256", Value: collection.Digest},
+			},
+		}
+	}
+	return converted, nil
 }
 
 func cloneMap(source map[string]string) map[string]string {
