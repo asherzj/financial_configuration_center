@@ -1,6 +1,6 @@
 # FC-010 Operations hardening and final matrix
 
-- Status: ready
+- Status: in-progress
 - Blocked by: FC-009
 - Spec: sections 7-12, acceptance scenarios 14-15
 
@@ -24,4 +24,6 @@ The entire V1 runs securely and observably, survives lifecycle faults and is doc
 
 ## Evidence
 
-Not run.
+- Added exact whole-segment ScopePattern matching; partial glob syntax is rejected.
+- Added Ed25519 JWT signing/verification with strict algorithm/key ID, issuer/audience/lifetime/JTI validation, 60-second internal-token enforcement, and Consumer subject/ClientID binding.
+- Added rotating AES-256-GCM session cookies plus session-bound double-submit CSRF and exact HTTPS Origin validation; Admin BFF session authentication enforces CSRF on every unsafe method.

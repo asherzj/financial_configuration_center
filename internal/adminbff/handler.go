@@ -18,6 +18,7 @@ import (
 	"github.com/asherzj/financial_configuration_center/internal/distribution/snapshot"
 	"github.com/asherzj/financial_configuration_center/internal/outbox"
 	"github.com/asherzj/financial_configuration_center/internal/pagequery"
+	platformauth "github.com/asherzj/financial_configuration_center/internal/platform/auth"
 	"github.com/asherzj/financial_configuration_center/internal/release/application"
 	release "github.com/asherzj/financial_configuration_center/internal/release/domain"
 )
@@ -25,9 +26,10 @@ import (
 var ErrUnauthenticated = errors.New("unauthenticated")
 
 type Principal struct {
-	Subject     string
-	DisplayName string
-	Roles       []string
+	Subject       string
+	DisplayName   string
+	Roles         []string
+	AllowedScopes []platformauth.ScopePattern
 }
 
 type Authenticator interface {
