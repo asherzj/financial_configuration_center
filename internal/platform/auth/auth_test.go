@@ -5,6 +5,7 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"errors"
+	"math"
 	"testing"
 	"time"
 
@@ -24,29 +25,72 @@ func TestScopePatternsOnlyAllowWholeSegmentWildcards(t *testing.T) {
 	}
 }
 
-func TestEd25519JWTValidatesIssuerAudienceLifetimeAndConsumerIdentity(t *testing.T) {
+func TestEd25519JWTValidatesIssuerAudienceAndInternalLifetime(t *testing.T) {
 	t.Parallel()
 	publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		t.Fatal(err)
 	}
 	now := time.Date(2026, 8, 20, 12, 0, 0, 0, time.UTC)
-	claims := auth.Claims{Issuer: "control-plane", Audience: "config-server", Subject: "payment-service", ClientID: "client-a", JWTID: "jti", IssuedAt: now.Unix(), NotBefore: now.Unix(), ExpiresAt: now.Add(time.Minute).Unix(), Roles: []string{"CONFIG_VIEWER"}, Scopes: []auth.ScopePattern{{Region: "cn", Environment: "production", Stage: "*"}}}
+	claims := auth.Claims{Issuer: "control-plane", Audience: "config-server", Subject: "control-plane-relay", JWTID: "jti", IssuedAt: now.Unix(), NotBefore: now.Unix(), ExpiresAt: now.Add(time.Minute).Unix(), Roles: []string{"CONFIG_VIEWER"}, Scopes: []auth.ScopePattern{{Region: "cn", Environment: "production", Stage: "*"}}}
 	token, err := auth.SignJWT("key-a", privateKey, claims)
 	if err != nil {
 		t.Fatal(err)
 	}
-	verifier, _ := auth.NewJWTVerifier(auth.StaticKeys{"key-a": publicKey}, "control-plane", "config-server", func() time.Time { return now })
+	verifier, _ := auth.NewInternalJWTVerifier(auth.StaticKeys{"key-a": publicKey}, "control-plane", "config-server", func() time.Time { return now })
 	verified, err := verifier.Verify(context.Background(), token)
-	if err != nil || verified.Subject != "payment-service" || verified.ClientID != "client-a" {
+	if err != nil || verified.Subject != "control-plane-relay" {
 		t.Fatalf("verified=%+v err=%v", verified, err)
 	}
-	expiredVerifier, _ := auth.NewJWTVerifier(auth.StaticKeys{"key-a": publicKey}, "control-plane", "config-server", func() time.Time { return now.Add(2 * time.Minute) })
+	expiredVerifier, _ := auth.NewInternalJWTVerifier(auth.StaticKeys{"key-a": publicKey}, "control-plane", "config-server", func() time.Time { return now.Add(2 * time.Minute) })
 	if _, err := expiredVerifier.Verify(context.Background(), token); !errors.Is(err, auth.ErrTokenExpired) {
 		t.Fatalf("expired token=%v", err)
 	}
-	if _, err := verifier.VerifyConsumer(context.Background(), token, "other-service"); !errors.Is(err, auth.ErrTokenInvalid) {
-		t.Fatalf("consumer substitution=%v", err)
+}
+
+func TestEd25519InternalJWTRejectsLifetimeOverSixtySeconds(t *testing.T) {
+	t.Parallel()
+	publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 8, 20, 12, 0, 0, 0, time.UTC)
+	token, err := auth.SignJWT("key-a", privateKey, auth.Claims{
+		Issuer: "control-plane", Audience: "config-server", Subject: "control-plane-relay", JWTID: "long-lived",
+		IssuedAt: now.Unix(), NotBefore: now.Unix(), ExpiresAt: now.Add(61 * time.Second).Unix(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	verifier, err := auth.NewInternalJWTVerifier(auth.StaticKeys{"key-a": publicKey}, "control-plane", "config-server", func() time.Time { return now })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := verifier.Verify(context.Background(), token); !errors.Is(err, auth.ErrTokenInvalid) {
+		t.Fatalf("long-lived internal token error = %v", err)
+	}
+}
+
+func TestEd25519InternalJWTRejectsOverflowingLifetime(t *testing.T) {
+	t.Parallel()
+	publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 8, 20, 12, 0, 0, 0, time.UTC)
+	token, err := auth.SignJWT("key-a", privateKey, auth.Claims{
+		Issuer: "control-plane", Audience: "config-server", Subject: "control-plane-relay", JWTID: "overflow",
+		IssuedAt: math.MinInt64, NotBefore: now.Unix(), ExpiresAt: now.Add(time.Minute).Unix(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	verifier, err := auth.NewInternalJWTVerifier(auth.StaticKeys{"key-a": publicKey}, "control-plane", "config-server", func() time.Time { return now })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := verifier.Verify(context.Background(), token); !errors.Is(err, auth.ErrTokenInvalid) {
+		t.Fatalf("overflowing internal token error = %v", err)
 	}
 }
 

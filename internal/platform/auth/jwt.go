@@ -23,7 +23,6 @@ type Claims struct {
 	Subject   string         `json:"sub"`
 	Roles     []string       `json:"roles,omitempty"`
 	Scopes    []ScopePattern `json:"scopes,omitempty"`
-	ClientID  string         `json:"clientId,omitempty"`
 	JWTID     string         `json:"jti"`
 	IssuedAt  int64          `json:"iat"`
 	NotBefore int64          `json:"nbf"`
@@ -44,7 +43,7 @@ func (keys StaticKeys) Resolve(_ context.Context, keyID string) (ed25519.PublicK
 	return append(ed25519.PublicKey(nil), key...), nil
 }
 
-type JWTVerifier struct {
+type InternalJWTVerifier struct {
 	keys     KeyResolver
 	issuer   string
 	audience string
@@ -52,14 +51,14 @@ type JWTVerifier struct {
 	leeway   time.Duration
 }
 
-func NewJWTVerifier(keys KeyResolver, issuer, audience string, clock func() time.Time) (*JWTVerifier, error) {
+func NewInternalJWTVerifier(keys KeyResolver, issuer, audience string, clock func() time.Time) (*InternalJWTVerifier, error) {
 	if keys == nil || strings.TrimSpace(issuer) == "" || strings.TrimSpace(audience) == "" || clock == nil {
-		return nil, errors.New("JWT verifier keys, issuer, audience, and clock are required")
+		return nil, errors.New("Internal JWT verifier keys, issuer, audience, and clock are required")
 	}
-	return &JWTVerifier{keys: keys, issuer: issuer, audience: audience, clock: clock, leeway: 5 * time.Second}, nil
+	return &InternalJWTVerifier{keys: keys, issuer: issuer, audience: audience, clock: clock, leeway: 5 * time.Second}, nil
 }
 
-func (verifier *JWTVerifier) Verify(ctx context.Context, token string) (Claims, error) {
+func (verifier *InternalJWTVerifier) verify(ctx context.Context, token string) (Claims, error) {
 	parts := strings.Split(token, ".")
 	if len(parts) != 3 {
 		return Claims{}, ErrTokenInvalid
@@ -102,23 +101,12 @@ func (verifier *JWTVerifier) Verify(ctx context.Context, token string) (Claims, 
 	return claims, nil
 }
 
-func (verifier *JWTVerifier) VerifyConsumer(ctx context.Context, token, consumerID string) (Claims, error) {
-	claims, err := verifier.Verify(ctx, token)
+func (verifier *InternalJWTVerifier) Verify(ctx context.Context, token string) (Claims, error) {
+	claims, err := verifier.verify(ctx, token)
 	if err != nil {
 		return Claims{}, err
 	}
-	if consumerID == "" || claims.Subject != consumerID || claims.ClientID == "" {
-		return Claims{}, ErrTokenInvalid
-	}
-	return claims, nil
-}
-
-func (verifier *JWTVerifier) VerifyShortLivedInternal(ctx context.Context, token string) (Claims, error) {
-	claims, err := verifier.Verify(ctx, token)
-	if err != nil {
-		return Claims{}, err
-	}
-	if claims.ExpiresAt-claims.IssuedAt > 60 || claims.ExpiresAt <= claims.IssuedAt {
+	if claims.IssuedAt < 0 || claims.ExpiresAt <= claims.IssuedAt || claims.ExpiresAt-claims.IssuedAt > 60 {
 		return Claims{}, ErrTokenInvalid
 	}
 	return claims, nil

@@ -13,11 +13,14 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"golang.org/x/sync/singleflight"
 )
 
 const (
-	maxJWKSBody = 1 << 20
-	maxJWKSKeys = 100
+	maxJWKSBody   = 1 << 20
+	maxJWKSKeys   = 100
+	missingKeyTTL = 5 * time.Second
 )
 
 type RemoteJWKS struct {
@@ -26,9 +29,12 @@ type RemoteJWKS struct {
 	ttl      time.Duration
 	clock    func() time.Time
 
-	mutex     sync.Mutex
-	keys      map[string]*rsa.PublicKey
-	expiresAt time.Time
+	mutex               sync.RWMutex
+	refreshGroup        singleflight.Group
+	keys                map[string]*rsa.PublicKey
+	expiresAt           time.Time
+	refreshBlockedUntil time.Time
+	generation          uint64
 }
 
 func NewRemoteJWKS(endpoint string, client *http.Client, ttl time.Duration, clock func() time.Time) (*RemoteJWKS, error) {
@@ -39,40 +45,82 @@ func NewRemoteJWKS(endpoint string, client *http.Client, ttl time.Duration, cloc
 	if client == nil || ttl <= 0 || clock == nil {
 		return nil, errors.New("JWKS HTTP client, cache TTL, and clock are required")
 	}
-	return &RemoteJWKS{endpoint: endpoint, client: client, ttl: ttl, clock: clock, keys: make(map[string]*rsa.PublicKey)}, nil
+	return &RemoteJWKS{
+		endpoint: endpoint,
+		client:   client,
+		ttl:      ttl,
+		clock:    clock,
+		keys:     make(map[string]*rsa.PublicKey),
+	}, nil
 }
 
 func (remote *RemoteJWKS) ResolveRSA(ctx context.Context, keyID string) (*rsa.PublicKey, error) {
 	if strings.TrimSpace(keyID) == "" {
 		return nil, ErrTokenInvalid
 	}
-	remote.mutex.Lock()
-	defer remote.mutex.Unlock()
-	if len(remote.keys) == 0 || !remote.expiresAt.After(remote.clock()) {
-		if err := remote.refresh(ctx); err != nil {
-			return nil, err
-		}
+	now := remote.clock()
+	key, fresh, refreshBlocked, generation := remote.cached(keyID, now)
+	if key != nil && fresh {
+		return cloneRSAKey(key), nil
 	}
-	key := remote.keys[keyID]
-	if key == nil {
+	if fresh && refreshBlocked {
 		return nil, ErrTokenInvalid
 	}
-	return &rsa.PublicKey{N: new(big.Int).Set(key.N), E: key.E}, nil
+	_, err, _ := remote.refreshGroup.Do("jwks-refresh", func() (any, error) {
+		remote.mutex.RLock()
+		alreadyRefreshed := remote.generation != generation && remote.expiresAt.After(remote.clock())
+		remote.mutex.RUnlock()
+		if alreadyRefreshed {
+			return nil, nil
+		}
+		loaded, err := remote.fetch(ctx)
+		if err != nil {
+			return nil, err
+		}
+		remote.mutex.Lock()
+		remote.keys = loaded
+		remote.expiresAt = remote.clock().Add(remote.ttl)
+		if fresh {
+			remote.refreshBlockedUntil = remote.clock().Add(missingKeyTTL)
+		}
+		remote.generation++
+		remote.mutex.Unlock()
+		return nil, nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	key, fresh, _, _ = remote.cached(keyID, remote.clock())
+	if key == nil || !fresh {
+		return nil, ErrTokenInvalid
+	}
+	return cloneRSAKey(key), nil
 }
 
-func (remote *RemoteJWKS) refresh(ctx context.Context) error {
+func (remote *RemoteJWKS) cached(keyID string, now time.Time) (*rsa.PublicKey, bool, bool, uint64) {
+	remote.mutex.RLock()
+	defer remote.mutex.RUnlock()
+	key := remote.keys[keyID]
+	return key, len(remote.keys) > 0 && remote.expiresAt.After(now), remote.refreshBlockedUntil.After(now), remote.generation
+}
+
+func cloneRSAKey(key *rsa.PublicKey) *rsa.PublicKey {
+	return &rsa.PublicKey{N: new(big.Int).Set(key.N), E: key.E}
+}
+
+func (remote *RemoteJWKS) fetch(ctx context.Context) (map[string]*rsa.PublicKey, error) {
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, remote.endpoint, nil)
 	if err != nil {
-		return ErrTokenInvalid
+		return nil, ErrTokenInvalid
 	}
 	request.Header.Set("Accept", "application/json")
 	response, err := remote.client.Do(request)
 	if err != nil {
-		return ErrTokenInvalid
+		return nil, ErrTokenInvalid
 	}
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {
-		return ErrTokenInvalid
+		return nil, ErrTokenInvalid
 	}
 	var document struct {
 		Keys []struct {
@@ -86,7 +134,7 @@ func (remote *RemoteJWKS) refresh(ctx context.Context) error {
 	}
 	decoder := json.NewDecoder(io.LimitReader(response.Body, maxJWKSBody+1))
 	if err := decoder.Decode(&document); err != nil || len(document.Keys) == 0 || len(document.Keys) > maxJWKSKeys {
-		return ErrTokenInvalid
+		return nil, ErrTokenInvalid
 	}
 	loaded := make(map[string]*rsa.PublicKey, len(document.Keys))
 	for _, candidate := range document.Keys {
@@ -106,14 +154,12 @@ func (remote *RemoteJWKS) refresh(ctx context.Context) error {
 			continue
 		}
 		if _, duplicate := loaded[candidate.KeyID]; duplicate {
-			return ErrTokenInvalid
+			return nil, ErrTokenInvalid
 		}
 		loaded[candidate.KeyID] = &rsa.PublicKey{N: new(big.Int).SetBytes(modulus), E: int(exponentValue.Int64())}
 	}
 	if len(loaded) == 0 {
-		return ErrTokenInvalid
+		return nil, ErrTokenInvalid
 	}
-	remote.keys = loaded
-	remote.expiresAt = remote.clock().Add(remote.ttl)
-	return nil
+	return loaded, nil
 }
