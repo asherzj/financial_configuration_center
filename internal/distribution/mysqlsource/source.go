@@ -10,9 +10,9 @@ import (
 	"strings"
 	"time"
 
-	catalog "github.com/asherzj/financial_configuration_center/internal/catalog/domain"
+	overlay "github.com/asherzj/financial_configuration_center/internal/distribution/overlay"
+	readmodel "github.com/asherzj/financial_configuration_center/internal/distribution/readmodel"
 	"github.com/asherzj/financial_configuration_center/internal/distribution/snapshot"
-	overlay "github.com/asherzj/financial_configuration_center/internal/overlay/domain"
 	platformmysql "github.com/asherzj/financial_configuration_center/internal/platform/mysql"
 	"gorm.io/gorm"
 )
@@ -97,7 +97,7 @@ func (source *Source) LoadEnvironmentPartial(ctx context.Context, environment st
 				continue
 			}
 			loaded.Inputs = append(loaded.Inputs, snapshot.CollectionInput{
-				Definition: definition, Models: models, SubscribedConsumers: subscriptions[row.Name], Version: catalog.ConfigRevision(row.ConfigRevision),
+				Definition: definition, Models: models, SubscribedConsumers: subscriptions[row.Name], Version: readmodel.ConfigRevision(row.ConfigRevision),
 				Cursor: row.ChangeCursor, Records: records, OverlayRules: overlayRules,
 			})
 		}
@@ -147,7 +147,7 @@ func loadSubscriptions(ctx context.Context, db *gorm.DB) (map[string][]string, e
 	return result, nil
 }
 
-func (source *Source) LoadVersions(ctx context.Context, environment string) (map[string]catalog.ConfigRevision, error) {
+func (source *Source) LoadVersions(ctx context.Context, environment string) (map[string]readmodel.ConfigRevision, error) {
 	type row struct {
 		CollectionName string
 		ConfigRevision uint64
@@ -165,9 +165,9 @@ func (source *Source) LoadVersions(ctx context.Context, environment string) (map
 	if err != nil {
 		return nil, fmt.Errorf("load distribution versions for %q: %w", environment, err)
 	}
-	versions := make(map[string]catalog.ConfigRevision, len(rows))
+	versions := make(map[string]readmodel.ConfigRevision, len(rows))
 	for _, row := range rows {
-		versions[row.CollectionName] = catalog.ConfigRevision(row.ConfigRevision)
+		versions[row.CollectionName] = readmodel.ConfigRevision(row.ConfigRevision)
 	}
 	return versions, nil
 }
@@ -181,26 +181,26 @@ func compileCollection(row struct {
 	SchemaVersion      uint64
 	ConfigRevision     uint64
 	ChangeCursor       uint64
-}) (catalog.CollectionDefinition, error) {
-	var fields []catalog.FieldDefinition
+}) (readmodel.CollectionDefinition, error) {
+	var fields []readmodel.FieldDefinition
 	var keyFields []string
 	if err := json.Unmarshal(row.Fields, &fields); err != nil {
-		return catalog.CollectionDefinition{}, fmt.Errorf("decode collection %q fields: %w", row.Name, err)
+		return readmodel.CollectionDefinition{}, fmt.Errorf("decode collection %q fields: %w", row.Name, err)
 	}
 	if err := json.Unmarshal(row.KeyFields, &keyFields); err != nil {
-		return catalog.CollectionDefinition{}, fmt.Errorf("decode collection %q key fields: %w", row.Name, err)
+		return readmodel.CollectionDefinition{}, fmt.Errorf("decode collection %q key fields: %w", row.Name, err)
 	}
-	definition, err := catalog.CompileCollection(catalog.CollectionSpec{
+	definition, err := readmodel.CompileCollection(readmodel.CollectionSpec{
 		Name: row.Name, Description: row.Description, Fields: fields, KeyFields: keyFields,
 		SDKDeliveryEnabled: row.SDKDeliveryEnabled, SchemaVersion: int64(row.SchemaVersion),
 	})
 	if err != nil {
-		return catalog.CollectionDefinition{}, fmt.Errorf("compile collection %q: %w", row.Name, err)
+		return readmodel.CollectionDefinition{}, fmt.Errorf("compile collection %q: %w", row.Name, err)
 	}
 	return definition, nil
 }
 
-func loadModels(ctx context.Context, db *gorm.DB, definition catalog.CollectionDefinition) ([]catalog.CompiledModel, error) {
+func loadModels(ctx context.Context, db *gorm.DB, definition readmodel.CollectionDefinition) ([]readmodel.CompiledModel, error) {
 	type modelRow struct {
 		Code, Name string
 		Definition []byte
@@ -215,9 +215,9 @@ func loadModels(ctx context.Context, db *gorm.DB, definition catalog.CollectionD
 	`, definition.Name()).Scan(&rows).Error; err != nil {
 		return nil, err
 	}
-	models := make([]catalog.CompiledModel, len(rows))
+	models := make([]readmodel.CompiledModel, len(rows))
 	for index, row := range rows {
-		var spec catalog.ModelSpec
+		var spec readmodel.ModelSpec
 		if err := json.Unmarshal(row.Definition, &spec); err != nil {
 			return nil, fmt.Errorf("decode model %q: %w", row.Code, err)
 		}
@@ -225,8 +225,8 @@ func loadModels(ctx context.Context, db *gorm.DB, definition catalog.CollectionD
 			return nil, err
 		}
 		spec.Code, spec.Name, spec.Collection = row.Code, row.Name, definition.Name()
-		spec.ConfigRevision = catalog.ConfigRevision(row.Revision)
-		model, err := catalog.CompileModel(definition, spec)
+		spec.ConfigRevision = readmodel.ConfigRevision(row.Revision)
+		model, err := readmodel.CompileModel(definition, spec)
 		if err != nil {
 			return nil, fmt.Errorf("compile model %q: %w", row.Code, err)
 		}
@@ -235,7 +235,7 @@ func loadModels(ctx context.Context, db *gorm.DB, definition catalog.CollectionD
 	return models, nil
 }
 
-func resolveReleaseTypeAvailability(ctx context.Context, db *gorm.DB, modelCode string, definitions []catalog.ReleaseTypeDefinition) error {
+func resolveReleaseTypeAvailability(ctx context.Context, db *gorm.DB, modelCode string, definitions []readmodel.ReleaseTypeDefinition) error {
 	type templateRow struct {
 		ReleaseTypeCode string
 		Code            string
@@ -270,7 +270,7 @@ func resolveReleaseTypeAvailability(ctx context.Context, db *gorm.DB, modelCode 
 	return nil
 }
 
-func loadRecords(ctx context.Context, db *gorm.DB, collection, environment string) ([]catalog.ConfigurationRecord, error) {
+func loadRecords(ctx context.Context, db *gorm.DB, collection, environment string) ([]readmodel.ConfigurationRecord, error) {
 	type row struct {
 		RecordKey      string
 		Data           []byte
@@ -285,15 +285,15 @@ func loadRecords(ctx context.Context, db *gorm.DB, collection, environment strin
 	`, collection, environment).Scan(&rows).Error; err != nil {
 		return nil, err
 	}
-	records := make([]catalog.ConfigurationRecord, len(rows))
+	records := make([]readmodel.ConfigurationRecord, len(rows))
 	for index, row := range rows {
 		var data map[string]string
 		if err := json.Unmarshal(row.Data, &data); err != nil {
 			return nil, fmt.Errorf("decode record %q: %w", row.RecordKey, err)
 		}
-		records[index] = catalog.ConfigurationRecord{
+		records[index] = readmodel.ConfigurationRecord{
 			Collection: collection, Environment: environment, RecordKey: row.RecordKey,
-			Data: data, ConfigRevision: catalog.ConfigRevision(row.ConfigRevision),
+			Data: data, ConfigRevision: readmodel.ConfigRevision(row.ConfigRevision),
 		}
 	}
 	return records, nil
@@ -338,17 +338,17 @@ func loadOverlayRules(ctx context.Context, db *gorm.DB, collection, environment 
 			ID: loaded.ID, Collection: collection,
 			Scope:     overlay.Scope{Region: loaded.Region, Environment: environment, Stage: loaded.Stage},
 			RecordKey: loaded.RecordKey, Action: overlay.Action(loaded.Action), Content: content,
-			RolloutRanges: ranges, ConfigRevision: catalog.ConfigRevision(loaded.ConfigRevision),
+			RolloutRanges: ranges, ConfigRevision: readmodel.ConfigRevision(loaded.ConfigRevision),
 			ReleaseOrderID: loaded.ReleaseOrderID, EffectiveFrom: loaded.EffectiveFrom, EffectiveUntil: loaded.EffectiveUntil,
 			ActivatedAt: loaded.ActivatedAt, ExpiredAt: loaded.ExpiredAt,
 			CreatedAt: loaded.CreatedAt, CreatedBy: loaded.CreatedBy, UpdatedAt: loaded.UpdatedAt, UpdatedBy: loaded.UpdatedBy,
 		}
 		if loaded.ActivatedRevision != nil {
-			value := catalog.ConfigRevision(*loaded.ActivatedRevision)
+			value := readmodel.ConfigRevision(*loaded.ActivatedRevision)
 			rule.ActivatedRevision = &value
 		}
 		if loaded.ExpiredRevision != nil {
-			value := catalog.ConfigRevision(*loaded.ExpiredRevision)
+			value := readmodel.ConfigRevision(*loaded.ExpiredRevision)
 			rule.ExpiredRevision = &value
 		}
 		rules[index] = rule

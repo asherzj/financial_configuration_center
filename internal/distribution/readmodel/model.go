@@ -1,0 +1,475 @@
+package readmodel
+
+import (
+	"errors"
+	"fmt"
+	"slices"
+	"strings"
+)
+
+type UIControlType string
+
+const (
+	UIControlInput    UIControlType = "INPUT"
+	UIControlSelect   UIControlType = "SELECT"
+	UIControlTime     UIControlType = "TIME"
+	UIControlNumber   UIControlType = "NUMBER"
+	UIControlBoolean  UIControlType = "BOOLEAN"
+	UIControlTextarea UIControlType = "TEXTAREA"
+	UIControlJSON     UIControlType = "JSON"
+)
+
+type FilterOperator string
+
+const (
+	FilterExact       FilterOperator = "EXACT"
+	FilterContains    FilterOperator = "CONTAINS"
+	FilterClosedRange FilterOperator = "CLOSED_RANGE"
+	FilterOpenRange   FilterOperator = "OPEN_RANGE"
+	FilterIn          FilterOperator = "IN"
+	FilterNotIn       FilterOperator = "NOT_IN"
+)
+
+type OptionSourceKind string
+
+const (
+	OptionSourceStatic     OptionSourceKind = "STATIC"
+	OptionSourceCollection OptionSourceKind = "COLLECTION"
+)
+
+type SelectOptionDefinition struct {
+	Code     string `json:"code"`
+	Label    string `json:"label"`
+	Disabled bool   `json:"disabled"`
+}
+
+type OptionFixedFilter struct {
+	Field string `json:"field"`
+	Value string `json:"value"`
+}
+
+type OptionSourceDefinition struct {
+	Kind          OptionSourceKind         `json:"kind"`
+	StaticOptions []SelectOptionDefinition `json:"staticOptions,omitempty"`
+	Collection    string                   `json:"collection,omitempty"`
+	ValueField    string                   `json:"valueField,omitempty"`
+	LabelField    string                   `json:"labelField,omitempty"`
+	FixedFilters  []OptionFixedFilter      `json:"fixedFilters,omitempty"`
+	Limit         int32                    `json:"limit,omitempty"`
+}
+
+// ModelField adds interaction behavior to a Collection field while repeating
+// its data semantics for transport compatibility.
+type ModelField struct {
+	Name                   string                  `json:"name"`
+	Type                   FieldType               `json:"type"`
+	Required               bool                    `json:"required"`
+	Sensitive              bool                    `json:"sensitive"`
+	Editable               bool                    `json:"editable"`
+	Queryable              bool                    `json:"queryable"`
+	DefaultValue           *string                 `json:"defaultValue,omitempty"`
+	UIControl              UIControlType           `json:"uiControl"`
+	AllowedFilterOperators []FilterOperator        `json:"allowedFilterOperators"`
+	OptionSource           *OptionSourceDefinition `json:"optionSource,omitempty"`
+	ValidationRules        []ValidationRule        `json:"validationRules"`
+}
+
+type AutoFillSource string
+
+const (
+	AutoFillActorSubject AutoFillSource = "ACTOR_SUBJECT"
+	AutoFillActorName    AutoFillSource = "ACTOR_NAME"
+	AutoFillCurrentTime  AutoFillSource = "CURRENT_TIME"
+	AutoFillConstant     AutoFillSource = "CONSTANT"
+	AutoFillUUID         AutoFillSource = "UUID"
+)
+
+type AutoFillRule struct {
+	Field  string         `json:"field"`
+	Source AutoFillSource `json:"source"`
+	Value  string         `json:"value,omitempty"`
+}
+
+type ReleaseTypeDefinition struct {
+	Code                  string `json:"code"`
+	Name                  string `json:"name"`
+	TemplateCode          string `json:"templateCode"`
+	Enabled               bool   `json:"enabled"`
+	Available             bool   `json:"available,omitempty"`
+	UnavailableReasonCode string `json:"unavailableReasonCode,omitempty"`
+}
+
+// ModelSpec is untrusted model input to CompileModel.
+type ModelSpec struct {
+	Code             string                  `json:"code,omitempty"`
+	Name             string                  `json:"name,omitempty"`
+	Collection       string                  `json:"collection,omitempty"`
+	Fields           []ModelField            `json:"fields"`
+	ProjectionFields []string                `json:"projectionFields"`
+	KeyFields        []string                `json:"keyFields"`
+	DefaultPageSize  int32                   `json:"defaultPageSize"`
+	MaxPageSize      int32                   `json:"maxPageSize"`
+	ReleaseTypes     []ReleaseTypeDefinition `json:"releaseTypes"`
+	AutoFillRules    []AutoFillRule          `json:"autoFillRules"`
+	ConfigRevision   ConfigRevision          `json:"configRevision,omitempty"`
+}
+
+// CompiledModel is safe to publish in a snapshot.
+type CompiledModel struct {
+	code             string
+	name             string
+	collection       string
+	fields           []ModelField
+	projectionFields []string
+	keyFields        []string
+	defaultPageSize  int32
+	maxPageSize      int32
+	releaseTypes     []ReleaseTypeDefinition
+	autoFillRules    []AutoFillRule
+	configRevision   ConfigRevision
+}
+
+func CompileModel(collection CollectionDefinition, spec ModelSpec) (CompiledModel, error) {
+	spec.Code = strings.TrimSpace(spec.Code)
+	if !identifierPattern.MatchString(spec.Code) {
+		return CompiledModel{}, errors.New("compile model: code must be an ASCII identifier")
+	}
+	if strings.TrimSpace(spec.Name) == "" {
+		return CompiledModel{}, errors.New("compile model: name is required")
+	}
+	if spec.Collection != collection.Name() {
+		return CompiledModel{}, fmt.Errorf("compile model: collection %q does not match %q", spec.Collection, collection.Name())
+	}
+	if len(spec.Fields) == 0 {
+		return CompiledModel{}, errors.New("compile model: at least one field is required")
+	}
+	if spec.DefaultPageSize <= 0 || spec.MaxPageSize < spec.DefaultPageSize {
+		return CompiledModel{}, errors.New("compile model: page sizes are invalid")
+	}
+	if spec.ConfigRevision == 0 {
+		return CompiledModel{}, errors.New("compile model: config revision must be positive")
+	}
+
+	collectionFields := make(map[string]FieldDefinition, len(collection.fields))
+	for _, field := range collection.fields {
+		collectionFields[field.Name] = field
+	}
+	fields := make([]ModelField, len(spec.Fields))
+	seen := make(map[string]struct{}, len(spec.Fields))
+	for index, field := range spec.Fields {
+		definition, exists := collectionFields[field.Name]
+		if !exists {
+			return CompiledModel{}, fmt.Errorf("compile model: field %q does not exist in collection", field.Name)
+		}
+		if _, duplicate := seen[field.Name]; duplicate {
+			return CompiledModel{}, fmt.Errorf("compile model: duplicate field %q", field.Name)
+		}
+		compiledRules, err := compileValidationRules(field.Type, field.Required, field.ValidationRules)
+		if err != nil {
+			return CompiledModel{}, fmt.Errorf("compile model: field %q: %w", field.Name, err)
+		}
+		field.ValidationRules = compiledRules
+		if field.Type != definition.Type || field.Required != definition.Required || field.Sensitive != definition.Sensitive || !sameOptionalString(field.DefaultValue, definition.DefaultValue) || !sameValidationRules(field.ValidationRules, definition.ValidationRules) {
+			return CompiledModel{}, fmt.Errorf("compile model: field %q data semantics differ from collection", field.Name)
+		}
+		if !validUIControl(field.UIControl) {
+			return CompiledModel{}, fmt.Errorf("compile model: field %q has invalid UI control %q", field.Name, field.UIControl)
+		}
+		if field.Queryable && len(field.AllowedFilterOperators) == 0 {
+			return CompiledModel{}, fmt.Errorf("compile model: queryable field %q needs allowed filter operators", field.Name)
+		}
+		if !field.Queryable && len(field.AllowedFilterOperators) != 0 {
+			return CompiledModel{}, fmt.Errorf("compile model: non-queryable field %q has filter operators", field.Name)
+		}
+		if field.Sensitive && field.Queryable {
+			return CompiledModel{}, fmt.Errorf("compile model: sensitive field %q cannot be queryable", field.Name)
+		}
+		if field.UIControl == UIControlSelect {
+			if field.OptionSource == nil {
+				return CompiledModel{}, fmt.Errorf("compile model: SELECT field %q requires an option source", field.Name)
+			}
+			compiledSource, err := compileOptionSource(*field.OptionSource)
+			if err != nil {
+				return CompiledModel{}, fmt.Errorf("compile model: field %q: %w", field.Name, err)
+			}
+			if compiledSource.Kind == OptionSourceStatic {
+				seenCodes := make(map[string]struct{}, len(compiledSource.StaticOptions))
+				for optionIndex := range compiledSource.StaticOptions {
+					canonical, err := CanonicalizeScalar(field.Type, compiledSource.StaticOptions[optionIndex].Code)
+					if err != nil {
+						return CompiledModel{}, fmt.Errorf("compile model: field %q option code: %w", field.Name, err)
+					}
+					if _, duplicate := seenCodes[canonical]; duplicate {
+						return CompiledModel{}, fmt.Errorf("compile model: field %q repeats canonical option code %q", field.Name, canonical)
+					}
+					compiledSource.StaticOptions[optionIndex].Code = canonical
+					seenCodes[canonical] = struct{}{}
+				}
+				slices.SortFunc(compiledSource.StaticOptions, func(left, right SelectOptionDefinition) int { return strings.Compare(left.Code, right.Code) })
+			}
+			field.OptionSource = &compiledSource
+		} else if field.OptionSource != nil {
+			return CompiledModel{}, fmt.Errorf("compile model: non-SELECT field %q has an option source", field.Name)
+		}
+		operators := make(map[FilterOperator]struct{}, len(field.AllowedFilterOperators))
+		for _, operator := range field.AllowedFilterOperators {
+			if !validFilterOperator(field.Type, operator) {
+				return CompiledModel{}, fmt.Errorf("compile model: field %q cannot use filter operator %q", field.Name, operator)
+			}
+			if _, duplicate := operators[operator]; duplicate {
+				return CompiledModel{}, fmt.Errorf("compile model: field %q repeats filter operator %q", field.Name, operator)
+			}
+			operators[operator] = struct{}{}
+		}
+		if field.DefaultValue != nil {
+			field.DefaultValue = stringPointer(*field.DefaultValue)
+		}
+		field.AllowedFilterOperators = slices.Clone(field.AllowedFilterOperators)
+		field.ValidationRules = cloneValidationRules(field.ValidationRules)
+		fields[index] = field
+		seen[field.Name] = struct{}{}
+	}
+
+	if len(spec.ProjectionFields) == 0 {
+		return CompiledModel{}, errors.New("compile model: projection fields are required")
+	}
+	projection := slices.Clone(spec.ProjectionFields)
+	projectionSeen := make(map[string]struct{}, len(projection))
+	for _, name := range projection {
+		_, exists := collectionFields[name]
+		if !exists {
+			return CompiledModel{}, fmt.Errorf("compile model: projection field %q does not exist", name)
+		}
+		if _, exposed := seen[name]; !exposed {
+			return CompiledModel{}, fmt.Errorf("compile model: projection field %q has no model field", name)
+		}
+		if _, duplicate := projectionSeen[name]; duplicate {
+			return CompiledModel{}, fmt.Errorf("compile model: duplicate projection field %q", name)
+		}
+		projectionSeen[name] = struct{}{}
+	}
+	if !slices.Equal(spec.KeyFields, collection.keyFields) {
+		return CompiledModel{}, errors.New("compile model: release key fields must match collection key fields in order")
+	}
+	releaseTypes, err := compileReleaseTypes(spec.ReleaseTypes)
+	if err != nil {
+		return CompiledModel{}, err
+	}
+	autoFillRules, err := compileAutoFillRules(fields, spec.AutoFillRules)
+	if err != nil {
+		return CompiledModel{}, err
+	}
+
+	return CompiledModel{
+		code:             spec.Code,
+		name:             spec.Name,
+		collection:       collection.Name(),
+		fields:           fields,
+		projectionFields: projection,
+		keyFields:        slices.Clone(spec.KeyFields),
+		defaultPageSize:  spec.DefaultPageSize,
+		maxPageSize:      spec.MaxPageSize,
+		releaseTypes:     releaseTypes,
+		autoFillRules:    autoFillRules,
+		configRevision:   spec.ConfigRevision,
+	}, nil
+}
+
+func (model CompiledModel) Code() string { return model.code }
+
+func (model CompiledModel) Name() string { return model.name }
+
+func (model CompiledModel) Collection() string { return model.collection }
+
+func (model CompiledModel) Fields() []ModelField {
+	fields := make([]ModelField, len(model.fields))
+	for index, field := range model.fields {
+		if field.DefaultValue != nil {
+			field.DefaultValue = stringPointer(*field.DefaultValue)
+		}
+		field.AllowedFilterOperators = slices.Clone(field.AllowedFilterOperators)
+		field.OptionSource = cloneOptionSource(field.OptionSource)
+		field.ValidationRules = cloneValidationRules(field.ValidationRules)
+		fields[index] = field
+	}
+	return fields
+}
+
+func compileOptionSource(source OptionSourceDefinition) (OptionSourceDefinition, error) {
+	switch source.Kind {
+	case OptionSourceStatic:
+		if len(source.StaticOptions) == 0 || source.Collection != "" || source.ValueField != "" || source.LabelField != "" || len(source.FixedFilters) != 0 {
+			return OptionSourceDefinition{}, errors.New("STATIC option source requires only static options")
+		}
+		options := slices.Clone(source.StaticOptions)
+		seen := make(map[string]struct{}, len(options))
+		for index := range options {
+			options[index].Code = strings.TrimSpace(options[index].Code)
+			options[index].Label = strings.TrimSpace(options[index].Label)
+			if options[index].Code == "" || options[index].Label == "" {
+				return OptionSourceDefinition{}, errors.New("STATIC option code and label are required")
+			}
+			if _, duplicate := seen[options[index].Code]; duplicate {
+				return OptionSourceDefinition{}, fmt.Errorf("STATIC option code %q is duplicated", options[index].Code)
+			}
+			seen[options[index].Code] = struct{}{}
+		}
+		slices.SortFunc(options, func(left, right SelectOptionDefinition) int { return strings.Compare(left.Code, right.Code) })
+		source.StaticOptions = options
+		source.Limit = int32(len(options))
+	case OptionSourceCollection:
+		source.Collection = strings.TrimSpace(source.Collection)
+		source.ValueField = strings.TrimSpace(source.ValueField)
+		source.LabelField = strings.TrimSpace(source.LabelField)
+		if !identifierPattern.MatchString(source.Collection) || !identifierPattern.MatchString(source.ValueField) || !identifierPattern.MatchString(source.LabelField) || len(source.StaticOptions) != 0 {
+			return OptionSourceDefinition{}, errors.New("COLLECTION option source identity is invalid")
+		}
+		if source.Limit <= 0 || source.Limit > 1000 {
+			return OptionSourceDefinition{}, errors.New("COLLECTION option limit must be 1..1000")
+		}
+		filters := make([]OptionFixedFilter, len(source.FixedFilters))
+		for index, filter := range source.FixedFilters {
+			filter.Field = strings.TrimSpace(filter.Field)
+			if !identifierPattern.MatchString(filter.Field) {
+				return OptionSourceDefinition{}, errors.New("COLLECTION option fixed filter field is invalid")
+			}
+			filters[index] = filter
+		}
+		source.FixedFilters = filters
+	default:
+		return OptionSourceDefinition{}, fmt.Errorf("option source kind %q is invalid", source.Kind)
+	}
+	return source, nil
+}
+
+func cloneOptionSource(source *OptionSourceDefinition) *OptionSourceDefinition {
+	if source == nil {
+		return nil
+	}
+	cloned := *source
+	cloned.StaticOptions = slices.Clone(source.StaticOptions)
+	cloned.FixedFilters = slices.Clone(source.FixedFilters)
+	return &cloned
+}
+
+func (model CompiledModel) ProjectionFields() []string { return slices.Clone(model.projectionFields) }
+
+func (model CompiledModel) KeyFields() []string { return slices.Clone(model.keyFields) }
+
+func (model CompiledModel) DefaultPageSize() int32 { return model.defaultPageSize }
+
+func (model CompiledModel) MaxPageSize() int32 { return model.maxPageSize }
+
+func (model CompiledModel) ReleaseTypes() []ReleaseTypeDefinition {
+	return slices.Clone(model.releaseTypes)
+}
+
+func (model CompiledModel) AutoFillRules() []AutoFillRule { return slices.Clone(model.autoFillRules) }
+
+func (model CompiledModel) ConfigRevision() ConfigRevision { return model.configRevision }
+
+func compileAutoFillRules(fields []ModelField, source []AutoFillRule) ([]AutoFillRule, error) {
+	byName := make(map[string]ModelField, len(fields))
+	for _, field := range fields {
+		byName[field.Name] = field
+	}
+	compiled := make([]AutoFillRule, len(source))
+	seen := make(map[string]struct{}, len(source))
+	for index, rule := range source {
+		rule.Field = strings.TrimSpace(rule.Field)
+		field, exists := byName[rule.Field]
+		if !exists {
+			return nil, fmt.Errorf("compile model: auto-fill field %q is missing", rule.Field)
+		}
+		if _, duplicate := seen[rule.Field]; duplicate {
+			return nil, fmt.Errorf("compile model: auto-fill field %q is duplicated", rule.Field)
+		}
+		if field.Editable {
+			return nil, fmt.Errorf("compile model: auto-fill field %q must not be editable", rule.Field)
+		}
+		if field.Sensitive {
+			return nil, fmt.Errorf("compile model: auto-fill field %q must not be sensitive", rule.Field)
+		}
+		switch rule.Source {
+		case AutoFillActorSubject, AutoFillActorName:
+			if field.Type != FieldTypeString || rule.Value != "" {
+				return nil, fmt.Errorf("compile model: %s auto-fill requires STRING and no value", rule.Source)
+			}
+		case AutoFillCurrentTime:
+			if field.Type != FieldTypeTimestamp || rule.Value != "" {
+				return nil, errors.New("compile model: CURRENT_TIME auto-fill requires TIMESTAMP and no value")
+			}
+		case AutoFillUUID:
+			if field.Type != FieldTypeString || rule.Value != "" {
+				return nil, errors.New("compile model: UUID auto-fill requires STRING and no value")
+			}
+		case AutoFillConstant:
+			canonical, err := CanonicalizeScalar(field.Type, rule.Value)
+			if err != nil {
+				return nil, fmt.Errorf("compile model: CONSTANT auto-fill field %q: %w", rule.Field, err)
+			}
+			rule.Value = canonical
+		default:
+			return nil, fmt.Errorf("compile model: auto-fill source %q is invalid", rule.Source)
+		}
+		seen[rule.Field] = struct{}{}
+		compiled[index] = rule
+	}
+	slices.SortFunc(compiled, func(left, right AutoFillRule) int { return strings.Compare(left.Field, right.Field) })
+	return compiled, nil
+}
+
+func compileReleaseTypes(source []ReleaseTypeDefinition) ([]ReleaseTypeDefinition, error) {
+	compiled := make([]ReleaseTypeDefinition, len(source))
+	seen := make(map[string]struct{}, len(source))
+	for index, definition := range source {
+		definition.Code = strings.TrimSpace(definition.Code)
+		definition.Name = strings.TrimSpace(definition.Name)
+		definition.TemplateCode = strings.TrimSpace(definition.TemplateCode)
+		definition.UnavailableReasonCode = strings.TrimSpace(definition.UnavailableReasonCode)
+		if !identifierPattern.MatchString(definition.Code) || !identifierPattern.MatchString(definition.TemplateCode) || definition.Name == "" {
+			return nil, fmt.Errorf("compile model: release type %d has invalid identity", index)
+		}
+		if _, duplicate := seen[definition.Code]; duplicate {
+			return nil, fmt.Errorf("compile model: duplicate release type %q", definition.Code)
+		}
+		if definition.Available && !definition.Enabled {
+			return nil, fmt.Errorf("compile model: disabled release type %q cannot be available", definition.Code)
+		}
+		if definition.Available && definition.UnavailableReasonCode != "" {
+			return nil, fmt.Errorf("compile model: available release type %q has an unavailable reason", definition.Code)
+		}
+		compiled[index] = definition
+		seen[definition.Code] = struct{}{}
+	}
+	return compiled, nil
+}
+
+func sameOptionalString(left, right *string) bool {
+	if left == nil || right == nil {
+		return left == nil && right == nil
+	}
+	return *left == *right
+}
+
+func validUIControl(control UIControlType) bool {
+	switch control {
+	case UIControlInput, UIControlSelect, UIControlTime, UIControlNumber, UIControlBoolean, UIControlTextarea, UIControlJSON:
+		return true
+	default:
+		return false
+	}
+}
+
+func validFilterOperator(fieldType FieldType, operator FilterOperator) bool {
+	switch operator {
+	case FilterExact, FilterIn, FilterNotIn:
+		return true
+	case FilterContains:
+		return fieldType == FieldTypeString
+	case FilterClosedRange, FilterOpenRange:
+		return fieldType == FieldTypeInt64 || fieldType == FieldTypeFloat64 || fieldType == FieldTypeTimestamp
+	default:
+		return false
+	}
+}

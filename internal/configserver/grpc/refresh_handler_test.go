@@ -8,8 +8,8 @@ import (
 
 	commonv1 "github.com/asherzj/financial_configuration_center/contracts/kitex_gen/finconfig/common/v1"
 	configv1 "github.com/asherzj/financial_configuration_center/contracts/kitex_gen/finconfig/config/v1"
-	catalog "github.com/asherzj/financial_configuration_center/internal/catalog/domain"
 	configgrpc "github.com/asherzj/financial_configuration_center/internal/configserver/grpc"
+	readmodel "github.com/asherzj/financial_configuration_center/internal/distribution/readmodel"
 	"github.com/asherzj/financial_configuration_center/internal/distribution/snapshot"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -87,7 +87,7 @@ func (hintHandlerSource) LoadEnvironment(context.Context, string) ([]snapshot.Co
 	return nil, nil
 }
 
-func (hintHandlerSource) LoadVersions(context.Context, string) (map[string]catalog.ConfigRevision, error) {
+func (hintHandlerSource) LoadVersions(context.Context, string) (map[string]readmodel.ConfigRevision, error) {
 	return nil, nil
 }
 

@@ -30,6 +30,7 @@ import (
 	catalogmysqlstore "github.com/asherzj/financial_configuration_center/internal/catalog/mysqlstore"
 	"github.com/asherzj/financial_configuration_center/internal/configserver"
 	"github.com/asherzj/financial_configuration_center/internal/distribution/mysqlsource"
+	readmodel "github.com/asherzj/financial_configuration_center/internal/distribution/readmodel"
 	"github.com/asherzj/financial_configuration_center/internal/distribution/snapshot"
 	"github.com/asherzj/financial_configuration_center/internal/outbox"
 	outboxmysqlstore "github.com/asherzj/financial_configuration_center/internal/outbox/mysqlstore"
@@ -98,8 +99,8 @@ func TestRealMySQLSensitiveRevealUsesCurrentAuthorityAndCommitsAudit(t *testing.
 	command := access.RevealCommand{
 		ModelCode: "payment-route-admin", Scope: access.Scope{Region: "cn", Environment: "production"},
 		RecordKey: page.Rows[0].RecordKey, FieldName: "api_secret",
-		ExpectedRecordRevision: page.Rows[0].RecordRevision, ExpectedCollectionRevision: page.CollectionRevision,
-		ExpectedModelRevision: page.ModelRevision, ExpectedServerEpoch: page.Snapshot.ServerEpoch,
+		ExpectedRecordRevision: catalog.ConfigRevision(page.Rows[0].RecordRevision), ExpectedCollectionRevision: catalog.ConfigRevision(page.CollectionRevision),
+		ExpectedModelRevision: catalog.ConfigRevision(page.ModelRevision), ExpectedServerEpoch: page.Snapshot.ServerEpoch,
 		ExpectedSnapshotInstance: page.Snapshot.SnapshotInstance, ExpectedSnapshotGeneration: page.Snapshot.Generation,
 		Reason: "production incident", RequestID: "60000000-0000-4000-8000-000000000002",
 		Principal: access.Principal{Subject: "viewer@example.com", DisplayName: "Viewer", Roles: []string{access.SensitiveViewerRole}},
@@ -1955,7 +1956,7 @@ type configTransport struct{ service *configserver.Service }
 func (transport configTransport) GetSnapshot(ctx context.Context, request finconfig.SnapshotRequest) (finconfig.SnapshotResponse, error) {
 	known := make([]configserver.Version, len(request.KnownVersions))
 	for index, version := range request.KnownVersions {
-		known[index] = configserver.Version{Collection: version.Collection, Revision: catalog.ConfigRevision(version.Revision), Digest: version.Digest}
+		known[index] = configserver.Version{Collection: version.Collection, Revision: readmodel.ConfigRevision(version.Revision), Digest: version.Digest}
 	}
 	response, err := transport.service.GetSnapshot(ctx, configserver.GetSnapshotRequest{
 		ConsumerID: request.ConsumerID, ClientID: request.ClientID, Region: request.Region,

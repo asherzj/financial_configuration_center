@@ -10,8 +10,8 @@ import (
 	"sync/atomic"
 	"time"
 
-	catalog "github.com/asherzj/financial_configuration_center/internal/catalog/domain"
-	overlay "github.com/asherzj/financial_configuration_center/internal/overlay/domain"
+	overlay "github.com/asherzj/financial_configuration_center/internal/distribution/overlay"
+	readmodel "github.com/asherzj/financial_configuration_center/internal/distribution/readmodel"
 )
 
 type Source interface {
@@ -43,12 +43,12 @@ type Identity struct {
 }
 
 type CollectionInput struct {
-	Definition          catalog.CollectionDefinition
-	Models              []catalog.CompiledModel
+	Definition          readmodel.CollectionDefinition
+	Models              []readmodel.CompiledModel
 	SubscribedConsumers []string
-	Version             catalog.ConfigRevision
+	Version             readmodel.ConfigRevision
 	Cursor              uint64
-	Records             []catalog.ConfigurationRecord
+	Records             []readmodel.ConfigurationRecord
 	OverlayRules        []overlay.Rule
 }
 
@@ -69,11 +69,11 @@ type RefreshResult struct {
 }
 
 type collectionView struct {
-	definition          catalog.CollectionDefinition
-	version             catalog.ConfigRevision
+	definition          readmodel.CollectionDefinition
+	version             readmodel.ConfigRevision
 	cursor              uint64
-	digest              catalog.Digest
-	records             map[string]catalog.ConfigurationRecord
+	digest              readmodel.Digest
+	records             map[string]readmodel.ConfigurationRecord
 	ordered             []string
 	overlayRules        []overlay.Rule
 	subscribedConsumers []string
@@ -85,7 +85,7 @@ type Snapshot struct {
 	identity              Identity
 	environment           string
 	collections           map[string]collectionView
-	models                map[string]catalog.CompiledModel
+	models                map[string]readmodel.CompiledModel
 	authorizedCollections map[string][]string
 }
 
@@ -102,9 +102,9 @@ type Manager struct {
 
 type CollectionDiagnostic struct {
 	Name     string
-	Revision catalog.ConfigRevision
+	Revision readmodel.ConfigRevision
 	Cursor   uint64
-	Digest   catalog.Digest
+	Digest   readmodel.Digest
 }
 
 type Diagnostics struct {
@@ -132,7 +132,7 @@ func NewManager(source Source, seed IdentitySeed, clock Clock) (*Manager, error)
 			SnapshotInstance: seed.SnapshotInstance, PublishedAt: clock.Now().UTC(),
 		},
 		collections:           map[string]collectionView{},
-		models:                map[string]catalog.CompiledModel{},
+		models:                map[string]readmodel.CompiledModel{},
 		authorizedCollections: map[string][]string{},
 	})
 	return manager, nil
@@ -296,7 +296,7 @@ func dependencyGroups(previous *Snapshot, incoming map[string]CollectionInput, f
 		addNode(name)
 	}
 	modelOwners := make(map[string]string)
-	addModels := func(models []catalog.CompiledModel) {
+	addModels := func(models []readmodel.CompiledModel) {
 		for _, model := range models {
 			owner := model.Collection()
 			addNode(owner)
@@ -306,13 +306,13 @@ func dependencyGroups(previous *Snapshot, incoming map[string]CollectionInput, f
 				modelOwners[model.Code()] = owner
 			}
 			for _, field := range model.Fields() {
-				if field.OptionSource != nil && field.OptionSource.Kind == catalog.OptionSourceCollection {
+				if field.OptionSource != nil && field.OptionSource.Kind == readmodel.OptionSourceCollection {
 					addEdge(owner, field.OptionSource.Collection)
 				}
 			}
 		}
 	}
-	previousModels := make([]catalog.CompiledModel, 0, len(previous.models))
+	previousModels := make([]readmodel.CompiledModel, 0, len(previous.models))
 	for _, model := range previous.models {
 		previousModels = append(previousModels, model)
 	}
@@ -383,14 +383,14 @@ func previousInputs(previous *Snapshot, group []string) []CollectionInput {
 		if !exists {
 			continue
 		}
-		models := make([]catalog.CompiledModel, 0)
+		models := make([]readmodel.CompiledModel, 0)
 		for _, model := range previous.models {
 			if model.Collection() == name {
 				models = append(models, model)
 			}
 		}
 		sort.Slice(models, func(left, right int) bool { return models[left].Code() < models[right].Code() })
-		records := make([]catalog.ConfigurationRecord, len(view.ordered))
+		records := make([]readmodel.ConfigurationRecord, len(view.ordered))
 		for index, key := range view.ordered {
 			records[index] = cloneRecord(view.records[key])
 		}
@@ -453,12 +453,12 @@ func (snapshot *Snapshot) CollectionNames() []string {
 	return names
 }
 
-func (snapshot *Snapshot) Model(code string) (catalog.CompiledModel, bool) {
+func (snapshot *Snapshot) Model(code string) (readmodel.CompiledModel, bool) {
 	model, exists := snapshot.models[code]
 	return model, exists
 }
 
-func (snapshot *Snapshot) CollectionVersion(collection string) (catalog.ConfigRevision, bool) {
+func (snapshot *Snapshot) CollectionVersion(collection string) (readmodel.ConfigRevision, bool) {
 	view, exists := snapshot.collections[collection]
 	return view.version, exists
 }
@@ -468,37 +468,37 @@ func (snapshot *Snapshot) CollectionCursor(collection string) (uint64, bool) {
 	return view.cursor, exists
 }
 
-func (snapshot *Snapshot) Definition(collection string) (catalog.CollectionDefinition, bool) {
+func (snapshot *Snapshot) Definition(collection string) (readmodel.CollectionDefinition, bool) {
 	view, exists := snapshot.collections[collection]
 	if !exists {
-		return catalog.CollectionDefinition{}, false
+		return readmodel.CollectionDefinition{}, false
 	}
 	return view.definition, true
 }
 
-func (snapshot *Snapshot) CollectionDigest(collection string) (catalog.Digest, bool) {
+func (snapshot *Snapshot) CollectionDigest(collection string) (readmodel.Digest, bool) {
 	view, exists := snapshot.collections[collection]
 	return view.digest, exists
 }
 
-func (snapshot *Snapshot) Record(collection, recordKey string) (catalog.ConfigurationRecord, bool) {
+func (snapshot *Snapshot) Record(collection, recordKey string) (readmodel.ConfigurationRecord, bool) {
 	view, exists := snapshot.collections[collection]
 	if !exists {
-		return catalog.ConfigurationRecord{}, false
+		return readmodel.ConfigurationRecord{}, false
 	}
 	record, exists := view.records[recordKey]
 	if !exists {
-		return catalog.ConfigurationRecord{}, false
+		return readmodel.ConfigurationRecord{}, false
 	}
 	return cloneRecord(record), true
 }
 
-func (snapshot *Snapshot) Records(collection string) []catalog.ConfigurationRecord {
+func (snapshot *Snapshot) Records(collection string) []readmodel.ConfigurationRecord {
 	view, exists := snapshot.collections[collection]
 	if !exists {
 		return nil
 	}
-	records := make([]catalog.ConfigurationRecord, len(view.ordered))
+	records := make([]readmodel.ConfigurationRecord, len(view.ordered))
 	for index, key := range view.ordered {
 		records[index] = cloneRecord(view.records[key])
 	}
@@ -549,7 +549,7 @@ func buildSnapshot(seed IdentitySeed, generation uint64, publishedAt time.Time, 
 		},
 		environment:           environment,
 		collections:           make(map[string]collectionView, len(inputs)),
-		models:                make(map[string]catalog.CompiledModel),
+		models:                make(map[string]readmodel.CompiledModel),
 		authorizedCollections: make(map[string][]string),
 	}
 	for _, input := range inputs {
@@ -564,7 +564,7 @@ func buildSnapshot(seed IdentitySeed, generation uint64, publishedAt time.Time, 
 			definition:   input.Definition,
 			version:      input.Version,
 			cursor:       input.Cursor,
-			records:      make(map[string]catalog.ConfigurationRecord, len(input.Records)),
+			records:      make(map[string]readmodel.ConfigurationRecord, len(input.Records)),
 			ordered:      make([]string, 0, len(input.Records)),
 			overlayRules: make([]overlay.Rule, len(input.OverlayRules)),
 		}
@@ -587,11 +587,11 @@ func buildSnapshot(seed IdentitySeed, generation uint64, publishedAt time.Time, 
 			view.ordered = append(view.ordered, canonical.RecordKey)
 		}
 		sort.Strings(view.ordered)
-		records := make([]catalog.ConfigurationRecord, len(view.ordered))
+		records := make([]readmodel.ConfigurationRecord, len(view.ordered))
 		for index, key := range view.ordered {
 			records[index] = view.records[key]
 		}
-		digest, err := catalog.ComputeBaseDigest(records)
+		digest, err := readmodel.ComputeBaseDigest(records)
 		if err != nil {
 			return nil, fmt.Errorf("build snapshot: collection %q digest: %w", name, err)
 		}
@@ -643,7 +643,7 @@ func validateOptionDependencies(candidate *Snapshot) error {
 	for _, model := range candidate.models {
 		for _, field := range model.Fields() {
 			source := field.OptionSource
-			if source == nil || source.Kind != catalog.OptionSourceCollection {
+			if source == nil || source.Kind != readmodel.OptionSourceCollection {
 				continue
 			}
 			view, exists := candidate.collections[source.Collection]
@@ -661,7 +661,7 @@ func validateOptionDependencies(candidate *Snapshot) error {
 				if !exists || definition.Sensitive {
 					return fmt.Errorf("build snapshot: model %q option filter %q is missing or sensitive", model.Code(), filter.Field)
 				}
-				if _, err := catalog.CanonicalizeScalar(definition.Type, filter.Value); err != nil {
+				if _, err := readmodel.CanonicalizeScalar(definition.Type, filter.Value); err != nil {
 					return fmt.Errorf("build snapshot: model %q option filter %q: %w", model.Code(), filter.Field, err)
 				}
 			}
@@ -670,7 +670,7 @@ func validateOptionDependencies(candidate *Snapshot) error {
 	return nil
 }
 
-func cloneRecord(record catalog.ConfigurationRecord) catalog.ConfigurationRecord {
+func cloneRecord(record readmodel.ConfigurationRecord) readmodel.ConfigurationRecord {
 	source := record.Data
 	record.Data = make(map[string]string, len(source))
 	for key, value := range source {

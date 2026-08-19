@@ -8,7 +8,7 @@ import (
 
 	commonv1 "github.com/asherzj/financial_configuration_center/contracts/kitex_gen/finconfig/common/v1"
 	configv1 "github.com/asherzj/financial_configuration_center/contracts/kitex_gen/finconfig/config/v1"
-	catalog "github.com/asherzj/financial_configuration_center/internal/catalog/domain"
+	readmodel "github.com/asherzj/financial_configuration_center/internal/distribution/readmodel"
 	"github.com/asherzj/financial_configuration_center/internal/distribution/snapshot"
 	"github.com/asherzj/financial_configuration_center/internal/pagequery"
 	platformauth "github.com/asherzj/financial_configuration_center/internal/platform/auth"
@@ -201,39 +201,39 @@ func fromScalar(source *configv1.ScalarValue) (pagequery.ScalarValue, error) {
 	return pagequery.ScalarValue{Type: fieldType, Canonical: source.Canonical}, nil
 }
 
-func fromFieldType(value commonv1.FieldType) (catalog.FieldType, error) {
+func fromFieldType(value commonv1.FieldType) (readmodel.FieldType, error) {
 	switch value {
 	case commonv1.FieldType_FIELD_TYPE_STRING:
-		return catalog.FieldTypeString, nil
+		return readmodel.FieldTypeString, nil
 	case commonv1.FieldType_FIELD_TYPE_INT64:
-		return catalog.FieldTypeInt64, nil
+		return readmodel.FieldTypeInt64, nil
 	case commonv1.FieldType_FIELD_TYPE_FLOAT64:
-		return catalog.FieldTypeFloat64, nil
+		return readmodel.FieldTypeFloat64, nil
 	case commonv1.FieldType_FIELD_TYPE_BOOL:
-		return catalog.FieldTypeBool, nil
+		return readmodel.FieldTypeBool, nil
 	case commonv1.FieldType_FIELD_TYPE_TIMESTAMP:
-		return catalog.FieldTypeTimestamp, nil
+		return readmodel.FieldTypeTimestamp, nil
 	case commonv1.FieldType_FIELD_TYPE_JSON:
-		return catalog.FieldTypeJSON, nil
+		return readmodel.FieldTypeJSON, nil
 	default:
 		return "", fmt.Errorf("field type %q is invalid", value)
 	}
 }
 
-func fromFilterOperator(value commonv1.FilterOperator) (catalog.FilterOperator, error) {
+func fromFilterOperator(value commonv1.FilterOperator) (readmodel.FilterOperator, error) {
 	switch value {
 	case commonv1.FilterOperator_FILTER_OPERATOR_EXACT:
-		return catalog.FilterExact, nil
+		return readmodel.FilterExact, nil
 	case commonv1.FilterOperator_FILTER_OPERATOR_CONTAINS:
-		return catalog.FilterContains, nil
+		return readmodel.FilterContains, nil
 	case commonv1.FilterOperator_FILTER_OPERATOR_CLOSED_RANGE:
-		return catalog.FilterClosedRange, nil
+		return readmodel.FilterClosedRange, nil
 	case commonv1.FilterOperator_FILTER_OPERATOR_OPEN_RANGE:
-		return catalog.FilterOpenRange, nil
+		return readmodel.FilterOpenRange, nil
 	case commonv1.FilterOperator_FILTER_OPERATOR_IN:
-		return catalog.FilterIn, nil
+		return readmodel.FilterIn, nil
 	case commonv1.FilterOperator_FILTER_OPERATOR_NOT_IN:
-		return catalog.FilterNotIn, nil
+		return readmodel.FilterNotIn, nil
 	default:
 		return "", fmt.Errorf("filter operator %q is invalid", value)
 	}
@@ -264,59 +264,59 @@ func toQueryType(value pagequery.QueryType) commonv1.QueryPageType {
 	return commonv1.QueryPageType_QUERY_PAGE_TYPE_ALL
 }
 
-func toFieldType(value catalog.FieldType) commonv1.FieldType {
+func toFieldType(value readmodel.FieldType) commonv1.FieldType {
 	switch value {
-	case catalog.FieldTypeString:
+	case readmodel.FieldTypeString:
 		return commonv1.FieldType_FIELD_TYPE_STRING
-	case catalog.FieldTypeInt64:
+	case readmodel.FieldTypeInt64:
 		return commonv1.FieldType_FIELD_TYPE_INT64
-	case catalog.FieldTypeFloat64:
+	case readmodel.FieldTypeFloat64:
 		return commonv1.FieldType_FIELD_TYPE_FLOAT64
-	case catalog.FieldTypeBool:
+	case readmodel.FieldTypeBool:
 		return commonv1.FieldType_FIELD_TYPE_BOOL
-	case catalog.FieldTypeTimestamp:
+	case readmodel.FieldTypeTimestamp:
 		return commonv1.FieldType_FIELD_TYPE_TIMESTAMP
-	case catalog.FieldTypeJSON:
+	case readmodel.FieldTypeJSON:
 		return commonv1.FieldType_FIELD_TYPE_JSON
 	default:
 		return commonv1.FieldType_FIELD_TYPE_UNSPECIFIED
 	}
 }
 
-func toUIControl(value catalog.UIControlType) commonv1.UiControlType {
+func toUIControl(value readmodel.UIControlType) commonv1.UiControlType {
 	switch value {
-	case catalog.UIControlInput:
+	case readmodel.UIControlInput:
 		return commonv1.UiControlType_UI_CONTROL_TYPE_INPUT
-	case catalog.UIControlSelect:
+	case readmodel.UIControlSelect:
 		return commonv1.UiControlType_UI_CONTROL_TYPE_SELECT
-	case catalog.UIControlTime:
+	case readmodel.UIControlTime:
 		return commonv1.UiControlType_UI_CONTROL_TYPE_TIME
-	case catalog.UIControlNumber:
+	case readmodel.UIControlNumber:
 		return commonv1.UiControlType_UI_CONTROL_TYPE_NUMBER
-	case catalog.UIControlBoolean:
+	case readmodel.UIControlBoolean:
 		return commonv1.UiControlType_UI_CONTROL_TYPE_BOOLEAN
-	case catalog.UIControlTextarea:
+	case readmodel.UIControlTextarea:
 		return commonv1.UiControlType_UI_CONTROL_TYPE_TEXTAREA
-	case catalog.UIControlJSON:
+	case readmodel.UIControlJSON:
 		return commonv1.UiControlType_UI_CONTROL_TYPE_JSON
 	default:
 		return commonv1.UiControlType_UI_CONTROL_TYPE_UNSPECIFIED
 	}
 }
 
-func toFilterOperator(value catalog.FilterOperator) commonv1.FilterOperator {
+func toFilterOperator(value readmodel.FilterOperator) commonv1.FilterOperator {
 	switch value {
-	case catalog.FilterExact:
+	case readmodel.FilterExact:
 		return commonv1.FilterOperator_FILTER_OPERATOR_EXACT
-	case catalog.FilterContains:
+	case readmodel.FilterContains:
 		return commonv1.FilterOperator_FILTER_OPERATOR_CONTAINS
-	case catalog.FilterClosedRange:
+	case readmodel.FilterClosedRange:
 		return commonv1.FilterOperator_FILTER_OPERATOR_CLOSED_RANGE
-	case catalog.FilterOpenRange:
+	case readmodel.FilterOpenRange:
 		return commonv1.FilterOperator_FILTER_OPERATOR_OPEN_RANGE
-	case catalog.FilterIn:
+	case readmodel.FilterIn:
 		return commonv1.FilterOperator_FILTER_OPERATOR_IN
-	case catalog.FilterNotIn:
+	case readmodel.FilterNotIn:
 		return commonv1.FilterOperator_FILTER_OPERATOR_NOT_IN
 	default:
 		return commonv1.FilterOperator_FILTER_OPERATOR_UNSPECIFIED
@@ -331,7 +331,7 @@ func mapIdentity(identity snapshot.Identity) *commonv1.SnapshotIdentity {
 	}
 }
 
-func revisionInt64(revision catalog.ConfigRevision) (int64, error) {
+func revisionInt64(revision readmodel.ConfigRevision) (int64, error) {
 	if uint64(revision) > math.MaxInt64 {
 		return 0, errors.New("revision exceeds int64")
 	}

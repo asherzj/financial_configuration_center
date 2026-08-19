@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	catalog "github.com/asherzj/financial_configuration_center/internal/catalog/domain"
+	readmodel "github.com/asherzj/financial_configuration_center/internal/distribution/readmodel"
 	"github.com/asherzj/financial_configuration_center/internal/distribution/snapshot"
 )
 
@@ -16,11 +16,11 @@ func TestRefreshPublishesOneImmutableGeneration(t *testing.T) {
 	definition, model := snapshotCatalog(t)
 	source := &stubSource{collections: []snapshot.CollectionInput{{
 		Definition:          definition,
-		Models:              []catalog.CompiledModel{model},
+		Models:              []readmodel.CompiledModel{model},
 		SubscribedConsumers: []string{"consumer-b", "consumer-a"},
 		Version:             8,
 		Cursor:              21,
-		Records: []catalog.ConfigurationRecord{{
+		Records: []readmodel.ConfigurationRecord{{
 			Collection: definition.Name(), Environment: "production", RecordKey: "WyJ2aXNhLWNuIl0",
 			Data: map[string]string{"route_code": "visa-cn", "priority": "7", "enabled": "false"}, ConfigRevision: 8,
 		}},
@@ -89,7 +89,7 @@ func TestRefreshFailureRetainsLastKnownGood(t *testing.T) {
 	t.Parallel()
 
 	definition, model := snapshotCatalog(t)
-	source := &stubSource{collections: []snapshot.CollectionInput{{Definition: definition, Models: []catalog.CompiledModel{model}, SubscribedConsumers: []string{"payments"}, Version: 7}}}
+	source := &stubSource{collections: []snapshot.CollectionInput{{Definition: definition, Models: []readmodel.CompiledModel{model}, SubscribedConsumers: []string{"payments"}, Version: 7}}}
 	manager, err := snapshot.NewManager(source, snapshot.IdentitySeed{ServerEpoch: "epoch", ServerInstanceID: "server", SnapshotInstance: "instance"}, fixedClock{now: time.Now().UTC()})
 	if err != nil {
 		t.Fatal(err)
@@ -196,7 +196,7 @@ func TestRefreshBuildFailureRetainsDependencyGroupAndAllFailureDoesNotPublish(t 
 	}
 
 	updated := dependencyInputs(t, 8)
-	updated[1].Records = []catalog.ConfigurationRecord{{
+	updated[1].Records = []readmodel.ConfigurationRecord{{
 		Collection: "providers", Environment: "production", RecordKey: "not-canonical",
 		Data: map[string]string{"code": "visa", "label": "Visa"}, ConfigRevision: 8,
 	}}
@@ -255,26 +255,26 @@ type fixedClock struct{ now time.Time }
 
 func (clock fixedClock) Now() time.Time { return clock.now }
 
-func snapshotCatalog(t *testing.T) (catalog.CollectionDefinition, catalog.CompiledModel) {
+func snapshotCatalog(t *testing.T) (readmodel.CollectionDefinition, readmodel.CompiledModel) {
 	t.Helper()
 	defaultEnabled := "false"
-	definition, err := catalog.CompileCollection(catalog.CollectionSpec{
+	definition, err := readmodel.CompileCollection(readmodel.CollectionSpec{
 		Name: "payment_routes", SDKDeliveryEnabled: true, SchemaVersion: 1, KeyFields: []string{"route_code"},
-		Fields: []catalog.FieldDefinition{
-			{Name: "route_code", DisplayName: "Route code", Type: catalog.FieldTypeString, Required: true, DisplayOrder: 0},
-			{Name: "priority", DisplayName: "Priority", Type: catalog.FieldTypeInt64, Required: true, DisplayOrder: 1},
-			{Name: "enabled", DisplayName: "Enabled", Type: catalog.FieldTypeBool, Required: true, DefaultValue: &defaultEnabled, DisplayOrder: 2},
+		Fields: []readmodel.FieldDefinition{
+			{Name: "route_code", DisplayName: "Route code", Type: readmodel.FieldTypeString, Required: true, DisplayOrder: 0},
+			{Name: "priority", DisplayName: "Priority", Type: readmodel.FieldTypeInt64, Required: true, DisplayOrder: 1},
+			{Name: "enabled", DisplayName: "Enabled", Type: readmodel.FieldTypeBool, Required: true, DefaultValue: &defaultEnabled, DisplayOrder: 2},
 		},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	model, err := catalog.CompileModel(definition, catalog.ModelSpec{
+	model, err := readmodel.CompileModel(definition, readmodel.ModelSpec{
 		Code: "payment-route-admin", Name: "Payment routes", Collection: definition.Name(),
-		Fields: []catalog.ModelField{
-			{Name: "route_code", Type: catalog.FieldTypeString, Required: true, Editable: true, Queryable: true, UIControl: catalog.UIControlInput, AllowedFilterOperators: []catalog.FilterOperator{catalog.FilterExact}},
-			{Name: "priority", Type: catalog.FieldTypeInt64, Required: true, Editable: true, Queryable: true, UIControl: catalog.UIControlNumber, AllowedFilterOperators: []catalog.FilterOperator{catalog.FilterExact}},
-			{Name: "enabled", Type: catalog.FieldTypeBool, Required: true, Editable: true, Queryable: true, DefaultValue: &defaultEnabled, UIControl: catalog.UIControlBoolean, AllowedFilterOperators: []catalog.FilterOperator{catalog.FilterExact}},
+		Fields: []readmodel.ModelField{
+			{Name: "route_code", Type: readmodel.FieldTypeString, Required: true, Editable: true, Queryable: true, UIControl: readmodel.UIControlInput, AllowedFilterOperators: []readmodel.FilterOperator{readmodel.FilterExact}},
+			{Name: "priority", Type: readmodel.FieldTypeInt64, Required: true, Editable: true, Queryable: true, UIControl: readmodel.UIControlNumber, AllowedFilterOperators: []readmodel.FilterOperator{readmodel.FilterExact}},
+			{Name: "enabled", Type: readmodel.FieldTypeBool, Required: true, Editable: true, Queryable: true, DefaultValue: &defaultEnabled, UIControl: readmodel.UIControlBoolean, AllowedFilterOperators: []readmodel.FilterOperator{readmodel.FilterExact}},
 		},
 		ProjectionFields: []string{"route_code", "priority", "enabled"}, KeyFields: []string{"route_code"}, DefaultPageSize: 20, MaxPageSize: 100, ConfigRevision: 7,
 	})
@@ -284,34 +284,34 @@ func snapshotCatalog(t *testing.T) (catalog.CollectionDefinition, catalog.Compil
 	return definition, model
 }
 
-func dependencyInputs(t *testing.T, revision catalog.ConfigRevision) []snapshot.CollectionInput {
+func dependencyInputs(t *testing.T, revision readmodel.ConfigRevision) []snapshot.CollectionInput {
 	t.Helper()
-	providers, err := catalog.CompileCollection(catalog.CollectionSpec{
+	providers, err := readmodel.CompileCollection(readmodel.CollectionSpec{
 		Name: "providers", KeyFields: []string{"code"}, SchemaVersion: 1, SDKDeliveryEnabled: true,
-		Fields: []catalog.FieldDefinition{
-			{Name: "code", DisplayName: "Code", Type: catalog.FieldTypeString, Required: true, DisplayOrder: 0},
-			{Name: "label", DisplayName: "Label", Type: catalog.FieldTypeString, Required: true, DisplayOrder: 1},
+		Fields: []readmodel.FieldDefinition{
+			{Name: "code", DisplayName: "Code", Type: readmodel.FieldTypeString, Required: true, DisplayOrder: 0},
+			{Name: "label", DisplayName: "Label", Type: readmodel.FieldTypeString, Required: true, DisplayOrder: 1},
 		},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	routes, err := catalog.CompileCollection(catalog.CollectionSpec{
+	routes, err := readmodel.CompileCollection(readmodel.CollectionSpec{
 		Name: "payment_routes", KeyFields: []string{"route_code"}, SchemaVersion: 1, SDKDeliveryEnabled: true,
-		Fields: []catalog.FieldDefinition{
-			{Name: "route_code", DisplayName: "Route", Type: catalog.FieldTypeString, Required: true, DisplayOrder: 0},
-			{Name: "provider", DisplayName: "Provider", Type: catalog.FieldTypeString, Required: true, DisplayOrder: 1},
+		Fields: []readmodel.FieldDefinition{
+			{Name: "route_code", DisplayName: "Route", Type: readmodel.FieldTypeString, Required: true, DisplayOrder: 0},
+			{Name: "provider", DisplayName: "Provider", Type: readmodel.FieldTypeString, Required: true, DisplayOrder: 1},
 		},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	model, err := catalog.CompileModel(routes, catalog.ModelSpec{
+	model, err := readmodel.CompileModel(routes, readmodel.ModelSpec{
 		Code: "payment-route-admin", Name: "Payment routes", Collection: routes.Name(), ConfigRevision: revision,
-		Fields: []catalog.ModelField{
-			{Name: "route_code", Type: catalog.FieldTypeString, Required: true, Editable: true, UIControl: catalog.UIControlInput},
-			{Name: "provider", Type: catalog.FieldTypeString, Required: true, Editable: true, UIControl: catalog.UIControlSelect, OptionSource: &catalog.OptionSourceDefinition{
-				Kind: catalog.OptionSourceCollection, Collection: providers.Name(), ValueField: "code", LabelField: "label", Limit: 100,
+		Fields: []readmodel.ModelField{
+			{Name: "route_code", Type: readmodel.FieldTypeString, Required: true, Editable: true, UIControl: readmodel.UIControlInput},
+			{Name: "provider", Type: readmodel.FieldTypeString, Required: true, Editable: true, UIControl: readmodel.UIControlSelect, OptionSource: &readmodel.OptionSourceDefinition{
+				Kind: readmodel.OptionSourceCollection, Collection: providers.Name(), ValueField: "code", LabelField: "label", Limit: 100,
 			}},
 		},
 		ProjectionFields: []string{"route_code", "provider"}, KeyFields: []string{"route_code"}, DefaultPageSize: 20, MaxPageSize: 100,
@@ -319,15 +319,15 @@ func dependencyInputs(t *testing.T, revision catalog.ConfigRevision) []snapshot.
 	if err != nil {
 		t.Fatal(err)
 	}
-	flags, err := catalog.CompileCollection(catalog.CollectionSpec{
+	flags, err := readmodel.CompileCollection(readmodel.CollectionSpec{
 		Name: "feature_flags", KeyFields: []string{"name"}, SchemaVersion: 1, SDKDeliveryEnabled: true,
-		Fields: []catalog.FieldDefinition{{Name: "name", DisplayName: "Name", Type: catalog.FieldTypeString, Required: true}},
+		Fields: []readmodel.FieldDefinition{{Name: "name", DisplayName: "Name", Type: readmodel.FieldTypeString, Required: true}},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	return []snapshot.CollectionInput{
-		{Definition: routes, Models: []catalog.CompiledModel{model}, SubscribedConsumers: []string{"payments"}, Version: revision, Cursor: uint64(revision) * 10},
+		{Definition: routes, Models: []readmodel.CompiledModel{model}, SubscribedConsumers: []string{"payments"}, Version: revision, Cursor: uint64(revision) * 10},
 		{Definition: providers, SubscribedConsumers: []string{"payments"}, Version: revision, Cursor: uint64(revision) * 10},
 		{Definition: flags, SubscribedConsumers: []string{"platform"}, Version: revision, Cursor: uint64(revision) * 10},
 	}

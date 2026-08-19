@@ -5,7 +5,7 @@ import (
 	"errors"
 
 	configv1 "github.com/asherzj/financial_configuration_center/contracts/kitex_gen/finconfig/config/v1"
-	catalog "github.com/asherzj/financial_configuration_center/internal/catalog/domain"
+	readmodel "github.com/asherzj/financial_configuration_center/internal/distribution/readmodel"
 	"github.com/asherzj/financial_configuration_center/internal/distribution/snapshot"
 	platformauth "github.com/asherzj/financial_configuration_center/internal/platform/auth"
 	"google.golang.org/grpc/codes"
@@ -54,7 +54,7 @@ func (handler *RefreshHandler) Notify(ctx context.Context, request *configv1.Not
 		if target == nil || target.Collection == "" || target.MinConfigRevision <= 0 || target.TargetCursor < 0 {
 			return nil, status.Error(codes.InvalidArgument, "refresh targets require collection and positive revision")
 		}
-		targets[index] = snapshot.HintTarget{Collection: target.Collection, MinRevision: catalog.ConfigRevision(target.MinConfigRevision), TargetCursor: uint64(target.TargetCursor)}
+		targets[index] = snapshot.HintTarget{Collection: target.Collection, MinRevision: readmodel.ConfigRevision(target.MinConfigRevision), TargetCursor: uint64(target.TargetCursor)}
 	}
 	err = handler.notifier.Notify(snapshot.RefreshHint{
 		EventID: request.EventId, Environment: environment, Targets: targets,

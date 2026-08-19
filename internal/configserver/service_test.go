@@ -6,10 +6,10 @@ import (
 	"testing"
 	"time"
 
-	catalog "github.com/asherzj/financial_configuration_center/internal/catalog/domain"
 	"github.com/asherzj/financial_configuration_center/internal/configserver"
+	overlay "github.com/asherzj/financial_configuration_center/internal/distribution/overlay"
+	readmodel "github.com/asherzj/financial_configuration_center/internal/distribution/readmodel"
 	"github.com/asherzj/financial_configuration_center/internal/distribution/snapshot"
-	overlay "github.com/asherzj/financial_configuration_center/internal/overlay/domain"
 )
 
 func TestGetSnapshotReturnsOnlyAuthorizedChangedCollections(t *testing.T) {
@@ -209,11 +209,11 @@ func (submitter *recordingRefreshSubmitter) Submit(targets []snapshot.RefreshTar
 
 func serverSnapshot(t *testing.T) (*snapshot.Manager, string) {
 	t.Helper()
-	definition, err := catalog.CompileCollection(catalog.CollectionSpec{
+	definition, err := readmodel.CompileCollection(readmodel.CollectionSpec{
 		Name: "payment_routes", SDKDeliveryEnabled: true, SchemaVersion: 1, KeyFields: []string{"route_code"},
-		Fields: []catalog.FieldDefinition{
-			{Name: "route_code", DisplayName: "Route code", Type: catalog.FieldTypeString, Required: true, DisplayOrder: 0},
-			{Name: "priority", DisplayName: "Priority", Type: catalog.FieldTypeInt64, Required: true, DisplayOrder: 1},
+		Fields: []readmodel.FieldDefinition{
+			{Name: "route_code", DisplayName: "Route code", Type: readmodel.FieldTypeString, Required: true, DisplayOrder: 0},
+			{Name: "priority", DisplayName: "Priority", Type: readmodel.FieldTypeInt64, Required: true, DisplayOrder: 1},
 		},
 	})
 	if err != nil {
@@ -226,7 +226,7 @@ func serverSnapshot(t *testing.T) (*snapshot.Manager, string) {
 	record.ConfigRevision = 8
 	manager, err := snapshot.NewManager(serverSource{input: []snapshot.CollectionInput{{
 		Definition: definition, SubscribedConsumers: []string{"payment-service"}, Version: 8, Cursor: 31,
-		Records: []catalog.ConfigurationRecord{record},
+		Records: []readmodel.ConfigurationRecord{record},
 	}}}, snapshot.IdentitySeed{ServerEpoch: "epoch", ServerInstanceID: "server", SnapshotInstance: "instance"}, serverClock{})
 	if err != nil {
 		t.Fatal(err)
@@ -239,11 +239,11 @@ func serverSnapshot(t *testing.T) (*snapshot.Manager, string) {
 
 func rolloutServerSnapshot(t *testing.T) (*snapshot.Manager, string) {
 	t.Helper()
-	definition, err := catalog.CompileCollection(catalog.CollectionSpec{
+	definition, err := readmodel.CompileCollection(readmodel.CollectionSpec{
 		Name: "payment_routes", SDKDeliveryEnabled: true, SchemaVersion: 1, KeyFields: []string{"route_code"},
-		Fields: []catalog.FieldDefinition{
-			{Name: "route_code", DisplayName: "Route code", Type: catalog.FieldTypeString, Required: true, DisplayOrder: 0},
-			{Name: "priority", DisplayName: "Priority", Type: catalog.FieldTypeInt64, Required: true, DisplayOrder: 1},
+		Fields: []readmodel.FieldDefinition{
+			{Name: "route_code", DisplayName: "Route code", Type: readmodel.FieldTypeString, Required: true, DisplayOrder: 0},
+			{Name: "priority", DisplayName: "Priority", Type: readmodel.FieldTypeInt64, Required: true, DisplayOrder: 1},
 		},
 	})
 	if err != nil {
@@ -254,7 +254,7 @@ func rolloutServerSnapshot(t *testing.T) (*snapshot.Manager, string) {
 		t.Fatal(err)
 	}
 	base.ConfigRevision = 7
-	activation := catalog.ConfigRevision(8)
+	activation := readmodel.ConfigRevision(8)
 	rule := overlay.Rule{
 		ID: "rollout", Collection: definition.Name(), Scope: overlay.Scope{Region: "cn", Environment: "production", Stage: "blue"},
 		RecordKey: base.RecordKey, Action: overlay.ActionModify, Content: map[string]string{"route_code": "visa", "priority": "9"},
@@ -262,7 +262,7 @@ func rolloutServerSnapshot(t *testing.T) (*snapshot.Manager, string) {
 	}
 	manager, err := snapshot.NewManager(serverSource{input: []snapshot.CollectionInput{{
 		Definition: definition, SubscribedConsumers: []string{"payment-service"}, Version: 8,
-		Records: []catalog.ConfigurationRecord{base}, OverlayRules: []overlay.Rule{rule},
+		Records: []readmodel.ConfigurationRecord{base}, OverlayRules: []overlay.Rule{rule},
 	}}}, snapshot.IdentitySeed{ServerEpoch: "epoch", ServerInstanceID: "server", SnapshotInstance: "rollout"}, serverClock{})
 	if err != nil {
 		t.Fatal(err)

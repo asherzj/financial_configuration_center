@@ -5,14 +5,14 @@ import (
 	"testing"
 	"time"
 
-	catalog "github.com/asherzj/financial_configuration_center/internal/catalog/domain"
+	readmodel "github.com/asherzj/financial_configuration_center/internal/distribution/readmodel"
 	"github.com/asherzj/financial_configuration_center/internal/distribution/snapshot"
 )
 
 func TestWatchHubPublishesFirstWatermarkAndIsolatesSlowSubscriber(t *testing.T) {
 	t.Parallel()
 	definition, model := snapshotCatalog(t)
-	source := &pollSource{versions: map[string]catalog.ConfigRevision{"payment_routes": 7}, inputs: []snapshot.CollectionInput{{Definition: definition, Models: []catalog.CompiledModel{model}, Version: 7}}}
+	source := &pollSource{versions: map[string]readmodel.ConfigRevision{"payment_routes": 7}, inputs: []snapshot.CollectionInput{{Definition: definition, Models: []readmodel.CompiledModel{model}, Version: 7}}}
 	manager, err := snapshot.NewManager(source, snapshot.IdentitySeed{ServerEpoch: "epoch", ServerInstanceID: "server", SnapshotInstance: "instance"}, pollClock{})
 	if err != nil {
 		t.Fatal(err)
@@ -36,7 +36,7 @@ func TestWatchHubPublishesFirstWatermarkAndIsolatesSlowSubscriber(t *testing.T) 
 	slow, _ := hub.Subscribe()
 	defer slow.Cancel()
 
-	source.set(map[string]catalog.ConfigRevision{"payment_routes": 8}, []snapshot.CollectionInput{{Definition: definition, Models: []catalog.CompiledModel{model}, Version: 8}})
+	source.set(map[string]readmodel.ConfigRevision{"payment_routes": 8}, []snapshot.CollectionInput{{Definition: definition, Models: []readmodel.CompiledModel{model}, Version: 8}})
 	started := time.Now()
 	if _, err := manager.Refresh(context.Background(), "production"); err != nil {
 		t.Fatal(err)

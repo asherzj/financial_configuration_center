@@ -9,9 +9,9 @@ import (
 	"strings"
 	"time"
 
-	catalog "github.com/asherzj/financial_configuration_center/internal/catalog/domain"
+	overlay "github.com/asherzj/financial_configuration_center/internal/distribution/overlay"
+	readmodel "github.com/asherzj/financial_configuration_center/internal/distribution/readmodel"
 	"github.com/asherzj/financial_configuration_center/internal/distribution/snapshot"
-	overlay "github.com/asherzj/financial_configuration_center/internal/overlay/domain"
 )
 
 type SnapshotProvider interface {
@@ -49,13 +49,13 @@ type Request struct {
 }
 
 type ScalarValue struct {
-	Type      catalog.FieldType
+	Type      readmodel.FieldType
 	Canonical string
 }
 
 type FilterCondition struct {
 	Field    string
-	Operator catalog.FilterOperator
+	Operator readmodel.FilterOperator
 	Value    *ScalarValue
 	Lower    *ScalarValue
 	Upper    *ScalarValue
@@ -63,8 +63,8 @@ type FilterCondition struct {
 }
 
 type compiledCondition struct {
-	field    catalog.ModelField
-	operator catalog.FilterOperator
+	field    readmodel.ModelField
+	operator readmodel.FilterOperator
 	value    string
 	lower    *string
 	upper    *string
@@ -75,26 +75,26 @@ type InteractionField struct {
 	Name                   string
 	DisplayName            string
 	Description            string
-	Type                   catalog.FieldType
-	UIControl              catalog.UIControlType
+	Type                   readmodel.FieldType
+	UIControl              readmodel.UIControlType
 	Queryable              bool
 	Editable               bool
 	Required               bool
 	Sensitive              bool
 	Projected              bool
 	KeyField               bool
-	AllowedFilterOperators []catalog.FilterOperator
-	DefaultFilterOperator  catalog.FilterOperator
+	AllowedFilterOperators []readmodel.FilterOperator
+	DefaultFilterOperator  readmodel.FilterOperator
 	DefaultValue           *string
-	AutoFill               *catalog.AutoFillRule
-	ValidationRules        []catalog.ValidationRule
+	AutoFill               *readmodel.AutoFillRule
+	ValidationRules        []readmodel.ValidationRule
 	DisplayOrder           int32
-	Options                []catalog.SelectOptionDefinition
+	Options                []readmodel.SelectOptionDefinition
 }
 
 type Row struct {
 	RecordKey      string
-	RecordRevision catalog.ConfigRevision
+	RecordRevision readmodel.ConfigRevision
 	Values         map[string]string
 	BasePresent    bool
 	BaseValues     map[string]string
@@ -123,8 +123,8 @@ type Result struct {
 	TotalNumber        int64
 	TotalPages         int64
 	Snapshot           snapshot.Identity
-	ModelRevision      catalog.ConfigRevision
-	CollectionRevision catalog.ConfigRevision
+	ModelRevision      readmodel.ConfigRevision
+	CollectionRevision readmodel.ConfigRevision
 }
 
 type Querier struct {
@@ -199,7 +199,7 @@ func (querier *Querier) Query(request Request) (Result, error) {
 		return Result{}, fmt.Errorf("page query: evaluate scope: %w", err)
 	}
 	if len(conditions) > 0 {
-		filtered := make([]catalog.ConfigurationRecord, 0, len(records))
+		filtered := make([]readmodel.ConfigurationRecord, 0, len(records))
 		for _, record := range records {
 			if matchesConditions(record, conditions) {
 				filtered = append(filtered, record)
@@ -207,7 +207,7 @@ func (querier *Querier) Query(request Request) (Result, error) {
 		}
 		records = filtered
 	}
-	baseByKey := make(map[string]catalog.ConfigurationRecord, len(baseRecords))
+	baseByKey := make(map[string]readmodel.ConfigurationRecord, len(baseRecords))
 	for _, record := range baseRecords {
 		baseByKey[record.RecordKey] = record
 	}
@@ -301,11 +301,11 @@ func (querier *Querier) Query(request Request) (Result, error) {
 	return result, nil
 }
 
-func compileConditions(current *snapshot.Snapshot, request Request, model catalog.CompiledModel) ([]compiledCondition, error) {
+func compileConditions(current *snapshot.Snapshot, request Request, model readmodel.CompiledModel) ([]compiledCondition, error) {
 	if len(request.Conditions) > 20 {
 		return nil, errors.New("at most 20 conditions are allowed")
 	}
-	fields := make(map[string]catalog.ModelField)
+	fields := make(map[string]readmodel.ModelField)
 	for _, field := range model.Fields() {
 		fields[field.Name] = field
 	}
@@ -327,10 +327,10 @@ func compileConditions(current *snapshot.Snapshot, request Request, model catalo
 			if value.Type != "" && value.Type != field.Type {
 				return "", fmt.Errorf("scalar type %q does not match %q", value.Type, field.Type)
 			}
-			return catalog.CanonicalizeScalar(field.Type, value.Canonical)
+			return readmodel.CanonicalizeScalar(field.Type, value.Canonical)
 		}
 		switch condition.Operator {
-		case catalog.FilterExact, catalog.FilterContains:
+		case readmodel.FilterExact, readmodel.FilterContains:
 			if condition.Value == nil || condition.Lower != nil || condition.Upper != nil || len(condition.Set) != 0 {
 				return nil, fmt.Errorf("condition %d requires only value", index)
 			}
@@ -339,7 +339,7 @@ func compileConditions(current *snapshot.Snapshot, request Request, model catalo
 				return nil, fmt.Errorf("condition %d value: %w", index, err)
 			}
 			result.value = value
-		case catalog.FilterClosedRange, catalog.FilterOpenRange:
+		case readmodel.FilterClosedRange, readmodel.FilterOpenRange:
 			if condition.Value != nil || len(condition.Set) != 0 || (condition.Lower == nil && condition.Upper == nil) {
 				return nil, fmt.Errorf("condition %d requires lower and/or upper only", index)
 			}
@@ -360,7 +360,7 @@ func compileConditions(current *snapshot.Snapshot, request Request, model catalo
 			if result.lower != nil && result.upper != nil && compareScalar(field.Type, *result.lower, *result.upper) > 0 {
 				return nil, fmt.Errorf("condition %d lower exceeds upper", index)
 			}
-		case catalog.FilterIn, catalog.FilterNotIn:
+		case readmodel.FilterIn, readmodel.FilterNotIn:
 			if condition.Value != nil || condition.Lower != nil || condition.Upper != nil || len(condition.Set) == 0 || len(condition.Set) > 100 {
 				return nil, fmt.Errorf("condition %d requires a set with 1..100 values", index)
 			}
@@ -423,39 +423,39 @@ func conditionValues(condition compiledCondition) []string {
 	return []string{condition.value}
 }
 
-func matchesConditions(record catalog.ConfigurationRecord, conditions []compiledCondition) bool {
+func matchesConditions(record readmodel.ConfigurationRecord, conditions []compiledCondition) bool {
 	for _, condition := range conditions {
 		value, present := record.Data[condition.field.Name]
 		if !present {
 			return false
 		}
 		switch condition.operator {
-		case catalog.FilterExact:
+		case readmodel.FilterExact:
 			if value != condition.value {
 				return false
 			}
-		case catalog.FilterContains:
+		case readmodel.FilterContains:
 			if !strings.Contains(value, condition.value) {
 				return false
 			}
-		case catalog.FilterClosedRange, catalog.FilterOpenRange:
+		case readmodel.FilterClosedRange, readmodel.FilterOpenRange:
 			if condition.lower != nil {
 				comparison := compareScalar(condition.field.Type, value, *condition.lower)
-				if comparison < 0 || (condition.operator == catalog.FilterOpenRange && comparison == 0) {
+				if comparison < 0 || (condition.operator == readmodel.FilterOpenRange && comparison == 0) {
 					return false
 				}
 			}
 			if condition.upper != nil {
 				comparison := compareScalar(condition.field.Type, value, *condition.upper)
-				if comparison > 0 || (condition.operator == catalog.FilterOpenRange && comparison == 0) {
+				if comparison > 0 || (condition.operator == readmodel.FilterOpenRange && comparison == 0) {
 					return false
 				}
 			}
-		case catalog.FilterIn:
+		case readmodel.FilterIn:
 			if _, exists := condition.set[value]; !exists {
 				return false
 			}
-		case catalog.FilterNotIn:
+		case readmodel.FilterNotIn:
 			if _, exists := condition.set[value]; exists {
 				return false
 			}
@@ -464,9 +464,9 @@ func matchesConditions(record catalog.ConfigurationRecord, conditions []compiled
 	return true
 }
 
-func compareScalar(fieldType catalog.FieldType, left, right string) int {
+func compareScalar(fieldType readmodel.FieldType, left, right string) int {
 	switch fieldType {
-	case catalog.FieldTypeInt64:
+	case readmodel.FieldTypeInt64:
 		leftValue, _ := strconv.ParseInt(left, 10, 64)
 		rightValue, _ := strconv.ParseInt(right, 10, 64)
 		if leftValue < rightValue {
@@ -475,7 +475,7 @@ func compareScalar(fieldType catalog.FieldType, left, right string) int {
 		if leftValue > rightValue {
 			return 1
 		}
-	case catalog.FieldTypeFloat64:
+	case readmodel.FieldTypeFloat64:
 		leftValue, _ := strconv.ParseFloat(left, 64)
 		rightValue, _ := strconv.ParseFloat(right, 64)
 		if leftValue < rightValue {
@@ -484,7 +484,7 @@ func compareScalar(fieldType catalog.FieldType, left, right string) int {
 		if leftValue > rightValue {
 			return 1
 		}
-	case catalog.FieldTypeTimestamp:
+	case readmodel.FieldTypeTimestamp:
 		leftValue, _ := time.Parse(time.RFC3339Nano, left)
 		rightValue, _ := time.Parse(time.RFC3339Nano, right)
 		return leftValue.Compare(rightValue)
@@ -515,13 +515,13 @@ func normalizePage(page PageSpec, defaultSize, maxSize int32) (int32, int32, err
 	return number, size, nil
 }
 
-func interactionFields(current *snapshot.Snapshot, request Request, definition catalog.CollectionDefinition, model catalog.CompiledModel, projection map[string]struct{}) ([]InteractionField, error) {
+func interactionFields(current *snapshot.Snapshot, request Request, definition readmodel.CollectionDefinition, model readmodel.CompiledModel, projection map[string]struct{}) ([]InteractionField, error) {
 	keySet := make(map[string]struct{}, len(model.KeyFields()))
 	for _, field := range model.KeyFields() {
 		keySet[field] = struct{}{}
 	}
 	modelFields := model.Fields()
-	autoFillByField := make(map[string]catalog.AutoFillRule)
+	autoFillByField := make(map[string]readmodel.AutoFillRule)
 	for _, rule := range model.AutoFillRules() {
 		autoFillByField[rule.Field] = rule
 	}
@@ -531,7 +531,7 @@ func interactionFields(current *snapshot.Snapshot, request Request, definition c
 		_, projected := projection[modelField.Name]
 		_, key := keySet[modelField.Name]
 		autoFill, generated := autoFillByField[modelField.Name]
-		var defaultOperator catalog.FilterOperator
+		var defaultOperator readmodel.FilterOperator
 		if len(modelField.AllowedFilterOperators) > 0 {
 			defaultOperator = modelField.AllowedFilterOperators[0]
 		}
@@ -556,14 +556,14 @@ func interactionFields(current *snapshot.Snapshot, request Request, definition c
 	return fields, nil
 }
 
-func resolveOptions(current *snapshot.Snapshot, request Request, source *catalog.OptionSourceDefinition) ([]catalog.SelectOptionDefinition, error) {
+func resolveOptions(current *snapshot.Snapshot, request Request, source *readmodel.OptionSourceDefinition) ([]readmodel.SelectOptionDefinition, error) {
 	if source == nil {
 		return nil, nil
 	}
-	if source.Kind == catalog.OptionSourceStatic {
-		return catalog.ResolveSelectOptions(*source, catalog.CollectionDefinition{}, nil)
+	if source.Kind == readmodel.OptionSourceStatic {
+		return readmodel.ResolveSelectOptions(*source, readmodel.CollectionDefinition{}, nil)
 	}
-	if source.Kind != catalog.OptionSourceCollection {
+	if source.Kind != readmodel.OptionSourceCollection {
 		return nil, fmt.Errorf("unsupported source kind %q", source.Kind)
 	}
 	definition, exists := current.Definition(source.Collection)
@@ -577,7 +577,7 @@ func resolveOptions(current *snapshot.Snapshot, request Request, source *catalog
 	if err != nil {
 		return nil, fmt.Errorf("evaluate option collection: %w", err)
 	}
-	return catalog.ResolveSelectOptions(*source, definition, records)
+	return readmodel.ResolveSelectOptions(*source, definition, records)
 }
 
 func cloneStringPointer(value *string) *string {

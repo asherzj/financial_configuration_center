@@ -8,9 +8,9 @@ import (
 	"strings"
 	"time"
 
-	catalog "github.com/asherzj/financial_configuration_center/internal/catalog/domain"
+	overlay "github.com/asherzj/financial_configuration_center/internal/distribution/overlay"
+	readmodel "github.com/asherzj/financial_configuration_center/internal/distribution/readmodel"
 	"github.com/asherzj/financial_configuration_center/internal/distribution/snapshot"
-	overlay "github.com/asherzj/financial_configuration_center/internal/overlay/domain"
 )
 
 var (
@@ -28,7 +28,7 @@ type SnapshotProvider interface {
 
 type Version struct {
 	Collection string
-	Revision   catalog.ConfigRevision
+	Revision   readmodel.ConfigRevision
 	Digest     string
 }
 
@@ -43,13 +43,13 @@ type GetSnapshotRequest struct {
 
 type Record struct {
 	RecordKey      string
-	RecordRevision catalog.ConfigRevision
+	RecordRevision readmodel.ConfigRevision
 	Data           map[string]string
 }
 
 type CollectionPayload struct {
 	Name         string
-	Revision     catalog.ConfigRevision
+	Revision     readmodel.ConfigRevision
 	ChangeCursor uint64
 	Digest       string
 	Records      []Record
@@ -81,7 +81,7 @@ type GetCollectionsRequest struct {
 	Environment string
 	Stage       string
 	Collections []string
-	MinRevision catalog.ConfigRevision
+	MinRevision readmodel.ConfigRevision
 }
 
 type GetCollectionsResponse struct {
@@ -178,7 +178,7 @@ func (service *Service) GetSnapshot(ctx context.Context, request GetSnapshotRequ
 		if err != nil {
 			return GetSnapshotResponse{}, fmt.Errorf("get snapshot: evaluate %q: %w", name, err)
 		}
-		digest, err := catalog.ComputeBaseDigest(records)
+		digest, err := readmodel.ComputeBaseDigest(records)
 		if err != nil {
 			return GetSnapshotResponse{}, fmt.Errorf("get snapshot: digest %q: %w", name, err)
 		}

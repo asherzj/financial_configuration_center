@@ -8,7 +8,7 @@ import (
 	"sync"
 	"time"
 
-	catalog "github.com/asherzj/financial_configuration_center/internal/catalog/domain"
+	readmodel "github.com/asherzj/financial_configuration_center/internal/distribution/readmodel"
 )
 
 var (
@@ -19,7 +19,7 @@ var (
 
 type RefreshTarget struct {
 	Collection   string
-	MinRevision  catalog.ConfigRevision
+	MinRevision  readmodel.ConfigRevision
 	TargetCursor uint64
 }
 
@@ -255,7 +255,7 @@ func (coordinator *RefreshCoordinator) retryDelay(attempt int) time.Duration {
 	return delay
 }
 
-func maxRevision(left, right catalog.ConfigRevision) catalog.ConfigRevision {
+func maxRevision(left, right readmodel.ConfigRevision) readmodel.ConfigRevision {
 	if right > left {
 		return right
 	}

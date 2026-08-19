@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	catalog "github.com/asherzj/financial_configuration_center/internal/catalog/domain"
+	readmodel "github.com/asherzj/financial_configuration_center/internal/distribution/readmodel"
 )
 
 func TestRefreshCoordinatorMergesMaximumTargetsAndSkipsReachedWatermarks(t *testing.T) {
@@ -272,6 +272,6 @@ func coordinatorSnapshot(watermarks map[string]RefreshTarget) *Snapshot {
 	}
 	return &Snapshot{
 		identity: Identity{Generation: 1}, environment: "production", collections: views,
-		models: map[string]catalog.CompiledModel{},
+		models: map[string]readmodel.CompiledModel{},
 	}
 }

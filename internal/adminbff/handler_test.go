@@ -14,6 +14,7 @@ import (
 	"github.com/asherzj/financial_configuration_center/internal/audit"
 	catalogapp "github.com/asherzj/financial_configuration_center/internal/catalog/application"
 	catalog "github.com/asherzj/financial_configuration_center/internal/catalog/domain"
+	readmodel "github.com/asherzj/financial_configuration_center/internal/distribution/readmodel"
 	"github.com/asherzj/financial_configuration_center/internal/distribution/snapshot"
 	"github.com/asherzj/financial_configuration_center/internal/outbox"
 	"github.com/asherzj/financial_configuration_center/internal/pagequery"
@@ -27,9 +28,9 @@ func TestBrowserBaseReleaseJourneyRoutes(t *testing.T) {
 	queries := &queryStub{result: pagequery.Result{
 		ModelCode: "model", ModelName: "Model", QueryType: pagequery.TypeAll, PageNumber: 1, PageSize: 20,
 		InteractionFields: []pagequery.InteractionField{{
-			Name: "id", DisplayName: "ID", Type: catalog.FieldTypeString, UIControl: catalog.UIControlInput,
-			AutoFill:        &catalog.AutoFillRule{Field: "id", Source: catalog.AutoFillUUID},
-			ValidationRules: []catalog.ValidationRule{{Kind: catalog.ValidationRegex, Params: map[string]string{"pattern": "^[a-z]+$"}, Message: "lowercase"}},
+			Name: "id", DisplayName: "ID", Type: readmodel.FieldTypeString, UIControl: readmodel.UIControlInput,
+			AutoFill:        &readmodel.AutoFillRule{Field: "id", Source: readmodel.AutoFillUUID},
+			ValidationRules: []readmodel.ValidationRule{{Kind: readmodel.ValidationRegex, Params: map[string]string{"pattern": "^[a-z]+$"}, Message: "lowercase"}},
 		}},
 		ReleaseTypes: []pagequery.ReleaseType{{Code: "direct", Name: "Direct", TemplateCode: "base-final", Available: true}},
 	}}
@@ -257,7 +258,7 @@ func TestBFFListsSafeOutboxMetadataAndMapsReplay(t *testing.T) {
 	}, replayed: outbox.Event{ID: "event", Status: outbox.StatusPending, LeaseRevision: 7, NextAttemptAt: now}}
 	diagnostics := diagnosticsStub{value: snapshot.Diagnostics{
 		Identity:    snapshot.Identity{ServerEpoch: "epoch", ServerInstanceID: "server", SnapshotInstance: "instance", Generation: 3, PublishedAt: now},
-		Environment: "production", Collections: []snapshot.CollectionDiagnostic{{Name: "payment_routes", Revision: 8, Digest: catalog.Digest{Algorithm: "SHA-256", Value: "digest"}}},
+		Environment: "production", Collections: []snapshot.CollectionDiagnostic{{Name: "payment_routes", Revision: 8, Digest: readmodel.Digest{Algorithm: "SHA-256", Value: "digest"}}},
 	}}
 	handler, err := adminbff.NewWithOperations(&queryStub{}, &releaseStub{}, authenticator{roles: []string{outbox.PlatformOperatorRole}}, operations, diagnostics)
 	if err != nil {

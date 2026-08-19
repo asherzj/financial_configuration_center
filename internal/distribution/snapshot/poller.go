@@ -8,11 +8,11 @@ import (
 	"strings"
 	"time"
 
-	catalog "github.com/asherzj/financial_configuration_center/internal/catalog/domain"
+	readmodel "github.com/asherzj/financial_configuration_center/internal/distribution/readmodel"
 )
 
 type VersionSource interface {
-	LoadVersions(context.Context, string) (map[string]catalog.ConfigRevision, error)
+	LoadVersions(context.Context, string) (map[string]readmodel.ConfigRevision, error)
 }
 
 type SnapshotRefresher interface {
@@ -102,7 +102,7 @@ func (poller *VersionPoller) Run(ctx context.Context) error {
 	}
 }
 
-func sameVersions(current *Snapshot, authority map[string]catalog.ConfigRevision) bool {
+func sameVersions(current *Snapshot, authority map[string]readmodel.ConfigRevision) bool {
 	names := current.CollectionNames()
 	if len(names) != len(authority) {
 		return false
@@ -116,7 +116,7 @@ func sameVersions(current *Snapshot, authority map[string]catalog.ConfigRevision
 	return true
 }
 
-func authorityRemovedCollection(current *Snapshot, authority map[string]catalog.ConfigRevision) bool {
+func authorityRemovedCollection(current *Snapshot, authority map[string]readmodel.ConfigRevision) bool {
 	for _, name := range current.CollectionNames() {
 		if _, exists := authority[name]; !exists {
 			return true

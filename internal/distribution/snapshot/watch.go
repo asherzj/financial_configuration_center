@@ -6,7 +6,7 @@ import (
 	"sort"
 	"sync"
 
-	catalog "github.com/asherzj/financial_configuration_center/internal/catalog/domain"
+	readmodel "github.com/asherzj/financial_configuration_center/internal/distribution/readmodel"
 )
 
 type PublicationPublisher interface {
@@ -15,7 +15,7 @@ type PublicationPublisher interface {
 
 type VersionSignal struct {
 	Collection string
-	Revision   catalog.ConfigRevision
+	Revision   readmodel.ConfigRevision
 	Digest     string
 }
 

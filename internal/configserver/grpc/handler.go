@@ -9,8 +9,8 @@ import (
 
 	commonv1 "github.com/asherzj/financial_configuration_center/contracts/kitex_gen/finconfig/common/v1"
 	configv1 "github.com/asherzj/financial_configuration_center/contracts/kitex_gen/finconfig/config/v1"
-	catalog "github.com/asherzj/financial_configuration_center/internal/catalog/domain"
 	"github.com/asherzj/financial_configuration_center/internal/configserver"
+	readmodel "github.com/asherzj/financial_configuration_center/internal/distribution/readmodel"
 	"github.com/asherzj/financial_configuration_center/internal/distribution/snapshot"
 	platformauth "github.com/asherzj/financial_configuration_center/internal/platform/auth"
 	"google.golang.org/grpc/codes"
@@ -176,12 +176,12 @@ func (handler *Handler) GetCollections(ctx context.Context, request *configv1.Ge
 		}
 		collections[index] = collection
 	}
-	minimum := catalog.ConfigRevision(0)
+	minimum := readmodel.ConfigRevision(0)
 	if request.MinConfigRevision != nil {
 		if *request.MinConfigRevision <= 0 {
 			return nil, status.Error(codes.InvalidArgument, "min_config_revision must be positive")
 		}
-		minimum = catalog.ConfigRevision(*request.MinConfigRevision)
+		minimum = readmodel.ConfigRevision(*request.MinConfigRevision)
 	}
 	response, err := handler.application.GetCollections(ctx, configserver.GetCollectionsRequest{
 		ConsumerID: consumerID, ClientID: clientID, Region: scope.Region, Environment: scope.Environment, Stage: scope.Stage,
@@ -284,7 +284,7 @@ func mapIdentity(identity snapshot.Identity) *commonv1.SnapshotIdentity {
 	}
 }
 
-func revisionInt64(revision catalog.ConfigRevision) (int64, error) {
+func revisionInt64(revision readmodel.ConfigRevision) (int64, error) {
 	if uint64(revision) > math.MaxInt64 {
 		return 0, errors.New("revision exceeds int64")
 	}
@@ -317,7 +317,7 @@ func mapKnownVersions(source []*configv1.VersionView) ([]configserver.Version, e
 			return nil, status.Error(codes.InvalidArgument, "known_versions entries require a SHA-256 lowercase hex effective digest")
 		}
 		known[index] = configserver.Version{
-			Collection: collection, Revision: catalog.ConfigRevision(version.ConfigRevision), Digest: version.EffectiveDigest.Value,
+			Collection: collection, Revision: readmodel.ConfigRevision(version.ConfigRevision), Digest: version.EffectiveDigest.Value,
 		}
 	}
 	return known, nil

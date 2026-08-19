@@ -8,8 +8,8 @@ import (
 	"time"
 
 	configv1 "github.com/asherzj/financial_configuration_center/contracts/kitex_gen/finconfig/config/v1"
-	catalog "github.com/asherzj/financial_configuration_center/internal/catalog/domain"
 	configgrpc "github.com/asherzj/financial_configuration_center/internal/configserver/grpc"
+	readmodel "github.com/asherzj/financial_configuration_center/internal/distribution/readmodel"
 	"github.com/asherzj/financial_configuration_center/internal/distribution/snapshot"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -20,7 +20,7 @@ func TestDiagnosticsHandlerProjectsOnlySnapshotMetadata(t *testing.T) {
 	provider := diagnosticsProvider{value: snapshot.Diagnostics{
 		Identity:               snapshot.Identity{ServerEpoch: "epoch", ServerInstanceID: "server", SnapshotInstance: "instance", Generation: 4, PublishedAt: time.Date(2026, 8, 20, 9, 0, 0, 0, time.UTC)},
 		Environment:            "production",
-		Collections:            []snapshot.CollectionDiagnostic{{Name: "routes", Revision: 8, Cursor: 34, Digest: catalog.Digest{Algorithm: "SHA-256", Value: "digest"}}},
+		Collections:            []snapshot.CollectionDiagnostic{{Name: "routes", Revision: 8, Cursor: 34, Digest: readmodel.Digest{Algorithm: "SHA-256", Value: "digest"}}},
 		FailedDependencyGroups: [][]string{{"routes", "options"}},
 	}}
 	handler, err := configgrpc.NewDiagnostics(provider, allowRequestAuthorizer{}, "production")

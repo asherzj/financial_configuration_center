@@ -8,7 +8,7 @@ import (
 
 	commonv1 "github.com/asherzj/financial_configuration_center/contracts/kitex_gen/finconfig/common/v1"
 	configv1 "github.com/asherzj/financial_configuration_center/contracts/kitex_gen/finconfig/config/v1"
-	catalog "github.com/asherzj/financial_configuration_center/internal/catalog/domain"
+	readmodel "github.com/asherzj/financial_configuration_center/internal/distribution/readmodel"
 	"github.com/asherzj/financial_configuration_center/internal/distribution/snapshot"
 	"github.com/asherzj/financial_configuration_center/internal/pagequery"
 	pagegrpc "github.com/asherzj/financial_configuration_center/internal/pagequery/grpc"
@@ -28,12 +28,12 @@ func TestQueryPageMapsCompleteAllMetadata(t *testing.T) {
 		}},
 		ProjectionFields: []string{"code"},
 		InteractionFields: []pagequery.InteractionField{{
-			Name: "code", DisplayName: "Code", Type: catalog.FieldTypeString, UIControl: catalog.UIControlSelect,
+			Name: "code", DisplayName: "Code", Type: readmodel.FieldTypeString, UIControl: readmodel.UIControlSelect,
 			Queryable: true, Editable: true, Required: true, Projected: true, KeyField: true,
-			AllowedFilterOperators: []catalog.FilterOperator{catalog.FilterExact}, DefaultFilterOperator: catalog.FilterExact,
-			AutoFill:        &catalog.AutoFillRule{Field: "code", Source: catalog.AutoFillUUID},
-			ValidationRules: []catalog.ValidationRule{{Kind: catalog.ValidationRegex, Params: map[string]string{"pattern": "^[a-z]+$"}, Message: "lowercase only"}},
-			Options:         []catalog.SelectOptionDefinition{{Code: "active", Label: "Active"}, {Code: "legacy", Label: "Legacy", Disabled: true}},
+			AllowedFilterOperators: []readmodel.FilterOperator{readmodel.FilterExact}, DefaultFilterOperator: readmodel.FilterExact,
+			AutoFill:        &readmodel.AutoFillRule{Field: "code", Source: readmodel.AutoFillUUID},
+			ValidationRules: []readmodel.ValidationRule{{Kind: readmodel.ValidationRegex, Params: map[string]string{"pattern": "^[a-z]+$"}, Message: "lowercase only"}},
+			Options:         []readmodel.SelectOptionDefinition{{Code: "active", Label: "Active"}, {Code: "legacy", Label: "Legacy", Disabled: true}},
 		}},
 		ReleaseTypes: []pagequery.ReleaseType{{Code: "direct", Name: "Direct", TemplateCode: "base-final", Available: true}},
 		PageNumber:   1, PageSize: 20, TotalNumber: 1, TotalPages: 1,

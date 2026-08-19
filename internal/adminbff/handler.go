@@ -15,6 +15,7 @@ import (
 	"github.com/asherzj/financial_configuration_center/internal/audit"
 	catalogapp "github.com/asherzj/financial_configuration_center/internal/catalog/application"
 	catalog "github.com/asherzj/financial_configuration_center/internal/catalog/domain"
+	readmodel "github.com/asherzj/financial_configuration_center/internal/distribution/readmodel"
 	"github.com/asherzj/financial_configuration_center/internal/distribution/snapshot"
 	"github.com/asherzj/financial_configuration_center/internal/outbox"
 	"github.com/asherzj/financial_configuration_center/internal/pagequery"
@@ -887,7 +888,7 @@ func (handler *Handler) queryPage(writer http.ResponseWriter, request *http.Requ
 	queryType := pagequery.QueryType(body.QueryType)
 	conditions := make([]pagequery.FilterCondition, len(body.Conditions))
 	for index, condition := range body.Conditions {
-		mapped := pagequery.FilterCondition{Field: condition.Field, Operator: catalog.FilterOperator(condition.Operator), Set: make([]pagequery.ScalarValue, len(condition.Set))}
+		mapped := pagequery.FilterCondition{Field: condition.Field, Operator: readmodel.FilterOperator(condition.Operator), Set: make([]pagequery.ScalarValue, len(condition.Set))}
 		if condition.Value != nil {
 			mapped.Value = &pagequery.ScalarValue{Canonical: *condition.Value}
 		}

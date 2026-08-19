@@ -7,18 +7,15 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"os"
-	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
 	"time"
 
 	drivermysql "github.com/go-sql-driver/mysql"
 
-	catalog "github.com/asherzj/financial_configuration_center/internal/catalog/domain"
 	"github.com/asherzj/financial_configuration_center/internal/distribution/mysqlsource"
+	readmodel "github.com/asherzj/financial_configuration_center/internal/distribution/readmodel"
 	platformmysql "github.com/asherzj/financial_configuration_center/internal/platform/mysql"
-	"github.com/asherzj/financial_configuration_center/internal/platform/mysql/migrations"
 )
 
 func TestLoadEnvironmentCursorIncludesGlobalMetadata(t *testing.T) {
@@ -31,8 +28,8 @@ func TestLoadEnvironmentCursorIncludesGlobalMetadata(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = raw.Close() })
-	fields, err := json.Marshal([]catalog.FieldDefinition{{
-		Name: "code", DisplayName: "Code", Type: catalog.FieldTypeString, Required: true,
+	fields, err := json.Marshal([]readmodel.FieldDefinition{{
+		Name: "code", DisplayName: "Code", Type: readmodel.FieldTypeString, Required: true,
 	}})
 	if err != nil {
 		t.Fatal(err)
@@ -157,17 +154,74 @@ func isolatedDatabase(t *testing.T) string {
 		t.Fatal(err)
 	}
 	defer db.Close()
-	if err := migrations.Up(context.Background(), db, migrationDirectory(t)); err != nil {
-		t.Fatal(err)
-	}
+	createSourceSchema(t, db)
 	return dsn
 }
 
-func migrationDirectory(t *testing.T) string {
+func createSourceSchema(t *testing.T, db *sql.DB) {
 	t.Helper()
-	_, filename, _, ok := runtime.Caller(0)
-	if !ok {
-		t.Fatal("cannot locate migration test")
+	statements := []string{
+		`CREATE TABLE configuration_collections (
+			name VARCHAR(128) PRIMARY KEY, description TEXT NOT NULL, fields JSON NOT NULL,
+			key_fields JSON NOT NULL, sdk_delivery_enabled BOOLEAN NOT NULL,
+			schema_version BIGINT UNSIGNED NOT NULL, status VARCHAR(32) NOT NULL,
+			config_revision BIGINT UNSIGNED NOT NULL, created_at DATETIME(6) NOT NULL,
+			created_by VARCHAR(128) NOT NULL, updated_at DATETIME(6) NOT NULL,
+			updated_by VARCHAR(128) NOT NULL
+		) ENGINE=InnoDB`,
+		`CREATE TABLE configuration_versions (
+			collection_name VARCHAR(128) NOT NULL, environment VARCHAR(64) NOT NULL,
+			config_revision BIGINT UNSIGNED NOT NULL, base_digest CHAR(64) NOT NULL,
+			overlay_digest CHAR(64) NOT NULL, updated_at DATETIME(6) NOT NULL,
+			PRIMARY KEY (collection_name, environment)
+		) ENGINE=InnoDB`,
+		`CREATE TABLE configuration_subscriptions (
+			id CHAR(36) PRIMARY KEY, consumer_id VARCHAR(128) NOT NULL,
+			collection_name VARCHAR(128) NOT NULL, index_name VARCHAR(128) NOT NULL,
+			index_fields JSON NOT NULL, cardinality VARCHAR(32) NOT NULL,
+			enabled BOOLEAN NOT NULL, config_revision BIGINT UNSIGNED NOT NULL,
+			created_at DATETIME(6) NOT NULL, created_by VARCHAR(128) NOT NULL,
+			updated_at DATETIME(6) NOT NULL, updated_by VARCHAR(128) NOT NULL
+		) ENGINE=InnoDB`,
+		`CREATE TABLE configuration_change_log (
+			id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+			collection_name VARCHAR(128) NOT NULL, kind VARCHAR(32) NOT NULL,
+			region VARCHAR(64) NOT NULL, environment VARCHAR(64) NOT NULL,
+			stage VARCHAR(64) NOT NULL, record_key VARCHAR(512) NOT NULL,
+			action VARCHAR(32) NOT NULL, after_data JSON NULL,
+			config_revision BIGINT UNSIGNED NOT NULL, created_at DATETIME(6) NOT NULL
+		) ENGINE=InnoDB`,
+		`CREATE TABLE configuration_models (
+			code VARCHAR(128) PRIMARY KEY, name VARCHAR(255) NOT NULL,
+			collection_name VARCHAR(128) NOT NULL, definition JSON NOT NULL,
+			enabled BOOLEAN NOT NULL, config_revision BIGINT UNSIGNED NOT NULL
+		) ENGINE=InnoDB`,
+		`CREATE TABLE release_templates (
+			code VARCHAR(128) NOT NULL, model_code VARCHAR(128) NOT NULL,
+			release_type_code VARCHAR(128) NOT NULL, active_slot CHAR(1) NULL
+		) ENGINE=InnoDB`,
+		`CREATE TABLE configuration_records (
+			collection_name VARCHAR(128) NOT NULL, environment VARCHAR(64) NOT NULL,
+			record_key VARCHAR(512) NOT NULL, data JSON NOT NULL,
+			config_revision BIGINT UNSIGNED NOT NULL,
+			PRIMARY KEY (collection_name, environment, record_key)
+		) ENGINE=InnoDB`,
+		`CREATE TABLE configuration_overlays (
+			id CHAR(36) PRIMARY KEY, collection_name VARCHAR(128) NOT NULL,
+			region VARCHAR(64) NOT NULL, environment VARCHAR(64) NOT NULL,
+			stage VARCHAR(64) NOT NULL, record_key VARCHAR(512) NOT NULL,
+			action VARCHAR(32) NOT NULL, content JSON NULL, rollout_ranges JSON NOT NULL,
+			config_revision BIGINT UNSIGNED NOT NULL, release_order_id CHAR(36) NOT NULL,
+			effective_from DATETIME(6) NULL, effective_until DATETIME(6) NULL,
+			activated_revision BIGINT UNSIGNED NULL, activated_at DATETIME(6) NULL,
+			expired_revision BIGINT UNSIGNED NULL, expired_at DATETIME(6) NULL,
+			created_at DATETIME(6) NOT NULL, created_by VARCHAR(128) NOT NULL,
+			updated_at DATETIME(6) NOT NULL, updated_by VARCHAR(128) NOT NULL
+		) ENGINE=InnoDB`,
 	}
-	return filepath.Clean(filepath.Join(filepath.Dir(filename), "../../../db/migrations/mysql"))
+	for _, statement := range statements {
+		if _, err := db.Exec(statement); err != nil {
+			t.Fatal(err)
+		}
+	}
 }

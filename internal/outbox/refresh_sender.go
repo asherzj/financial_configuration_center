@@ -6,7 +6,7 @@ import (
 	"errors"
 	"fmt"
 
-	catalog "github.com/asherzj/financial_configuration_center/internal/catalog/domain"
+	readmodel "github.com/asherzj/financial_configuration_center/internal/distribution/readmodel"
 	"github.com/asherzj/financial_configuration_center/internal/distribution/snapshot"
 )
 
@@ -43,7 +43,7 @@ func (sender *RefreshSender) Send(_ context.Context, event Event) error {
 	}
 	return sender.notifier.Notify(snapshot.RefreshHint{
 		EventID: event.ID, Environment: payload.Environment, ReleaseOrderID: payload.ReleaseOrderID, TraceID: payload.TraceID,
-		Targets: []snapshot.HintTarget{{Collection: payload.Collection, MinRevision: catalog.ConfigRevision(payload.ConfigRevision)}},
+		Targets: []snapshot.HintTarget{{Collection: payload.Collection, MinRevision: readmodel.ConfigRevision(payload.ConfigRevision)}},
 	})
 }
 

@@ -10,6 +10,7 @@ import (
 
 	access "github.com/asherzj/financial_configuration_center/internal/access/application"
 	catalog "github.com/asherzj/financial_configuration_center/internal/catalog/domain"
+	readmodel "github.com/asherzj/financial_configuration_center/internal/distribution/readmodel"
 	"github.com/asherzj/financial_configuration_center/internal/distribution/snapshot"
 	overlay "github.com/asherzj/financial_configuration_center/internal/overlay/domain"
 )
@@ -102,8 +103,31 @@ func newFixture(t *testing.T) *fixture {
 	}
 	record, _ := definition.NewRecord("production", map[string]string{"name": "primary", "secret": "authority-secret"})
 	record.ConfigRevision = 8
+	snapshotDefinition, err := readmodel.CompileCollection(readmodel.CollectionSpec{
+		Name: "credentials", KeyFields: []string{"name"}, SchemaVersion: 1,
+		Fields: []readmodel.FieldDefinition{
+			{Name: "name", DisplayName: "Name", Type: readmodel.FieldTypeString, Required: true, DisplayOrder: 0},
+			{Name: "secret", DisplayName: "Secret", Type: readmodel.FieldTypeString, Required: true, Sensitive: true, DisplayOrder: 1},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshotModel, err := readmodel.CompileModel(snapshotDefinition, readmodel.ModelSpec{
+		Code: "credential-admin", Name: "Credentials", Collection: snapshotDefinition.Name(),
+		Fields: []readmodel.ModelField{
+			{Name: "name", Type: readmodel.FieldTypeString, Required: true, Editable: true, UIControl: readmodel.UIControlInput},
+			{Name: "secret", Type: readmodel.FieldTypeString, Required: true, Sensitive: true, Editable: true, UIControl: readmodel.UIControlInput},
+		},
+		ProjectionFields: []string{"name", "secret"}, KeyFields: []string{"name"}, DefaultPageSize: 20, MaxPageSize: 100, ConfigRevision: 7,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshotRecord, _ := snapshotDefinition.NewRecord("production", map[string]string{"name": "primary", "secret": "authority-secret"})
+	snapshotRecord.ConfigRevision = 8
 	now := time.Date(2026, 8, 19, 23, 30, 0, 0, time.UTC)
-	manager, err := snapshot.NewManager(snapshotSource{inputs: []snapshot.CollectionInput{{Definition: definition, Models: []catalog.CompiledModel{model}, Version: 8, Records: []catalog.ConfigurationRecord{record}}}}, snapshot.IdentitySeed{ServerEpoch: "epoch", ServerInstanceID: "server", SnapshotInstance: "instance"}, fixedClock{now})
+	manager, err := snapshot.NewManager(snapshotSource{inputs: []snapshot.CollectionInput{{Definition: snapshotDefinition, Models: []readmodel.CompiledModel{snapshotModel}, Version: 8, Records: []readmodel.ConfigurationRecord{snapshotRecord}}}}, snapshot.IdentitySeed{ServerEpoch: "epoch", ServerInstanceID: "server", SnapshotInstance: "instance"}, fixedClock{now})
 	if err != nil {
 		t.Fatal(err)
 	}

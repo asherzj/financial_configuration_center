@@ -127,11 +127,11 @@ func (service *Service) Reveal(ctx context.Context, command RevealCommand) (Reve
 		return RevealResult{}, ErrAborted
 	}
 	model, exists := current.Model(command.ModelCode)
-	if !exists || model.ConfigRevision() != command.ExpectedModelRevision {
+	if !exists || catalog.ConfigRevision(model.ConfigRevision()) != command.ExpectedModelRevision {
 		return RevealResult{}, ErrAborted
 	}
 	collectionRevision, exists := current.CollectionVersion(model.Collection())
-	if !exists || collectionRevision != command.ExpectedCollectionRevision {
+	if !exists || catalog.ConfigRevision(collectionRevision) != command.ExpectedCollectionRevision {
 		return RevealResult{}, ErrAborted
 	}
 

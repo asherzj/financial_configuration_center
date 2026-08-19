@@ -7,7 +7,7 @@ import (
 	"sync"
 	"time"
 
-	catalog "github.com/asherzj/financial_configuration_center/internal/catalog/domain"
+	readmodel "github.com/asherzj/financial_configuration_center/internal/distribution/readmodel"
 )
 
 var (
@@ -17,7 +17,7 @@ var (
 
 type HintTarget struct {
 	Collection   string
-	MinRevision  catalog.ConfigRevision
+	MinRevision  readmodel.ConfigRevision
 	TargetCursor uint64
 }
 
