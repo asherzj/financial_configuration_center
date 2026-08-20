@@ -4,15 +4,20 @@ import (
 	"context"
 	"errors"
 	"math"
+	"net"
 	"testing"
 	"time"
 
 	configv1 "github.com/asherzj/financial_configuration_center/contracts/kitex_gen/finconfig/config/v1"
+	"github.com/asherzj/financial_configuration_center/contracts/kitex_gen/finconfig/config/v1/diagnosticsservice"
 	configgrpc "github.com/asherzj/financial_configuration_center/internal/configserver/grpc"
 	readmodel "github.com/asherzj/financial_configuration_center/internal/distribution/readmodel"
 	"github.com/asherzj/financial_configuration_center/internal/distribution/snapshot"
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/status"
+	"github.com/cloudwego/kitex/client"
+	kitexcodes "github.com/cloudwego/kitex/pkg/remote/trans/nphttp2/codes"
+	kitexstatus "github.com/cloudwego/kitex/pkg/remote/trans/nphttp2/status"
+	"github.com/cloudwego/kitex/server"
+	"github.com/cloudwego/kitex/transport"
 )
 
 func TestDiagnosticsHandlerProjectsOnlySnapshotMetadata(t *testing.T) {
@@ -22,13 +27,14 @@ func TestDiagnosticsHandlerProjectsOnlySnapshotMetadata(t *testing.T) {
 		Environment:            "production",
 		Collections:            []snapshot.CollectionDiagnostic{{Name: "routes", Revision: 8, Cursor: 34, Digest: readmodel.Digest{Algorithm: "SHA-256", Value: "digest"}}},
 		FailedDependencyGroups: [][]string{{"routes", "options"}},
+		LastErrorCode:          "DEPENDENCY_GROUP_FAILED",
 	}}
 	handler, err := configgrpc.NewDiagnostics(provider, allowRequestAuthorizer{}, "production")
 	if err != nil {
 		t.Fatal(err)
 	}
 	status, err := handler.GetSnapshotStatus(context.Background(), &configv1.GetSnapshotStatusRequest{})
-	if err != nil || status.CollectionCount != 1 || status.Snapshot.SnapshotGeneration != 4 || len(status.FailedDependencyGroups) != 1 || status.FailedDependencyGroups[0] != "routes,options" {
+	if err != nil || status.CollectionCount != 1 || status.Snapshot.SnapshotGeneration != 4 || status.Environment != "production" || len(status.Collections) != 1 || status.Collections[0].ConfigRevision != 8 || status.Collections[0].ChangeCursor != 34 || len(status.FailedDependencyGroups) != 1 || status.FailedDependencyGroups[0] != "routes,options" || len(status.FailedDependencyGroupDetails) != 1 || len(status.FailedDependencyGroupDetails[0].Collections) != 2 || status.GetLastErrorCode() != "DEPENDENCY_GROUP_FAILED" {
 		t.Fatalf("snapshot status = %+v, %v", status, err)
 	}
 	collection, err := handler.GetCollectionStatus(context.Background(), &configv1.GetCollectionStatusRequest{Collection: "routes", Environment: "production"})
@@ -47,8 +53,8 @@ func TestDiagnosticsRejectsCursorOutsideRPCRange(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, err = handler.GetCollectionStatus(context.Background(), &configv1.GetCollectionStatusRequest{Collection: "routes", Environment: "production"})
-	if status.Code(err) != codes.Internal {
-		t.Fatalf("cursor overflow code = %s, err %v", status.Code(err), err)
+	if kitexstatus.Code(err) != kitexcodes.Internal {
+		t.Fatalf("cursor overflow code = %s, err %v", kitexstatus.Code(err), err)
 	}
 }
 
@@ -58,10 +64,10 @@ func TestDiagnosticsRejectsSnapshotOutsideManagedEnvironment(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := handler.GetSnapshotStatus(context.Background(), &configv1.GetSnapshotStatusRequest{}); status.Code(err) != codes.FailedPrecondition {
+	if _, err := handler.GetSnapshotStatus(context.Background(), &configv1.GetSnapshotStatusRequest{}); kitexstatus.Code(err) != kitexcodes.FailedPrecondition {
 		t.Fatalf("snapshot status error = %v", err)
 	}
-	if _, err := handler.GetCollectionStatus(context.Background(), &configv1.GetCollectionStatusRequest{Collection: "routes", Environment: "staging"}); status.Code(err) != codes.FailedPrecondition {
+	if _, err := handler.GetCollectionStatus(context.Background(), &configv1.GetCollectionStatusRequest{Collection: "routes", Environment: "staging"}); kitexstatus.Code(err) != kitexcodes.FailedPrecondition {
 		t.Fatalf("collection status error = %v", err)
 	}
 }
@@ -80,6 +86,76 @@ func TestDiagnosticsAuthorizesRoleAndEnvironmentBeforeReadingProvider(t *testing
 	}
 	if provider.called || authorizer.environment != "production" {
 		t.Fatalf("provider called=%v environment=%q", provider.called, authorizer.environment)
+	}
+}
+
+func TestNewDiagnosticsRejectsTypedNilDependencies(t *testing.T) {
+	t.Parallel()
+	var provider *recordingDiagnosticsProvider
+	if _, err := configgrpc.NewDiagnostics(provider, allowRequestAuthorizer{}, "production"); err == nil {
+		t.Fatal("expected typed nil provider rejection")
+	}
+	var authorizer *recordingDiagnosticsAuthorizer
+	if _, err := configgrpc.NewDiagnostics(diagnosticsProvider{}, authorizer, "production"); err == nil {
+		t.Fatal("expected typed nil authorizer rejection")
+	}
+}
+
+func TestDiagnosticsPreservesStatusAcrossKitexTransport(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler, err := configgrpc.NewDiagnostics(diagnosticsProvider{value: snapshot.Diagnostics{
+		Identity:    snapshot.Identity{ServerEpoch: "epoch", ServerInstanceID: "server", SnapshotInstance: "snapshot", Generation: 1, PublishedAt: time.Now().UTC()},
+		Environment: "production",
+	}}, allowRequestAuthorizer{}, "production")
+	if err != nil {
+		t.Fatal(err)
+	}
+	kitexServer := diagnosticsservice.NewServer(handler, server.WithListener(listener), server.WithExitWaitTime(time.Second))
+	stopped := make(chan error, 1)
+	go func() { stopped <- kitexServer.Run() }()
+	t.Cleanup(func() {
+		if err := kitexServer.Stop(); err != nil {
+			t.Errorf("stop Kitex server: %v", err)
+		}
+		select {
+		case err := <-stopped:
+			if err != nil {
+				t.Errorf("run Kitex server: %v", err)
+			}
+		case <-time.After(2 * time.Second):
+			t.Error("Kitex server did not stop")
+		}
+	})
+	kitexClient, err := diagnosticsservice.NewClient("DiagnosticsService", client.WithHostPorts(listener.Addr().String()), client.WithTransportProtocol(transport.GRPC))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	for {
+		if _, err := kitexClient.GetSnapshotStatus(ctx, &configv1.GetSnapshotStatusRequest{}); err == nil {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			t.Fatal(ctx.Err())
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+	for name, request := range map[string]*configv1.GetCollectionStatusRequest{
+		"missing": {Collection: "missing", Environment: "production"},
+		"routing": {Collection: "missing", Environment: "staging"},
+	} {
+		want := kitexcodes.NotFound
+		if name == "routing" {
+			want = kitexcodes.FailedPrecondition
+		}
+		if _, err := kitexClient.GetCollectionStatus(ctx, request); kitexstatus.Code(err) != want {
+			t.Fatalf("%s code=%v error=%v", name, kitexstatus.Code(err), err)
+		}
 	}
 }
 
@@ -106,8 +182,8 @@ func TestCollectionDiagnosticsNormalizesThenChecksRoutingBeforeAuthorization(t *
 			t.Fatal(err)
 		}
 		_, err = handler.GetCollectionStatus(context.Background(), &configv1.GetCollectionStatusRequest{Collection: "routes", Environment: "staging"})
-		if status.Code(err) != codes.FailedPrecondition || provider.called || authorizer.environment != "" {
-			t.Fatalf("code=%v provider=%v environment=%q", status.Code(err), provider.called, authorizer.environment)
+		if kitexstatus.Code(err) != kitexcodes.FailedPrecondition || provider.called || authorizer.environment != "" {
+			t.Fatalf("code=%v provider=%v environment=%q", kitexstatus.Code(err), provider.called, authorizer.environment)
 		}
 	})
 }

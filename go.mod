@@ -9,7 +9,7 @@ toolchain go1.26.6
 replace google.golang.org/genproto => google.golang.org/genproto v0.0.0-20260720211330-0afa2a65878a
 
 require (
-	github.com/asherzj/financial_configuration_center/contracts v0.1.0
+	github.com/asherzj/financial_configuration_center/contracts v0.2.0
 	github.com/cloudwego/kitex v0.16.2
 	github.com/go-sql-driver/mysql v1.10.0
 	github.com/google/uuid v1.6.0

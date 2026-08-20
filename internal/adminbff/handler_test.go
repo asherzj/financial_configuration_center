@@ -15,9 +15,8 @@ import (
 	"github.com/asherzj/financial_configuration_center/internal/audit"
 	catalogapp "github.com/asherzj/financial_configuration_center/internal/catalog/application"
 	catalog "github.com/asherzj/financial_configuration_center/internal/catalog/domain"
-	readmodel "github.com/asherzj/financial_configuration_center/internal/distribution/readmodel"
-	"github.com/asherzj/financial_configuration_center/internal/distribution/snapshot"
 	"github.com/asherzj/financial_configuration_center/internal/outbox"
+	platformauth "github.com/asherzj/financial_configuration_center/internal/platform/auth"
 	"github.com/asherzj/financial_configuration_center/internal/release/application"
 	release "github.com/asherzj/financial_configuration_center/internal/release/domain"
 )
@@ -109,6 +108,14 @@ func TestBFFRejectsTypedNilPageQueryPort(t *testing.T) {
 	var queries *queryStub
 	if _, err := adminbff.New(queries, &releaseStub{}, authenticator{}); err == nil {
 		t.Fatal("expected typed nil PageQuery port rejection")
+	}
+}
+
+func TestBFFRejectsTypedNilDiagnosticsPort(t *testing.T) {
+	t.Parallel()
+	var diagnostics *diagnosticsStub
+	if _, err := adminbff.NewWithOperations(&queryStub{}, &releaseStub{}, authenticator{}, &outboxStub{}, diagnostics); err == nil {
+		t.Fatal("expected typed nil Diagnostics port rejection")
 	}
 }
 
@@ -264,9 +271,9 @@ func TestBFFListsSafeOutboxMetadataAndMapsReplay(t *testing.T) {
 		}},
 		PageNumber: 1, PageSize: 20, TotalNumber: 1, TotalPages: 1,
 	}, replayed: outbox.Event{ID: "event", Status: outbox.StatusPending, LeaseRevision: 7, NextAttemptAt: now}}
-	diagnostics := diagnosticsStub{value: snapshot.Diagnostics{
-		Identity:    snapshot.Identity{ServerEpoch: "epoch", ServerInstanceID: "server", SnapshotInstance: "instance", Generation: 3, PublishedAt: now},
-		Environment: "production", Collections: []snapshot.CollectionDiagnostic{{Name: "payment_routes", Revision: 8, Digest: readmodel.Digest{Algorithm: "SHA-256", Value: "digest"}}},
+	diagnostics := diagnosticsStub{value: bffapp.SnapshotDiagnostics{
+		Identity:    bffapp.DiagnosticIdentity{ServerEpoch: "epoch", ServerInstanceID: "server", SnapshotInstance: "instance", Generation: 3, PublishedAt: now},
+		Environment: "production", Collections: []bffapp.CollectionDiagnostic{{Name: "payment_routes", Environment: "production", Revision: 8, Digest: bffapp.DiagnosticDigest{Algorithm: "SHA-256", Value: "digest"}}},
 	}}
 	handler, err := adminbff.NewWithOperations(&queryStub{}, &releaseStub{}, authenticator{roles: []string{outbox.PlatformOperatorRole}}, operations, diagnostics)
 	if err != nil {
@@ -289,6 +296,50 @@ func TestBFFListsSafeOutboxMetadataAndMapsReplay(t *testing.T) {
 	handler.ServeHTTP(snapshotResponse, snapshotRequest)
 	if snapshotResponse.Code != http.StatusOK || !bytes.Contains(snapshotResponse.Body.Bytes(), []byte(`"generation":3`)) || !bytes.Contains(snapshotResponse.Body.Bytes(), []byte(`"revision":8`)) || bytes.Contains(snapshotResponse.Body.Bytes(), []byte("must-not-leak")) {
 		t.Fatalf("snapshot diagnostics=%d %s", snapshotResponse.Code, snapshotResponse.Body.String())
+	}
+	collectionRequest := httptest.NewRequest(http.MethodGet, "/api/v1/diagnostics/collections/payment_routes", nil)
+	collectionResponse := httptest.NewRecorder()
+	handler.ServeHTTP(collectionResponse, collectionRequest)
+	if collectionResponse.Code != http.StatusOK || !bytes.Contains(collectionResponse.Body.Bytes(), []byte(`"environment":"production"`)) || !bytes.Contains(collectionResponse.Body.Bytes(), []byte(`"revision":8`)) {
+		t.Fatalf("collection diagnostics=%d %s", collectionResponse.Code, collectionResponse.Body.String())
+	}
+	missingRequest := httptest.NewRequest(http.MethodGet, "/api/v1/diagnostics/collections/missing", nil)
+	missingResponse := httptest.NewRecorder()
+	handler.ServeHTTP(missingResponse, missingRequest)
+	if missingResponse.Code != http.StatusNotFound || !bytes.Contains(missingResponse.Body.Bytes(), []byte(`"code":"NOT_FOUND"`)) || !bytes.Contains(missingResponse.Body.Bytes(), []byte(`"message":"collection is not loaded"`)) {
+		t.Fatalf("missing diagnostics=%d %s", missingResponse.Code, missingResponse.Body.String())
+	}
+}
+
+func TestBFFDiagnosticsAuthorizationRejectsBeforeRPCReader(t *testing.T) {
+	t.Parallel()
+
+	reader := &recordingDiagnosticsReader{}
+	diagnostics, err := bffapp.NewDiagnosticsService(reader, "production")
+	if err != nil {
+		t.Fatal(err)
+	}
+	production, err := platformauth.CompileScopePattern("*", "production", "*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler, err := adminbff.NewWithOperations(
+		&queryStub{}, &releaseStub{}, authenticator{roles: []string{"CONFIG_VIEWER"}, scopes: []platformauth.ScopePattern{production}},
+		&outboxStub{}, diagnostics,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{"/api/v1/diagnostics/snapshot", "/api/v1/diagnostics/collections/routes"} {
+		request := httptest.NewRequest(http.MethodGet, path, nil)
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, request)
+		if response.Code != http.StatusForbidden || !bytes.Contains(response.Body.Bytes(), []byte(`"code":"PERMISSION_DENIED"`)) {
+			t.Fatalf("%s response=%d %s", path, response.Code, response.Body.String())
+		}
+	}
+	if reader.calls != 0 {
+		t.Fatalf("diagnostics reader called %d times", reader.calls)
 	}
 }
 
@@ -355,13 +406,17 @@ func TestBFFCollectionAndSubscriptionAdminUsesExpectedRevision(t *testing.T) {
 type authenticator struct {
 	reject bool
 	roles  []string
+	scopes []platformauth.ScopePattern
 }
 
 func (authenticator authenticator) Authenticate(*http.Request) (adminbff.Principal, error) {
 	if authenticator.reject {
 		return adminbff.Principal{}, adminbff.ErrUnauthenticated
 	}
-	return adminbff.Principal{Subject: "operator@example.com", DisplayName: "Operator", Roles: append([]string(nil), authenticator.roles...)}, nil
+	return adminbff.Principal{
+		Subject: "operator@example.com", DisplayName: "Operator", Roles: append([]string(nil), authenticator.roles...),
+		AllowedScopes: append([]platformauth.ScopePattern(nil), authenticator.scopes...),
+	}, nil
 }
 
 type queryStub struct {
@@ -404,9 +459,32 @@ type outboxStub struct {
 	lastReplay    outbox.ReplayCommand
 }
 
-type diagnosticsStub struct{ value snapshot.Diagnostics }
+type diagnosticsStub struct{ value bffapp.SnapshotDiagnostics }
 
-func (stub diagnosticsStub) Diagnostics() snapshot.Diagnostics { return stub.value }
+func (stub diagnosticsStub) SnapshotDiagnostics(context.Context, bffapp.DiagnosticPrincipal) (bffapp.SnapshotDiagnostics, error) {
+	return stub.value, nil
+}
+
+type recordingDiagnosticsReader struct{ calls int }
+
+func (reader *recordingDiagnosticsReader) ReadSnapshotDiagnostics(context.Context) (bffapp.SnapshotDiagnostics, error) {
+	reader.calls++
+	return bffapp.SnapshotDiagnostics{}, nil
+}
+
+func (reader *recordingDiagnosticsReader) ReadCollectionDiagnostics(context.Context, string) (bffapp.CollectionDiagnostic, error) {
+	reader.calls++
+	return bffapp.CollectionDiagnostic{}, nil
+}
+
+func (stub diagnosticsStub) CollectionDiagnostics(_ context.Context, _ bffapp.DiagnosticPrincipal, name string) (bffapp.CollectionDiagnostic, error) {
+	for _, collection := range stub.value.Collections {
+		if collection.Name == name {
+			return collection, nil
+		}
+	}
+	return bffapp.CollectionDiagnostic{}, bffapp.ErrDiagnosticsNotFound
+}
 
 type auditStub struct {
 	page      audit.Page

@@ -17,7 +17,6 @@ import (
 	"github.com/asherzj/financial_configuration_center/internal/audit"
 	catalogapp "github.com/asherzj/financial_configuration_center/internal/catalog/application"
 	catalog "github.com/asherzj/financial_configuration_center/internal/catalog/domain"
-	"github.com/asherzj/financial_configuration_center/internal/distribution/snapshot"
 	"github.com/asherzj/financial_configuration_center/internal/outbox"
 	platformauth "github.com/asherzj/financial_configuration_center/internal/platform/auth"
 	"github.com/asherzj/financial_configuration_center/internal/release/application"
@@ -52,10 +51,6 @@ type OutboxOperations interface {
 	Replay(context.Context, outbox.ReplayCommand) (outbox.Event, error)
 }
 
-type SnapshotDiagnostics interface {
-	Diagnostics() snapshot.Diagnostics
-}
-
 type AuditQueries interface {
 	List(context.Context, audit.Principal, audit.Query) (audit.Page, error)
 }
@@ -83,7 +78,7 @@ type Handler struct {
 	releases    ReleaseCommands
 	sensitive   SensitiveAccess
 	outbox      OutboxOperations
-	diagnostics SnapshotDiagnostics
+	diagnostics bffapp.DiagnosticsUseCase
 	audits      AuditQueries
 	catalog     CatalogAdmin
 	auth        Authenticator
@@ -94,28 +89,28 @@ func NewWithOutbox(queries bffapp.PageQueryPort, releases ReleaseCommands, auth 
 	return newWithOperations(queries, releases, auth, operations, nil, nil, nil, sensitive...)
 }
 
-func NewWithOperations(queries bffapp.PageQueryPort, releases ReleaseCommands, auth Authenticator, operations OutboxOperations, diagnostics SnapshotDiagnostics, sensitive ...SensitiveAccess) (*Handler, error) {
-	if diagnostics == nil {
+func NewWithOperations(queries bffapp.PageQueryPort, releases ReleaseCommands, auth Authenticator, operations OutboxOperations, diagnostics bffapp.DiagnosticsUseCase, sensitive ...SensitiveAccess) (*Handler, error) {
+	if diagnostics == nil || isNilDependency(diagnostics) {
 		return nil, errors.New("new Admin BFF: snapshot diagnostics are required")
 	}
 	return newWithOperations(queries, releases, auth, operations, diagnostics, nil, nil, sensitive...)
 }
 
-func NewWithAdminOperations(queries bffapp.PageQueryPort, releases ReleaseCommands, auth Authenticator, operations OutboxOperations, diagnostics SnapshotDiagnostics, audits AuditQueries, sensitive ...SensitiveAccess) (*Handler, error) {
-	if diagnostics == nil || audits == nil {
+func NewWithAdminOperations(queries bffapp.PageQueryPort, releases ReleaseCommands, auth Authenticator, operations OutboxOperations, diagnostics bffapp.DiagnosticsUseCase, audits AuditQueries, sensitive ...SensitiveAccess) (*Handler, error) {
+	if diagnostics == nil || isNilDependency(diagnostics) || audits == nil {
 		return nil, errors.New("new Admin BFF: snapshot diagnostics and audit queries are required")
 	}
 	return newWithOperations(queries, releases, auth, operations, diagnostics, audits, nil, sensitive...)
 }
 
-func NewWithCatalogOperations(queries bffapp.PageQueryPort, releases ReleaseCommands, auth Authenticator, operations OutboxOperations, diagnostics SnapshotDiagnostics, audits AuditQueries, catalogAdmin CatalogAdmin, sensitive ...SensitiveAccess) (*Handler, error) {
-	if diagnostics == nil || audits == nil || catalogAdmin == nil {
+func NewWithCatalogOperations(queries bffapp.PageQueryPort, releases ReleaseCommands, auth Authenticator, operations OutboxOperations, diagnostics bffapp.DiagnosticsUseCase, audits AuditQueries, catalogAdmin CatalogAdmin, sensitive ...SensitiveAccess) (*Handler, error) {
+	if diagnostics == nil || isNilDependency(diagnostics) || audits == nil || catalogAdmin == nil {
 		return nil, errors.New("new Admin BFF: diagnostics, audit queries, and catalog admin are required")
 	}
 	return newWithOperations(queries, releases, auth, operations, diagnostics, audits, catalogAdmin, sensitive...)
 }
 
-func newWithOperations(queries bffapp.PageQueryPort, releases ReleaseCommands, auth Authenticator, operations OutboxOperations, diagnostics SnapshotDiagnostics, audits AuditQueries, catalogAdmin CatalogAdmin, sensitive ...SensitiveAccess) (*Handler, error) {
+func newWithOperations(queries bffapp.PageQueryPort, releases ReleaseCommands, auth Authenticator, operations OutboxOperations, diagnostics bffapp.DiagnosticsUseCase, audits AuditQueries, catalogAdmin CatalogAdmin, sensitive ...SensitiveAccess) (*Handler, error) {
 	if operations == nil {
 		return nil, errors.New("new Admin BFF: outbox operations are required")
 	}
@@ -620,32 +615,44 @@ func (handler *Handler) listAuditRecords(writer http.ResponseWriter, request *ht
 }
 
 func (handler *Handler) getSnapshotDiagnostics(writer http.ResponseWriter, request *http.Request) {
-	if _, ok := handler.authenticate(writer, request); !ok {
+	principal, ok := handler.authenticate(writer, request)
+	if !ok {
 		return
 	}
-	writeJSON(writer, http.StatusOK, snapshotDiagnosticsResponse(handler.diagnostics.Diagnostics()))
+	diagnostics, err := handler.diagnostics.SnapshotDiagnostics(request.Context(), diagnosticPrincipal(principal))
+	if err != nil {
+		writeDomainError(writer, err)
+		return
+	}
+	writeJSON(writer, http.StatusOK, snapshotDiagnosticsResponse(diagnostics))
 }
 
 func (handler *Handler) getCollectionDiagnostics(writer http.ResponseWriter, request *http.Request) {
-	if _, ok := handler.authenticate(writer, request); !ok {
+	principal, ok := handler.authenticate(writer, request)
+	if !ok {
 		return
 	}
-	diagnostics := handler.diagnostics.Diagnostics()
 	name := request.PathValue("name")
-	for _, collection := range diagnostics.Collections {
-		if collection.Name == name {
-			writeJSON(writer, http.StatusOK, map[string]any{
-				"collection": collection.Name, "environment": diagnostics.Environment,
-				"revision": collection.Revision, "digest": collection.Digest,
-				"lastErrorCode": diagnostics.LastErrorCode,
-			})
-			return
-		}
+	diagnostics, err := handler.diagnostics.CollectionDiagnostics(request.Context(), diagnosticPrincipal(principal), name)
+	if err != nil {
+		writeDomainError(writer, err)
+		return
 	}
-	writeError(writer, http.StatusNotFound, "NOT_FOUND", "collection is not loaded")
+	writeJSON(writer, http.StatusOK, map[string]any{
+		"collection": diagnostics.Name, "environment": diagnostics.Environment,
+		"revision": diagnostics.Revision, "digest": diagnostics.Digest,
+		"lastErrorCode": diagnostics.LastErrorCode,
+	})
 }
 
-func snapshotDiagnosticsResponse(diagnostics snapshot.Diagnostics) map[string]any {
+func diagnosticPrincipal(principal Principal) bffapp.DiagnosticPrincipal {
+	return bffapp.DiagnosticPrincipal{
+		Subject: principal.Subject, Roles: append([]string(nil), principal.Roles...),
+		AllowedScopes: append([]platformauth.ScopePattern(nil), principal.AllowedScopes...),
+	}
+}
+
+func snapshotDiagnosticsResponse(diagnostics bffapp.SnapshotDiagnostics) map[string]any {
 	collections := make([]map[string]any, len(diagnostics.Collections))
 	for index, collection := range diagnostics.Collections {
 		collections[index] = map[string]any{"name": collection.Name, "revision": collection.Revision, "digest": collection.Digest}
@@ -1130,6 +1137,10 @@ func writeDomainError(writer http.ResponseWriter, err error) {
 		writeError(writer, http.StatusPreconditionFailed, "FAILED_PRECONDITION", err.Error())
 	case errors.Is(err, bffapp.ErrPageQueryInvalid):
 		writeError(writer, http.StatusBadRequest, "INVALID_ARGUMENT", err.Error())
+	case errors.Is(err, bffapp.ErrDiagnosticsNotFound):
+		writeError(writer, http.StatusNotFound, "NOT_FOUND", "collection is not loaded")
+	case errors.Is(err, bffapp.ErrDiagnosticsForbidden):
+		writeError(writer, http.StatusForbidden, "PERMISSION_DENIED", "authenticated principal is not authorized")
 	case errors.Is(err, release.ErrIdempotencyKeyReused):
 		writeError(writer, http.StatusConflict, "IDEMPOTENCY_KEY_REUSED", err.Error())
 	case errors.Is(err, release.ErrActiveConflict):
