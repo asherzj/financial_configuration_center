@@ -109,7 +109,7 @@ _Avoid_: Consumer、服务账号、用户 DTO
 _Avoid_: Principal、ClientID、内部调用者
 
 **InternalCallerIdentity**:
-通过短期 Internal JWT 建立的 BFF、Control Plane relay 或诊断服务身份，包含服务 subject、角色和允许 Scope。
+通过短期 Internal JWT 建立的 BFF 委托 Principal、Control Plane relay 或诊断调用身份。服务型调用的 subject 是服务账号；BFF 管理调用的 subject/display name 是已认证的人类 Principal，BFF 服务身份由独立 mTLS 证明。两类均包含调用所需角色和允许 Scope。
 _Avoid_: Principal、Consumer、Envoy 转发证书字段
 
 ## Page query

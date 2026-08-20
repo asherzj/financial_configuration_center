@@ -18,24 +18,26 @@ var (
 )
 
 type Claims struct {
-	Issuer    string         `json:"iss"`
-	Audience  string         `json:"aud"`
-	Subject   string         `json:"sub"`
-	Roles     []string       `json:"roles,omitempty"`
-	Scopes    []ScopePattern `json:"scopes,omitempty"`
-	JWTID     string         `json:"jti"`
-	IssuedAt  int64          `json:"iat"`
-	NotBefore int64          `json:"nbf"`
-	ExpiresAt int64          `json:"exp"`
+	Issuer      string         `json:"iss"`
+	Audience    string         `json:"aud"`
+	Subject     string         `json:"sub"`
+	DisplayName string         `json:"display_name,omitempty"`
+	Roles       []string       `json:"roles,omitempty"`
+	Scopes      []ScopePattern `json:"scopes,omitempty"`
+	JWTID       string         `json:"jti"`
+	IssuedAt    int64          `json:"iat"`
+	NotBefore   int64          `json:"nbf"`
+	ExpiresAt   int64          `json:"exp"`
 }
 
 type InternalCallerIdentity struct {
-	Subject   string
-	JWTID     string
-	Roles     []string
-	Scopes    []ScopePattern
-	IssuedAt  time.Time
-	ExpiresAt time.Time
+	Subject     string
+	DisplayName string
+	JWTID       string
+	Roles       []string
+	Scopes      []ScopePattern
+	IssuedAt    time.Time
+	ExpiresAt   time.Time
 }
 
 type KeyResolver interface {
@@ -93,7 +95,7 @@ func (verifier *InternalJWTVerifier) verify(ctx context.Context, token string) (
 		return Claims{}, ErrTokenInvalid
 	}
 	now := verifier.clock().UTC()
-	if claims.Issuer != verifier.issuer || claims.Audience != verifier.audience || claims.Subject == "" || claims.JWTID == "" || claims.ExpiresAt == 0 || claims.IssuedAt == 0 || claims.NotBefore == 0 {
+	if claims.Issuer != verifier.issuer || claims.Audience != verifier.audience || claims.Subject == "" || !validInternalDisplayName(claims.DisplayName) || claims.JWTID == "" || claims.ExpiresAt == 0 || claims.IssuedAt == 0 || claims.NotBefore == 0 {
 		return Claims{}, ErrTokenInvalid
 	}
 	if now.After(time.Unix(claims.ExpiresAt, 0).Add(verifier.leeway)) {
@@ -119,7 +121,7 @@ func (verifier *InternalJWTVerifier) Verify(ctx context.Context, token string) (
 		return InternalCallerIdentity{}, ErrTokenInvalid
 	}
 	return InternalCallerIdentity{
-		Subject: claims.Subject, JWTID: claims.JWTID,
+		Subject: claims.Subject, DisplayName: claims.DisplayName, JWTID: claims.JWTID,
 		Roles: append([]string(nil), claims.Roles...), Scopes: append([]ScopePattern(nil), claims.Scopes...),
 		IssuedAt: time.Unix(claims.IssuedAt, 0).UTC(), ExpiresAt: time.Unix(claims.ExpiresAt, 0).UTC(),
 	}, nil

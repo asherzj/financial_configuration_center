@@ -14,6 +14,7 @@ const (
 	roleConfigViewer     = "CONFIG_VIEWER"
 	rolePlatformOperator = "PLATFORM_OPERATOR"
 	roleAuditor          = "AUDITOR"
+	roleSensitiveViewer  = "SENSITIVE_VIEWER"
 )
 
 type AuthorizationPolicy struct {
@@ -28,6 +29,7 @@ type RequestAuthorizer struct {
 }
 
 var diagnosticRoles = map[string]struct{}{rolePlatformOperator: {}, roleAuditor: {}}
+var sensitiveRoles = map[string]struct{}{roleSensitiveViewer: {}}
 
 func NewRequestAuthorizer(policy AuthorizationPolicy) (*RequestAuthorizer, error) {
 	pageQueryRoles, err := exactSet(policy.AdditionalPageQueryRoles, false)
@@ -63,6 +65,17 @@ func (authorizer *RequestAuthorizer) AuthorizePageQuery(ctx context.Context, sco
 	}
 	identity, ok := InternalCallerIdentityFromContext(ctx)
 	if !ok || !hasAnyRole(identity.Roles, authorizer.pageQueryRoles) || !scopeCovered(identity.Scopes, scope) {
+		return permissionDenied()
+	}
+	return nil
+}
+
+func (authorizer *RequestAuthorizer) AuthorizeSensitive(ctx context.Context, scope platformauth.Scope) error {
+	if authorizer == nil || !authorizer.initialized {
+		return permissionDenied()
+	}
+	identity, ok := InternalCallerIdentityFromContext(ctx)
+	if !ok || !scopeCovered(identity.Scopes, scope) || !hasAnyRole(identity.Roles, sensitiveRoles) {
 		return permissionDenied()
 	}
 	return nil

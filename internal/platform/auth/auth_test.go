@@ -59,14 +59,14 @@ func TestEd25519JWTValidatesIssuerAudienceAndInternalLifetime(t *testing.T) {
 		t.Fatal(err)
 	}
 	now := time.Date(2026, 8, 20, 12, 0, 0, 0, time.UTC)
-	claims := auth.Claims{Issuer: "control-plane", Audience: "config-server", Subject: "control-plane-relay", JWTID: "jti", IssuedAt: now.Unix(), NotBefore: now.Unix(), ExpiresAt: now.Add(time.Minute).Unix(), Roles: []string{"CONFIG_VIEWER"}, Scopes: []auth.ScopePattern{{Region: "cn", Environment: "production", Stage: "*"}}}
+	claims := auth.Claims{Issuer: "control-plane", Audience: "config-server", Subject: "control-plane-relay", DisplayName: "Relay", JWTID: "jti", IssuedAt: now.Unix(), NotBefore: now.Unix(), ExpiresAt: now.Add(time.Minute).Unix(), Roles: []string{"CONFIG_VIEWER"}, Scopes: []auth.ScopePattern{{Region: "cn", Environment: "production", Stage: "*"}}}
 	token, err := auth.SignJWT("key-a", privateKey, claims)
 	if err != nil {
 		t.Fatal(err)
 	}
 	verifier, _ := auth.NewInternalJWTVerifier(auth.StaticKeys{"key-a": publicKey}, "control-plane", "config-server", func() time.Time { return now })
 	verified, err := verifier.Verify(context.Background(), token)
-	if err != nil || verified.Subject != "control-plane-relay" {
+	if err != nil || verified.Subject != "control-plane-relay" || verified.DisplayName != "Relay" {
 		t.Fatalf("verified=%+v err=%v", verified, err)
 	}
 	expiredVerifier, _ := auth.NewInternalJWTVerifier(auth.StaticKeys{"key-a": publicKey}, "control-plane", "config-server", func() time.Time { return now.Add(2 * time.Minute) })

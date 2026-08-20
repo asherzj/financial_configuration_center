@@ -192,6 +192,7 @@ func TestMethodPolicyMatrixKeepsConsumerAndInternalProfilesSeparate(t *testing.T
 		{service: "RefreshService", method: "Notify"},
 		{service: "DiagnosticsService", method: "GetSnapshotStatus"},
 		{service: "DiagnosticsService", method: "GetCollectionStatus"},
+		{service: "SensitiveAccessService", method: "RevealField"},
 	}
 	for _, test := range tests {
 		test := test

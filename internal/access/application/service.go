@@ -13,6 +13,7 @@ import (
 
 	catalog "github.com/asherzj/financial_configuration_center/internal/catalog/domain"
 	overlay "github.com/asherzj/financial_configuration_center/internal/overlay/domain"
+	platformauth "github.com/asherzj/financial_configuration_center/internal/platform/auth"
 )
 
 var (
@@ -76,9 +77,10 @@ type Scope struct {
 }
 
 type Principal struct {
-	Subject     string
-	DisplayName string
-	Roles       []string
+	Subject       string
+	DisplayName   string
+	Roles         []string
+	AllowedScopes []platformauth.ScopePattern
 }
 
 type RevealCommand struct {
@@ -133,6 +135,10 @@ func (service *Service) Reveal(ctx context.Context, command RevealCommand) (Reve
 	}
 	if err := validateCommand(command); err != nil {
 		return RevealResult{}, err
+	}
+	concreteScope, _ := platformauth.CompileScope(command.Scope.Region, command.Scope.Environment, command.Scope.Stage)
+	if !accessScopeCovered(command.Principal.AllowedScopes, concreteScope) {
+		return RevealResult{}, ErrForbidden
 	}
 	if !slices.Contains(command.Principal.Roles, SensitiveViewerRole) {
 		return RevealResult{}, ErrForbidden
@@ -246,7 +252,19 @@ func validateCommand(command RevealCommand) error {
 	if command.PreviewBucket != nil && (*command.PreviewBucket < 0 || *command.PreviewBucket > 99) {
 		return ErrInvalid
 	}
+	if _, err := platformauth.CompileScope(command.Scope.Region, command.Scope.Environment, command.Scope.Stage); err != nil {
+		return ErrInvalid
+	}
 	return nil
+}
+
+func accessScopeCovered(patterns []platformauth.ScopePattern, scope platformauth.Scope) bool {
+	for _, pattern := range patterns {
+		if pattern.Matches(scope) {
+			return true
+		}
+	}
+	return false
 }
 
 func modelExposesSensitiveField(model catalog.CompiledModel, name string) bool {

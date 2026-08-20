@@ -12,7 +12,6 @@ import (
 	"strings"
 	"time"
 
-	access "github.com/asherzj/financial_configuration_center/internal/access/application"
 	bffapp "github.com/asherzj/financial_configuration_center/internal/adminbff/application"
 	"github.com/asherzj/financial_configuration_center/internal/audit"
 	catalogapp "github.com/asherzj/financial_configuration_center/internal/catalog/application"
@@ -21,6 +20,8 @@ import (
 	platformauth "github.com/asherzj/financial_configuration_center/internal/platform/auth"
 	"github.com/asherzj/financial_configuration_center/internal/release/application"
 	release "github.com/asherzj/financial_configuration_center/internal/release/domain"
+	"go.opentelemetry.io/otel/propagation"
+	"go.opentelemetry.io/otel/trace"
 )
 
 var ErrUnauthenticated = errors.New("unauthenticated")
@@ -40,10 +41,6 @@ type ReleaseCommands interface {
 	CreateRelease(context.Context, application.CreateReleaseCommand) (application.OrderView, error)
 	CreateCompensatingRelease(context.Context, application.CreateCompensatingReleaseCommand) (application.OrderView, error)
 	Act(context.Context, application.ActCommand) (application.OrderView, error)
-}
-
-type SensitiveAccess interface {
-	Reveal(context.Context, access.RevealCommand) (access.RevealResult, error)
 }
 
 type OutboxOperations interface {
@@ -76,7 +73,7 @@ type CatalogAdmin interface {
 type Handler struct {
 	queries     bffapp.PageQueryPort
 	releases    ReleaseCommands
-	sensitive   SensitiveAccess
+	sensitive   bffapp.SensitiveAccessUseCase
 	outbox      OutboxOperations
 	diagnostics bffapp.DiagnosticsUseCase
 	audits      AuditQueries
@@ -85,32 +82,32 @@ type Handler struct {
 	mux         *http.ServeMux
 }
 
-func NewWithOutbox(queries bffapp.PageQueryPort, releases ReleaseCommands, auth Authenticator, operations OutboxOperations, sensitive ...SensitiveAccess) (*Handler, error) {
+func NewWithOutbox(queries bffapp.PageQueryPort, releases ReleaseCommands, auth Authenticator, operations OutboxOperations, sensitive ...bffapp.SensitiveAccessUseCase) (*Handler, error) {
 	return newWithOperations(queries, releases, auth, operations, nil, nil, nil, sensitive...)
 }
 
-func NewWithOperations(queries bffapp.PageQueryPort, releases ReleaseCommands, auth Authenticator, operations OutboxOperations, diagnostics bffapp.DiagnosticsUseCase, sensitive ...SensitiveAccess) (*Handler, error) {
+func NewWithOperations(queries bffapp.PageQueryPort, releases ReleaseCommands, auth Authenticator, operations OutboxOperations, diagnostics bffapp.DiagnosticsUseCase, sensitive ...bffapp.SensitiveAccessUseCase) (*Handler, error) {
 	if diagnostics == nil || isNilDependency(diagnostics) {
 		return nil, errors.New("new Admin BFF: snapshot diagnostics are required")
 	}
 	return newWithOperations(queries, releases, auth, operations, diagnostics, nil, nil, sensitive...)
 }
 
-func NewWithAdminOperations(queries bffapp.PageQueryPort, releases ReleaseCommands, auth Authenticator, operations OutboxOperations, diagnostics bffapp.DiagnosticsUseCase, audits AuditQueries, sensitive ...SensitiveAccess) (*Handler, error) {
+func NewWithAdminOperations(queries bffapp.PageQueryPort, releases ReleaseCommands, auth Authenticator, operations OutboxOperations, diagnostics bffapp.DiagnosticsUseCase, audits AuditQueries, sensitive ...bffapp.SensitiveAccessUseCase) (*Handler, error) {
 	if diagnostics == nil || isNilDependency(diagnostics) || audits == nil {
 		return nil, errors.New("new Admin BFF: snapshot diagnostics and audit queries are required")
 	}
 	return newWithOperations(queries, releases, auth, operations, diagnostics, audits, nil, sensitive...)
 }
 
-func NewWithCatalogOperations(queries bffapp.PageQueryPort, releases ReleaseCommands, auth Authenticator, operations OutboxOperations, diagnostics bffapp.DiagnosticsUseCase, audits AuditQueries, catalogAdmin CatalogAdmin, sensitive ...SensitiveAccess) (*Handler, error) {
+func NewWithCatalogOperations(queries bffapp.PageQueryPort, releases ReleaseCommands, auth Authenticator, operations OutboxOperations, diagnostics bffapp.DiagnosticsUseCase, audits AuditQueries, catalogAdmin CatalogAdmin, sensitive ...bffapp.SensitiveAccessUseCase) (*Handler, error) {
 	if diagnostics == nil || isNilDependency(diagnostics) || audits == nil || catalogAdmin == nil {
 		return nil, errors.New("new Admin BFF: diagnostics, audit queries, and catalog admin are required")
 	}
 	return newWithOperations(queries, releases, auth, operations, diagnostics, audits, catalogAdmin, sensitive...)
 }
 
-func newWithOperations(queries bffapp.PageQueryPort, releases ReleaseCommands, auth Authenticator, operations OutboxOperations, diagnostics bffapp.DiagnosticsUseCase, audits AuditQueries, catalogAdmin CatalogAdmin, sensitive ...SensitiveAccess) (*Handler, error) {
+func newWithOperations(queries bffapp.PageQueryPort, releases ReleaseCommands, auth Authenticator, operations OutboxOperations, diagnostics bffapp.DiagnosticsUseCase, audits AuditQueries, catalogAdmin CatalogAdmin, sensitive ...bffapp.SensitiveAccessUseCase) (*Handler, error) {
 	if operations == nil {
 		return nil, errors.New("new Admin BFF: outbox operations are required")
 	}
@@ -768,12 +765,15 @@ func outboxEventResponse(event outbox.Event) map[string]any {
 	return result
 }
 
-func New(queries bffapp.PageQueryPort, releases ReleaseCommands, auth Authenticator, sensitive ...SensitiveAccess) (*Handler, error) {
+func New(queries bffapp.PageQueryPort, releases ReleaseCommands, auth Authenticator, sensitive ...bffapp.SensitiveAccessUseCase) (*Handler, error) {
 	if queries == nil || isNilDependency(queries) || releases == nil || auth == nil {
 		return nil, errors.New("new Admin BFF: queries, releases, and authenticator are required")
 	}
 	if len(sensitive) > 1 {
 		return nil, errors.New("new Admin BFF: at most one sensitive access service is allowed")
+	}
+	if len(sensitive) == 1 && (sensitive[0] == nil || isNilDependency(sensitive[0])) {
+		return nil, errors.New("new Admin BFF: sensitive access service is required when configured")
 	}
 	handler := &Handler{queries: queries, releases: releases, auth: auth, mux: http.NewServeMux()}
 	if len(sensitive) == 1 {
@@ -800,18 +800,18 @@ func isNilDependency(value any) bool {
 }
 
 type revealSensitiveFieldRequest struct {
-	ModelCode                  string                 `json:"modelCode"`
-	Scope                      scopeRequest           `json:"scope"`
-	RecordKey                  string                 `json:"recordKey"`
-	FieldName                  string                 `json:"fieldName"`
-	ExpectedRecordRevision     catalog.ConfigRevision `json:"expectedRecordRevision"`
-	ExpectedCollectionRevision catalog.ConfigRevision `json:"expectedCollectionRevision"`
-	ExpectedModelRevision      catalog.ConfigRevision `json:"expectedModelRevision"`
-	ExpectedServerEpoch        string                 `json:"expectedServerEpoch"`
-	ExpectedSnapshotInstance   string                 `json:"expectedSnapshotInstance"`
-	ExpectedSnapshotGeneration uint64                 `json:"expectedSnapshotGeneration"`
-	Reason                     string                 `json:"reason"`
-	PreviewBucket              *int32                 `json:"previewBucket,omitempty"`
+	ModelCode                  string       `json:"modelCode"`
+	Scope                      scopeRequest `json:"scope"`
+	RecordKey                  string       `json:"recordKey"`
+	FieldName                  string       `json:"fieldName"`
+	ExpectedRecordRevision     uint64       `json:"expectedRecordRevision"`
+	ExpectedCollectionRevision uint64       `json:"expectedCollectionRevision"`
+	ExpectedModelRevision      uint64       `json:"expectedModelRevision"`
+	ExpectedServerEpoch        string       `json:"expectedServerEpoch"`
+	ExpectedSnapshotInstance   string       `json:"expectedSnapshotInstance"`
+	ExpectedSnapshotGeneration uint64       `json:"expectedSnapshotGeneration"`
+	Reason                     string       `json:"reason"`
+	PreviewBucket              *int32       `json:"previewBucket,omitempty"`
 }
 
 func (handler *Handler) revealSensitiveField(writer http.ResponseWriter, request *http.Request) {
@@ -828,20 +828,38 @@ func (handler *Handler) revealSensitiveField(writer http.ResponseWriter, request
 	if !decodeJSON(writer, request, &body) {
 		return
 	}
-	result, err := handler.sensitive.Reveal(request.Context(), access.RevealCommand{
-		ModelCode: body.ModelCode, Scope: access.Scope{Region: body.Scope.Region, Environment: body.Scope.Environment, Stage: body.Scope.Stage},
+	traceID, traceParent, traceState := requestTraceContext(request)
+	result, err := handler.sensitive.Reveal(request.Context(), bffapp.RevealSensitiveCommand{
+		ModelCode: body.ModelCode, Scope: bffapp.SensitiveScope{Region: body.Scope.Region, Environment: body.Scope.Environment, Stage: body.Scope.Stage},
 		RecordKey: body.RecordKey, FieldName: body.FieldName, ExpectedRecordRevision: body.ExpectedRecordRevision,
 		ExpectedCollectionRevision: body.ExpectedCollectionRevision, ExpectedModelRevision: body.ExpectedModelRevision,
 		ExpectedServerEpoch: body.ExpectedServerEpoch, ExpectedSnapshotInstance: body.ExpectedSnapshotInstance,
 		ExpectedSnapshotGeneration: body.ExpectedSnapshotGeneration, Reason: body.Reason, PreviewBucket: body.PreviewBucket,
-		RequestID: requestID, TraceID: strings.TrimSpace(request.Header.Get("Traceparent")),
-		Principal: access.Principal{Subject: principal.Subject, DisplayName: principal.DisplayName, Roles: append([]string(nil), principal.Roles...)},
+		RequestID: requestID, TraceID: traceID, TraceParent: traceParent, TraceState: traceState,
+		Principal: bffapp.SensitivePrincipal{
+			Subject: principal.Subject, DisplayName: principal.DisplayName, Roles: append([]string(nil), principal.Roles...),
+			AllowedScopes: append([]platformauth.ScopePattern(nil), principal.AllowedScopes...),
+		},
 	})
 	if err != nil {
 		writeDomainError(writer, err)
 		return
 	}
 	writeJSON(writer, http.StatusOK, map[string]any{"value": result.Value, "expiresAt": result.ExpiresAt})
+}
+
+func requestTraceContext(request *http.Request) (string, string, string) {
+	ctx := request.Context()
+	if !trace.SpanContextFromContext(ctx).IsValid() {
+		ctx = propagation.TraceContext{}.Extract(ctx, propagation.HeaderCarrier(request.Header))
+	}
+	spanContext := trace.SpanContextFromContext(ctx)
+	if !spanContext.IsValid() {
+		return "", "", ""
+	}
+	carrier := propagation.MapCarrier{}
+	propagation.TraceContext{}.Inject(ctx, carrier)
+	return spanContext.TraceID().String(), carrier.Get("traceparent"), carrier.Get("tracestate")
 }
 
 func (handler *Handler) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
@@ -1125,15 +1143,15 @@ func writeDomainError(writer http.ResponseWriter, err error) {
 		writeError(writer, http.StatusConflict, "REVISION_CONFLICT", err.Error())
 	case errors.Is(err, outbox.ErrNotDeadLetter):
 		writeError(writer, http.StatusPreconditionFailed, "NOT_DEAD_LETTER", err.Error())
-	case errors.Is(err, access.ErrInvalid):
+	case errors.Is(err, bffapp.ErrSensitiveInvalid):
 		writeError(writer, http.StatusBadRequest, "INVALID_ARGUMENT", err.Error())
-	case errors.Is(err, access.ErrForbidden):
+	case errors.Is(err, bffapp.ErrSensitiveForbidden):
 		writeError(writer, http.StatusForbidden, "PERMISSION_DENIED", err.Error())
-	case errors.Is(err, access.ErrAborted):
+	case errors.Is(err, bffapp.ErrSensitiveAborted):
 		writeError(writer, http.StatusConflict, "ABORTED", err.Error())
-	case errors.Is(err, access.ErrNotFound):
+	case errors.Is(err, bffapp.ErrSensitiveNotFound):
 		writeError(writer, http.StatusNotFound, "NOT_FOUND", err.Error())
-	case errors.Is(err, access.ErrFailedPrecondition):
+	case errors.Is(err, bffapp.ErrSensitiveFailedPrecondition):
 		writeError(writer, http.StatusPreconditionFailed, "FAILED_PRECONDITION", err.Error())
 	case errors.Is(err, bffapp.ErrPageQueryInvalid):
 		writeError(writer, http.StatusBadRequest, "INVALID_ARGUMENT", err.Error())

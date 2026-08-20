@@ -11,6 +11,7 @@ import (
 	access "github.com/asherzj/financial_configuration_center/internal/access/application"
 	catalog "github.com/asherzj/financial_configuration_center/internal/catalog/domain"
 	overlay "github.com/asherzj/financial_configuration_center/internal/overlay/domain"
+	platformauth "github.com/asherzj/financial_configuration_center/internal/platform/auth"
 )
 
 func TestRevealReturnsPlaintextOnlyAfterAuthorityAndAuditSucceed(t *testing.T) {
@@ -55,6 +56,13 @@ func TestRevealRejectsTypedNilSnapshotAuthorityReader(t *testing.T) {
 
 func TestRevealRejectsForbiddenAndEveryStaleAuthorityFact(t *testing.T) {
 	t.Parallel()
+	t.Run("scope", func(t *testing.T) {
+		fixture := newFixture(t)
+		fixture.command.Principal.AllowedScopes[0].Environment = "staging"
+		if result, err := fixture.service.Reveal(context.Background(), fixture.command); !errors.Is(err, access.ErrForbidden) || result.Value != "" || fixture.snapshot.calls != 0 || fixture.store.transactions != 0 {
+			t.Fatalf("result=%+v err=%v snapshot=%d transactions=%d", result, err, fixture.snapshot.calls, fixture.store.transactions)
+		}
+	})
 	t.Run("role", func(t *testing.T) {
 		fixture := newFixture(t)
 		fixture.command.Principal.Roles = nil
@@ -145,7 +153,10 @@ func newFixture(t *testing.T) *fixture {
 			ModelCode: model.Code(), Scope: access.Scope{Region: "cn", Environment: "production"}, RecordKey: record.RecordKey, FieldName: "secret",
 			ExpectedRecordRevision: 8, ExpectedCollectionRevision: 8, ExpectedModelRevision: 7,
 			ExpectedServerEpoch: "epoch", ExpectedSnapshotInstance: "instance", ExpectedSnapshotGeneration: 1,
-			Reason: "incident diagnosis", RequestID: "request-1", Principal: access.Principal{Subject: "viewer", DisplayName: "Viewer", Roles: []string{access.SensitiveViewerRole}},
+			Reason: "incident diagnosis", RequestID: "request-1", Principal: access.Principal{
+				Subject: "viewer", DisplayName: "Viewer", Roles: []string{access.SensitiveViewerRole},
+				AllowedScopes: []platformauth.ScopePattern{{Region: "cn", Environment: "production", Stage: "*"}},
+			},
 		},
 	}
 }
@@ -189,9 +200,11 @@ type snapshotAuthorityReader struct {
 	authority access.SnapshotAuthority
 	err       error
 	query     access.SnapshotAuthorityQuery
+	calls     int
 }
 
 func (reader *snapshotAuthorityReader) ReadSnapshotAuthority(_ context.Context, query access.SnapshotAuthorityQuery) (access.SnapshotAuthority, error) {
+	reader.calls++
 	reader.query = query
 	return reader.authority, reader.err
 }

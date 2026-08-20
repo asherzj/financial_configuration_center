@@ -60,6 +60,28 @@ func TestRequestAuthorizerRequiresPageQueryRoleAndScope(t *testing.T) {
 	}
 }
 
+func TestRequestAuthorizerRequiresSensitiveViewerRoleAndScope(t *testing.T) {
+	t.Parallel()
+	authorizer := newRequestAuthorizer(t)
+	scope := platformauth.Scope{Region: "cn", Environment: "production", Stage: "blue"}
+	valid := withInternalCallerIdentity(context.Background(), platformauth.InternalCallerIdentity{
+		Subject: "operator", Roles: []string{"SENSITIVE_VIEWER"},
+		Scopes: []platformauth.ScopePattern{{Region: "cn", Environment: "production", Stage: "*"}},
+	})
+	if err := authorizer.AuthorizeSensitive(valid, scope); err != nil {
+		t.Fatal(err)
+	}
+	for name, identity := range map[string]platformauth.InternalCallerIdentity{
+		"role":  {Subject: "operator", Roles: []string{"CONFIG_VIEWER"}, Scopes: []platformauth.ScopePattern{{Region: "cn", Environment: "production", Stage: "*"}}},
+		"scope": {Subject: "operator", Roles: []string{"SENSITIVE_VIEWER"}, Scopes: []platformauth.ScopePattern{{Region: "us", Environment: "production", Stage: "*"}}},
+	} {
+		err := authorizer.AuthorizeSensitive(withInternalCallerIdentity(context.Background(), identity), scope)
+		if kitexstatus.Code(err) != kitexcodes.PermissionDenied {
+			t.Fatalf("%s code=%v err=%v", name, kitexstatus.Code(err), err)
+		}
+	}
+}
+
 func TestRequestAuthorizerBindsRelaySubjectAndManagedEnvironment(t *testing.T) {
 	t.Parallel()
 	authorizer := newRequestAuthorizer(t)

@@ -23,7 +23,7 @@ V1 使用 RBAC + Scope 授权。Principal 由认证 adapter 构造，包含 Subj
 - 外部浏览器：BFF 是 confidential OIDC client，使用 Authorization Code + PKCE，强制校验 state、nonce、issuer、audience、exp。
 - Session：30 分钟 stateless AEAD sealed HttpOnly cookie，只含 principal/roles/scopes/authTime/sessionID/expiry；secret mount key ring 通过 kid 轮换。不保存 refresh token，过期重新登录；V1 logout 只清 cookie，不提供即时全局撤销。
 - CSRF：double-submit token 必须与 sessionID 做 HMAC 绑定，并同时校验 Origin。
-- BFF/Control Plane relay → 目标 Envoy：mTLS 验证服务身份，同时每请求签发 60 秒 Ed25519 internal JWT（iss/aud/sub/roles/scopes/jti）；两者都必须通过。Envoy 以同 Pod UDS h2c 转发到 Kitex。
+- BFF/Control Plane relay → 目标 Envoy：mTLS 验证服务身份，同时每请求签发 60 秒 Ed25519 internal JWT（iss/aud/sub/display_name/roles/scopes/jti）；两者都必须通过。`display_name` 仅用于审计展示，授权始终使用 `sub`、roles 与 scopes。Envoy 以同 Pod UDS h2c 转发到 Kitex。
 - Go SDK → Config Server Envoy：Consumer JWT + TLS；验证配置化 issuer/audience/JWKS，token `sub` 必须等于请求 ConsumerID。
 - 开发静态 token adapter 默认关闭，开启时明确日志警告。
 - TLS 最低版本 1.2，推荐 1.3；证书/私钥只从文件或 secret mount 读取。

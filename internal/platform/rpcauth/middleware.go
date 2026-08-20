@@ -141,6 +141,7 @@ var methodPolicies = map[string]authenticationProfile{
 	"RefreshService/Notify":                  internalProfile,
 	"DiagnosticsService/GetSnapshotStatus":   internalProfile,
 	"DiagnosticsService/GetCollectionStatus": internalProfile,
+	"SensitiveAccessService/RevealField":     internalProfile,
 }
 
 func policyForContext(ctx context.Context) (authenticationProfile, bool) {

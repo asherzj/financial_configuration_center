@@ -2,6 +2,7 @@ package grpc_test
 
 import (
 	"context"
+	"errors"
 	"net"
 	"testing"
 	"time"
@@ -11,6 +12,7 @@ import (
 	"github.com/asherzj/financial_configuration_center/contracts/kitex_gen/finconfig/control/v1/sensitiveaccessservice"
 	access "github.com/asherzj/financial_configuration_center/internal/access/application"
 	accessgrpc "github.com/asherzj/financial_configuration_center/internal/access/grpc"
+	platformauth "github.com/asherzj/financial_configuration_center/internal/platform/auth"
 	"github.com/cloudwego/kitex/client"
 	kitexcodes "github.com/cloudwego/kitex/pkg/remote/trans/nphttp2/codes"
 	kitexstatus "github.com/cloudwego/kitex/pkg/remote/trans/nphttp2/status"
@@ -22,7 +24,7 @@ func TestRevealFieldMapsIdentityAndAuthorityFacts(t *testing.T) {
 	t.Parallel()
 	expiresAt := time.Date(2026, 8, 20, 0, 1, 0, 0, time.UTC)
 	application := &stubApplication{result: access.RevealResult{Value: "secret", ExpiresAt: expiresAt}}
-	handler, err := accessgrpc.New(application, identity{})
+	handler, err := accessgrpc.New(application, identity{}, allowSensitive{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -35,8 +37,27 @@ func TestRevealFieldMapsIdentityAndAuthorityFacts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if response.Value != "secret" || !response.ExpiresAt.AsTime().Equal(expiresAt) || application.last.Principal.Subject != "viewer" || application.last.RequestID != "request" || application.last.ExpectedCollectionRevision != 9 {
+	if response.Value != "secret" || !response.ExpiresAt.AsTime().Equal(expiresAt) || application.last.Principal.Subject != "viewer" || application.last.RequestID != "request" ||
+		application.last.TraceID != "4bf92f3577b34da6a3ce929d0e0e4736" || len(application.last.Principal.AllowedScopes) != 1 || application.last.ExpectedCollectionRevision != 9 {
 		t.Fatalf("response=%+v command=%+v", response, application.last)
+	}
+}
+
+func TestRevealFieldRejectsScopeBeforeApplication(t *testing.T) {
+	t.Parallel()
+	application := &stubApplication{}
+	denied := &scopeAuthorizerStub{err: errors.New("denied")}
+	handler, err := accessgrpc.New(application, identity{}, denied)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := handler.RevealField(context.Background(), validRevealRequest("model")); kitexstatus.Code(err) != kitexcodes.PermissionDenied || application.calls != 0 || denied.calls != 1 {
+		t.Fatalf("code=%v error=%v application=%d authorizer=%d", kitexstatus.Code(err), err, application.calls, denied.calls)
+	}
+	invalid := validRevealRequest("model")
+	invalid.Scope.Environment = "*"
+	if _, err := handler.RevealField(context.Background(), invalid); kitexstatus.Code(err) != kitexcodes.InvalidArgument || application.calls != 0 || denied.calls != 1 {
+		t.Fatalf("code=%v error=%v application=%d authorizer=%d", kitexstatus.Code(err), err, application.calls, denied.calls)
 	}
 }
 
@@ -45,7 +66,7 @@ func TestRevealFieldPreservesApplicationStatusAcrossKitexTransport(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	handler, err := accessgrpc.New(&statusApplication{}, identity{})
+	handler, err := accessgrpc.New(&statusApplication{}, identity{}, allowSensitive{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -102,6 +123,7 @@ type stubApplication struct {
 	result access.RevealResult
 	err    error
 	last   access.RevealCommand
+	calls  int
 }
 
 type statusApplication struct{}
@@ -118,6 +140,7 @@ func (*statusApplication) Reveal(_ context.Context, command access.RevealCommand
 }
 
 func (stub *stubApplication) Reveal(_ context.Context, command access.RevealCommand) (access.RevealResult, error) {
+	stub.calls++
 	stub.last = command
 	return stub.result, stub.err
 }
@@ -129,4 +152,24 @@ func (identity) DisplayName(context.Context) (string, error) { return "Viewer", 
 func (identity) Roles(context.Context) ([]string, error) {
 	return []string{access.SensitiveViewerRole}, nil
 }
+func (identity) Scopes(context.Context) ([]platformauth.ScopePattern, error) {
+	return []platformauth.ScopePattern{{Region: "cn", Environment: "production", Stage: "*"}}, nil
+}
 func (identity) RequestID(context.Context) string { return "request" }
+func (identity) TraceID(context.Context) string {
+	return "4bf92f3577b34da6a3ce929d0e0e4736"
+}
+
+type allowSensitive struct{}
+
+func (allowSensitive) AuthorizeSensitive(context.Context, platformauth.Scope) error { return nil }
+
+type scopeAuthorizerStub struct {
+	err   error
+	calls int
+}
+
+func (stub *scopeAuthorizerStub) AuthorizeSensitive(context.Context, platformauth.Scope) error {
+	stub.calls++
+	return stub.err
+}
